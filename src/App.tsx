@@ -53,7 +53,7 @@ async function copyToClipboard(text: string) {
   }
 }
 
-/** --- Syringe visual (U-100, 1 mL total) --- */
+/** U-100 syringe visual (1 mL total), 29G × ½" */
 function Syringe({ units }: { units: number }) {
   const width = 360;
   const height = 80;
@@ -98,6 +98,55 @@ function Syringe({ units }: { units: number }) {
   const fillW = Math.max(0, xForUnits(units) - barrelX);
 
   return (
-    <svg width={width} height={height} role="img" aria-label={`Syringe showing ${units.toFixed(1)} units`}>
+    <svg
+      width={width}
+      height={height}
+      role="img"
+      aria-label={`Syringe showing ${units.toFixed(1)} units`}
+    >
       {/* Needle */}
-      <rect x={4} y={barr
+      <rect
+        x={4}
+        y={barrelY + barrelH / 2 - 1}
+        width={leftPad - 8}
+        height={2}
+        fill="#888"
+      />
+      {/* Barrel */}
+      <rect
+        x={barrelX}
+        y={barrelY}
+        width={barrelW}
+        height={barrelH}
+        rx={3}
+        ry={3}
+        fill="#f8f8f8"
+        stroke="#222"
+      />
+      {/* Fill */}
+      <rect
+        x={barrelX}
+        y={barrelY}
+        width={fillW}
+        height={barrelH}
+        fill="#cde4ff"
+      />
+      {/* Plunger cap */}
+      <rect
+        x={width - rightPad - 6}
+        y={barrelY - 6}
+        width={10}
+        height={barrelH + 12}
+        fill="#ddd"
+        stroke="#222"
+      />
+      {/* Ticks + labels */}
+      {ticks}
+      <text
+        x={width - 6}
+        y={12}
+        fontSize={10}
+        textAnchor="end"
+        fill="#333"
+      >
+        U-100 •
