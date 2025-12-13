@@ -12,6 +12,21 @@ type Peptide = {
   defaultRestWeeks: number;
 };
 
+type OrderItem = {
+  id: string;
+  name: string;
+  quantity: number;
+  dealerCost: number;
+  publicPrice: number;
+};
+
+type CustomPeptide = {
+  id: string;
+  name: string;
+  dealerCost: number;
+  publicPrice: number;
+};
+
 /* ---------- Built-in fallback options (used if CSV is missing) ---------- */
 const DEFAULTS: Peptide[] = [
   { id: "tesa-5",   name: "Tesamorelin (5 mg)", vialMg: 5,  defaultWaterMl: 2, defaultDoseMg: 0.5, defaultShotsPerWeek: 5, defaultRunWeeks: 12, defaultRestWeeks: 4 },
@@ -178,10 +193,166 @@ Rest: ${restWeeks} week(s)
 Total shots: ${totalShots}
 Bottles needed: ${bottlesNeeded}`;
 
-  /* Simple UI (same layout you had) */
+  /* ========== ORDER BUILDER STATE ========== */
+  const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
+  const [customPeptides, setCustomPeptides] = useState<CustomPeptide[]>([]);
+  const [discount, setDiscount] = useState<number>(0);
+  const [publicMode, setPublicMode] = useState<boolean>(false);
+  
+  // Modal states
+  const [showAddPeptide, setShowAddPeptide] = useState<boolean>(false);
+  const [showManagePeptides, setShowManagePeptides] = useState<boolean>(false);
+  
+  // New peptide form
+  const [newPeptideName, setNewPeptideName] = useState<string>("");
+  const [newDealerCost, setNewDealerCost] = useState<number>(0);
+  const [newPublicPrice, setNewPublicPrice] = useState<number>(0);
+  
+  // Add to order form
+  const [selectedCustomPeptide, setSelectedCustomPeptide] = useState<string>("");
+  const [orderQuantity, setOrderQuantity] = useState<number>(1);
+
+  // Load custom peptides from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem("customPeptides");
+    if (saved) {
+      try {
+        setCustomPeptides(JSON.parse(saved));
+      } catch {}
+    }
+  }, []);
+
+  // Save custom peptides to localStorage
+  useEffect(() => {
+    localStorage.setItem("customPeptides", JSON.stringify(customPeptides));
+  }, [customPeptides]);
+
+  // Order calculations
+  const orderTotals = useMemo(() => {
+    const dealerTotal = orderItems.reduce((sum, item) => sum + (item.dealerCost * item.quantity), 0);
+    const publicTotal = orderItems.reduce((sum, item) => sum + (item.publicPrice * item.quantity), 0);
+    const discountedTotal = Math.max(0, publicTotal - discount);
+    const profit = discountedTotal - dealerTotal;
+    return { dealerTotal, publicTotal, discountedTotal, profit };
+  }, [orderItems, discount]);
+
+  // Add custom peptide
+  const handleAddCustomPeptide = () => {
+    if (!newPeptideName.trim()) return;
+    const newPeptide: CustomPeptide = {
+      id: slug(newPeptideName) + "-" + Date.now(),
+      name: newPeptideName.trim(),
+      dealerCost: newDealerCost,
+      publicPrice: newPublicPrice,
+    };
+    setCustomPeptides([...customPeptides, newPeptide]);
+    setNewPeptideName("");
+    setNewDealerCost(0);
+    setNewPublicPrice(0);
+  };
+
+  // Delete custom peptide
+  const handleDeleteCustomPeptide = (id: string) => {
+    setCustomPeptides(customPeptides.filter(p => p.id !== id));
+  };
+
+  // Update custom peptide
+  const handleUpdateCustomPeptide = (id: string, field: "dealerCost" | "publicPrice", value: number) => {
+    setCustomPeptides(customPeptides.map(p => 
+      p.id === id ? { ...p, [field]: value } : p
+    ));
+  };
+
+  // Add to order
+  const handleAddToOrder = () => {
+    const peptide = customPeptides.find(p => p.id === selectedCustomPeptide);
+    if (!peptide) return;
+    
+    // Check if already in order
+    const existing = orderItems.find(item => item.id === peptide.id);
+    if (existing) {
+      setOrderItems(orderItems.map(item => 
+        item.id === peptide.id 
+          ? { ...item, quantity: item.quantity + orderQuantity }
+          : item
+      ));
+    } else {
+      setOrderItems([...orderItems, {
+        id: peptide.id,
+        name: peptide.name,
+        quantity: orderQuantity,
+        dealerCost: peptide.dealerCost,
+        publicPrice: peptide.publicPrice,
+      }]);
+    }
+    setOrderQuantity(1);
+  };
+
+  // Remove from order
+  const handleRemoveFromOrder = (id: string) => {
+    setOrderItems(orderItems.filter(item => item.id !== id));
+  };
+
+  // Update order quantity
+  const handleUpdateOrderQuantity = (id: string, quantity: number) => {
+    if (quantity <= 0) {
+      handleRemoveFromOrder(id);
+    } else {
+      setOrderItems(orderItems.map(item =>
+        item.id === id ? { ...item, quantity } : item
+      ));
+    }
+  };
+
+  // Clear order
+  const handleClearOrder = () => {
+    setOrderItems([]);
+    setDiscount(0);
+  };
+
+  // Generate order summary for copying
+  const orderSummary = useMemo(() => {
+    if (orderItems.length === 0) return "";
+    let text = "📦 ORDER SUMMARY\n";
+    text += "─".repeat(30) + "\n";
+    orderItems.forEach(item => {
+      if (publicMode) {
+        text += `${item.name} x${item.quantity} - $${(item.publicPrice * item.quantity).toFixed(2)}\n`;
+      } else {
+        text += `${item.name} x${item.quantity}\n`;
+        text += `  Dealer: $${(item.dealerCost * item.quantity).toFixed(2)} | Public: $${(item.publicPrice * item.quantity).toFixed(2)}\n`;
+      }
+    });
+    text += "─".repeat(30) + "\n";
+    if (publicMode) {
+      text += `Subtotal: $${orderTotals.publicTotal.toFixed(2)}\n`;
+      if (discount > 0) {
+        text += `Discount: -$${discount.toFixed(2)}\n`;
+      }
+      text += `TOTAL: $${orderTotals.discountedTotal.toFixed(2)}`;
+    } else {
+      text += `Dealer Total: $${orderTotals.dealerTotal.toFixed(2)}\n`;
+      text += `Public Total: $${orderTotals.publicTotal.toFixed(2)}\n`;
+      if (discount > 0) {
+        text += `Discount: -$${discount.toFixed(2)}\n`;
+      }
+      text += `Final Total: $${orderTotals.discountedTotal.toFixed(2)}\n`;
+      text += `Profit: $${orderTotals.profit.toFixed(2)}`;
+    }
+    return text;
+  }, [orderItems, orderTotals, discount, publicMode]);
+
+  /* Simple UI styles */
   const inp: React.CSSProperties = { width:"100%", boxSizing:"border-box", padding:"8px 10px", border:"1px solid #cbd5e1", borderRadius:8, fontSize:14 };
   const card: React.CSSProperties = { border:"1px solid #e5e7eb", borderRadius:12, padding:16, marginTop:16 };
   const row : React.CSSProperties = { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 0", borderTop:"1px dashed #eee" };
+  const btn: React.CSSProperties = { border:"none", padding:"10px 16px", borderRadius:8, cursor:"pointer", fontWeight:600, fontSize:14 };
+  const btnPrimary: React.CSSProperties = { ...btn, background:"#3b82f6", color:"#fff" };
+  const btnSecondary: React.CSSProperties = { ...btn, background:"#e5e7eb", color:"#374151" };
+  const btnDanger: React.CSSProperties = { ...btn, background:"#ef4444", color:"#fff", padding:"6px 12px", fontSize:12 };
+  const btnSuccess: React.CSSProperties = { ...btn, background:"#10b981", color:"#fff" };
+  const modal: React.CSSProperties = { position:"fixed", top:0, left:0, right:0, bottom:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 };
+  const modalContent: React.CSSProperties = { background:"#fff", borderRadius:16, padding:24, maxWidth:500, width:"90%", maxHeight:"80vh", overflow:"auto" };
 
   return (
     <main style={{minHeight:"100vh", padding:24, color:"#0f172a", background:"#fff"}}>
@@ -241,7 +412,288 @@ Bottles needed: ${bottlesNeeded}`;
           <textarea readOnly value={summary}
             style={{width:"100%", height:140, marginTop:8, border:"1px solid #cbd5e1", borderRadius:8, padding:10, fontFamily:"ui-monospace, Menlo, monospace", fontSize:12}}/>
         </section>
+
+        {/* ========== ORDER BUILDER SECTION ========== */}
+        <section style={{...card, background: publicMode ? "#f0fdf4" : "#fff", border: publicMode ? "2px solid #10b981" : "1px solid #e5e7eb"}}>
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16}}>
+            <h2 style={{margin:0, fontSize:20}}>💰 Order Builder</h2>
+            <div style={{display:"flex", gap:8}}>
+              <button 
+                style={publicMode ? btnSuccess : btnSecondary}
+                onClick={() => setPublicMode(!publicMode)}
+              >
+                {publicMode ? "✓ Public Mode" : "Show Public Only"}
+              </button>
+              <button style={btnPrimary} onClick={() => setShowManagePeptides(true)}>
+                Manage Peptides
+              </button>
+            </div>
+          </div>
+
+          {publicMode && (
+            <div style={{background:"#dcfce7", padding:12, borderRadius:8, marginBottom:16, fontSize:14, color:"#166534"}}>
+              <strong>Public Mode Active</strong> — Dealer costs and profits are hidden. Safe to show customers.
+            </div>
+          )}
+
+          {/* Add to Order */}
+          <div style={{display:"grid", gridTemplateColumns:"2fr 1fr auto", gap:12, marginBottom:16}}>
+            <select 
+              value={selectedCustomPeptide} 
+              onChange={e => setSelectedCustomPeptide(e.target.value)} 
+              style={inp}
+            >
+              <option value="">-- Select Peptide --</option>
+              {customPeptides.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.name} {!publicMode && `(Cost: $${p.dealerCost})`} — ${p.publicPrice}
+                </option>
+              ))}
+            </select>
+            <input 
+              type="number" 
+              value={orderQuantity} 
+              min={1}
+              onChange={e => setOrderQuantity(Math.max(1, Number(e.target.value)))}
+              placeholder="Qty"
+              style={inp}
+            />
+            <button 
+              style={btnPrimary} 
+              onClick={handleAddToOrder}
+              disabled={!selectedCustomPeptide}
+            >
+              Add
+            </button>
+          </div>
+
+          {customPeptides.length === 0 && (
+            <div style={{textAlign:"center", padding:24, color:"#64748b"}}>
+              No peptides added yet. Click "Manage Peptides" to add your products with pricing.
+            </div>
+          )}
+
+          {/* Order Items List */}
+          {orderItems.length > 0 && (
+            <div style={{marginBottom:16}}>
+              <table style={{width:"100%", borderCollapse:"collapse", fontSize:14}}>
+                <thead>
+                  <tr style={{borderBottom:"2px solid #e5e7eb"}}>
+                    <th style={{textAlign:"left", padding:8}}>Item</th>
+                    <th style={{textAlign:"center", padding:8, width:80}}>Qty</th>
+                    {!publicMode && <th style={{textAlign:"right", padding:8}}>Dealer</th>}
+                    <th style={{textAlign:"right", padding:8}}>Price</th>
+                    <th style={{width:40}}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orderItems.map(item => (
+                    <tr key={item.id} style={{borderBottom:"1px solid #f3f4f6"}}>
+                      <td style={{padding:8}}>{item.name}</td>
+                      <td style={{padding:8, textAlign:"center"}}>
+                        <input 
+                          type="number" 
+                          value={item.quantity}
+                          min={0}
+                          onChange={e => handleUpdateOrderQuantity(item.id, Number(e.target.value))}
+                          style={{...inp, width:60, textAlign:"center", padding:"4px"}}
+                        />
+                      </td>
+                      {!publicMode && (
+                        <td style={{padding:8, textAlign:"right", color:"#64748b"}}>
+                          ${(item.dealerCost * item.quantity).toFixed(2)}
+                        </td>
+                      )}
+                      <td style={{padding:8, textAlign:"right", fontWeight:600}}>
+                        ${(item.publicPrice * item.quantity).toFixed(2)}
+                      </td>
+                      <td style={{padding:8}}>
+                        <button 
+                          onClick={() => handleRemoveFromOrder(item.id)}
+                          style={{background:"none", border:"none", cursor:"pointer", color:"#ef4444", fontSize:18}}
+                        >
+                          ×
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Discount & Totals */}
+          {orderItems.length > 0 && (
+            <div style={{borderTop:"2px solid #e5e7eb", paddingTop:16}}>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:16}}>
+                <div>
+                  <label style={{fontSize:12, color:"#666", marginBottom:6, display:"block"}}>Discount ($)</label>
+                  <input 
+                    type="number" 
+                    value={discount}
+                    min={0}
+                    step={0.01}
+                    onChange={e => setDiscount(Math.max(0, Number(e.target.value)))}
+                    style={inp}
+                    placeholder="Enter discount amount"
+                  />
+                </div>
+                <div style={{textAlign:"right"}}>
+                  {!publicMode && (
+                    <div style={{...row, borderTop:"none"}}>
+                      <span style={{color:"#64748b"}}>Dealer Total:</span>
+                      <span style={{fontWeight:600}}>${orderTotals.dealerTotal.toFixed(2)}</span>
+                    </div>
+                  )}
+                  <div style={{...row, borderTop: publicMode ? "none" : undefined}}>
+                    <span style={{color:"#64748b"}}>Subtotal:</span>
+                    <span style={{fontWeight:600}}>${orderTotals.publicTotal.toFixed(2)}</span>
+                  </div>
+                  {discount > 0 && (
+                    <div style={row}>
+                      <span style={{color:"#10b981"}}>Discount:</span>
+                      <span style={{fontWeight:600, color:"#10b981"}}>-${discount.toFixed(2)}</span>
+                    </div>
+                  )}
+                  <div style={{...row, fontSize:18}}>
+                    <span style={{fontWeight:700}}>Total:</span>
+                    <span style={{fontWeight:700, color:"#3b82f6"}}>${orderTotals.discountedTotal.toFixed(2)}</span>
+                  </div>
+                  {!publicMode && (
+                    <div style={row}>
+                      <span style={{color:"#10b981", fontWeight:600}}>Profit:</span>
+                      <span style={{fontWeight:700, color:"#10b981"}}>${orderTotals.profit.toFixed(2)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div style={{display:"flex", gap:8, marginTop:16}}>
+                <button 
+                  style={btnSecondary}
+                  onClick={() => navigator.clipboard.writeText(orderSummary)}
+                >
+                  📋 Copy Order
+                </button>
+                <button 
+                  style={{...btnDanger, marginLeft:"auto"}}
+                  onClick={handleClearOrder}
+                >
+                  Clear Order
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
       </div>
+
+      {/* ========== MANAGE PEPTIDES MODAL ========== */}
+      {showManagePeptides && (
+        <div style={modal} onClick={() => setShowManagePeptides(false)}>
+          <div style={modalContent} onClick={e => e.stopPropagation()}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16}}>
+              <h2 style={{margin:0}}>Manage Peptides & Pricing</h2>
+              <button 
+                onClick={() => setShowManagePeptides(false)}
+                style={{background:"none", border:"none", fontSize:24, cursor:"pointer"}}
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Add New Peptide Form */}
+            <div style={{background:"#f8fafc", padding:16, borderRadius:8, marginBottom:16}}>
+              <h3 style={{margin:"0 0 12px 0", fontSize:16}}>Add New Peptide</h3>
+              <div style={{display:"grid", gap:12}}>
+                <input 
+                  type="text"
+                  value={newPeptideName}
+                  onChange={e => setNewPeptideName(e.target.value)}
+                  placeholder="Peptide name (e.g., Semaglutide 5mg)"
+                  style={inp}
+                />
+                <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
+                  <label>
+                    <div style={{fontSize:12, color:"#666", marginBottom:4}}>Dealer Cost ($)</div>
+                    <input 
+                      type="number"
+                      value={newDealerCost}
+                      min={0}
+                      step={0.01}
+                      onChange={e => setNewDealerCost(Number(e.target.value))}
+                      style={inp}
+                    />
+                  </label>
+                  <label>
+                    <div style={{fontSize:12, color:"#666", marginBottom:4}}>Public Price ($)</div>
+                    <input 
+                      type="number"
+                      value={newPublicPrice}
+                      min={0}
+                      step={0.01}
+                      onChange={e => setNewPublicPrice(Number(e.target.value))}
+                      style={inp}
+                    />
+                  </label>
+                </div>
+                <button 
+                  style={btnPrimary}
+                  onClick={handleAddCustomPeptide}
+                  disabled={!newPeptideName.trim()}
+                >
+                  + Add Peptide
+                </button>
+              </div>
+            </div>
+
+            {/* Existing Peptides List */}
+            <div>
+              <h3 style={{margin:"0 0 12px 0", fontSize:16}}>Your Peptides ({customPeptides.length})</h3>
+              {customPeptides.length === 0 ? (
+                <p style={{color:"#64748b", textAlign:"center", padding:16}}>No peptides added yet.</p>
+              ) : (
+                <div style={{maxHeight:300, overflow:"auto"}}>
+                  {customPeptides.map(p => (
+                    <div key={p.id} style={{display:"grid", gridTemplateColumns:"2fr 1fr 1fr auto", gap:8, alignItems:"center", padding:8, borderBottom:"1px solid #e5e7eb"}}>
+                      <span style={{fontWeight:500}}>{p.name}</span>
+                      <input 
+                        type="number"
+                        value={p.dealerCost}
+                        min={0}
+                        step={0.01}
+                        onChange={e => handleUpdateCustomPeptide(p.id, "dealerCost", Number(e.target.value))}
+                        style={{...inp, padding:"4px 8px"}}
+                        title="Dealer Cost"
+                      />
+                      <input 
+                        type="number"
+                        value={p.publicPrice}
+                        min={0}
+                        step={0.01}
+                        onChange={e => handleUpdateCustomPeptide(p.id, "publicPrice", Number(e.target.value))}
+                        style={{...inp, padding:"4px 8px"}}
+                        title="Public Price"
+                      />
+                      <button 
+                        onClick={() => handleDeleteCustomPeptide(p.id)}
+                        style={btnDanger}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{marginTop:16, paddingTop:16, borderTop:"1px solid #e5e7eb"}}>
+              <button style={btnSecondary} onClick={() => setShowManagePeptides(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
