@@ -23,8 +23,8 @@ app.config['SESSION_COOKIE_SECURE'] = os.environ.get('PRODUCTION', False)
 # ============================================
 
 CONFIG = {
-    'SENDGRID_API_KEY': os.environ.get('SENDGRID_API_KEY', ''),
-    'SENDGRID_FROM_EMAIL': os.environ.get('SENDGRID_FROM_EMAIL', 'orders@yourdomain.com'),
+    'RESEND_API_KEY': os.environ.get('RESEND_API_KEY', ''),
+    'EMAIL_FROM': os.environ.get('EMAIL_FROM', 'onboarding@resend.dev'),
     'TWILIO_ACCOUNT_SID': os.environ.get('TWILIO_ACCOUNT_SID', ''),
     'TWILIO_AUTH_TOKEN': os.environ.get('TWILIO_AUTH_TOKEN', ''),
     'TWILIO_PHONE_NUMBER': os.environ.get('TWILIO_PHONE_NUMBER', ''),
@@ -32,7 +32,7 @@ CONFIG = {
     'LOW_STOCK_THRESHOLD': int(os.environ.get('LOW_STOCK_THRESHOLD', '10')),
     'ADMIN_EMAIL': os.environ.get('ADMIN_EMAIL', ''),
     'DATABASE_URL': os.environ.get('DATABASE_URL', ''),
-    'COMPANY_NAME': os.environ.get('COMPANY_NAME', 'Research Materials Co.'),
+    'COMPANY_NAME': os.environ.get('COMPANY_NAME', 'The Peptide Wizard'),
     'COMPANY_ADDRESS': os.environ.get('COMPANY_ADDRESS', ''),
 }
 
@@ -335,15 +335,15 @@ def verify_csrf_token(token):
 # ============================================
 
 def send_email(to, subject, html):
-    if not CONFIG['SENDGRID_API_KEY']:
+    if not CONFIG['RESEND_API_KEY']:
         print(f"[EMAIL MOCK] To: {to}, Subject: {subject}")
         return True, "Mock sent"
     try:
         import requests
-        r = requests.post('https://api.sendgrid.com/v3/mail/send',
-            headers={'Authorization': f"Bearer {CONFIG['SENDGRID_API_KEY']}", 'Content-Type': 'application/json'},
-            json={'personalizations': [{'to': [{'email': to}]}], 'from': {'email': CONFIG['SENDGRID_FROM_EMAIL']}, 'subject': subject, 'content': [{'type': 'text/html', 'value': html}]})
-        return r.status_code in [200, 201, 202], r.text
+        r = requests.post('https://api.resend.com/emails',
+            headers={'Authorization': f"Bearer {CONFIG['RESEND_API_KEY']}", 'Content-Type': 'application/json'},
+            json={'from': CONFIG['EMAIL_FROM'], 'to': [to], 'subject': subject, 'html': html})
+        return r.status_code in [200, 201], r.text
     except Exception as e:
         return False, str(e)
 
@@ -584,8 +584,8 @@ def verified_required(f):
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'Authentication required'}), 401
-        # Email verification disabled until SendGrid is configured
-        # To enable: uncomment the check below and configure SENDGRID_API_KEY
+        # Email verification disabled until Resend is configured
+        # To enable: uncomment the check below and configure RESEND_API_KEY
         # conn = get_db()
         # user = conn.execute('SELECT email_verified FROM users WHERE id=?', (session['user_id'],)).fetchone()
         # conn.close()
@@ -1181,9 +1181,9 @@ def admin_get_notifications():
 
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("Research Materials Ordering Platform")
+    print("The Peptide Wizard - Ordering Platform")
     print("="*60)
-    print(f"\n📧 Email: {'SendGrid' if CONFIG['SENDGRID_API_KEY'] else 'Mock mode'}")
+    print(f"\n📧 Email: {'Resend' if CONFIG['RESEND_API_KEY'] else 'Mock mode'}")
     print(f"📱 SMS: {'Twilio' if CONFIG['TWILIO_ACCOUNT_SID'] else 'Mock mode'}")
     
     init_db()
