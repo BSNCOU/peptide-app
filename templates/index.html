@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Materials Ordering Platform</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; line-height: 1.6; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        header { background: linear-gradient(135deg, #1a365d 0%, #2c5282 100%); color: white; padding: 20px 0; margin-bottom: 30px; }
+        header .container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
+        header h1 { font-size: 1.5rem; }
+        .header-right { display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
+        .user-info { font-size: 0.9rem; opacity: 0.9; }
+        nav { display: flex; gap: 10px; flex-wrap: wrap; }
+        nav button { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; }
+        nav button:hover { background: rgba(255,255,255,0.25); }
+        nav button.active { background: white; color: #1a365d; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); padding: 25px; margin-bottom: 20px; }
+        .card h2 { color: #1a365d; margin-bottom: 20px; font-size: 1.3rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
+        .form-group { margin-bottom: 18px; }
+        .form-group label { display: block; margin-bottom: 6px; font-weight: 500; color: #4a5568; }
+        .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 1rem; transition: border-color 0.2s; }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: #4299e1; }
+        .btn { background: linear-gradient(135deg, #4299e1 0%, #3182ce 100%); color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 1rem; font-weight: 500; transition: transform 0.2s, box-shadow 0.2s; }
+        .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(66, 153, 225, 0.4); }
+        .btn:disabled { background: #a0aec0; cursor: not-allowed; transform: none; box-shadow: none; }
+        .btn-secondary { background: linear-gradient(135deg, #718096 0%, #4a5568 100%); }
+        .btn-success { background: linear-gradient(135deg, #48bb78 0%, #38a169 100%); }
+        .btn-danger { background: linear-gradient(135deg, #f56565 0%, #e53e3e 100%); }
+        .btn-small { padding: 6px 12px; font-size: 0.85rem; }
+        .alert { padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; }
+        .alert-error { background: #fed7d7; color: #c53030; border: 1px solid #fc8181; }
+        .alert-success { background: #c6f6d5; color: #276749; border: 1px solid #68d391; }
+        .alert-warning { background: #fefcbf; color: #975a16; border: 1px solid #f6e05e; }
+        .alert-info { background: #bee3f8; color: #2b6cb0; border: 1px solid #63b3ed; }
+        .hidden { display: none !important; }
+        .grid { display: grid; gap: 20px; }
+        .grid-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+        .grid-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+        .product-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); transition: transform 0.2s, box-shadow 0.2s; }
+        .product-card:hover { transform: translateY(-3px); box-shadow: 0 8px 25px rgba(0,0,0,0.12); }
+        .product-card h3 { color: #1a365d; margin-bottom: 8px; font-size: 1.1rem; }
+        .product-sku { color: #718096; font-size: 0.85rem; margin-bottom: 10px; }
+        .product-price { font-size: 1.2rem; font-weight: 600; color: #2d3748; margin-bottom: 15px; }
+        .product-price .bulk { font-size: 0.9rem; color: #48bb78; display: block; margin-top: 4px; }
+        .product-stock { font-size: 0.85rem; margin-bottom: 15px; }
+        .product-stock.low { color: #e53e3e; }
+        .product-stock.ok { color: #38a169; }
+        .qty-control { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
+        .qty-control button { width: 32px; height: 32px; border: none; background: #e2e8f0; border-radius: 6px; cursor: pointer; font-size: 1.2rem; }
+        .qty-control input { width: 60px; text-align: center; border: 2px solid #e2e8f0; border-radius: 6px; padding: 6px; }
+        .category-filter { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+        .category-filter button { padding: 8px 16px; border: 2px solid #e2e8f0; background: white; border-radius: 20px; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; }
+        .category-filter button:hover, .category-filter button.active { border-color: #4299e1; background: #ebf8ff; color: #2b6cb0; }
+        .cart-badge { background: #e53e3e; color: white; font-size: 0.75rem; padding: 2px 6px; border-radius: 10px; margin-left: 5px; }
+        .cart-item { display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #e2e8f0; }
+        .cart-item:last-child { border-bottom: none; }
+        .cart-item-info h4 { margin-bottom: 4px; }
+        .cart-item-info p { color: #718096; font-size: 0.9rem; }
+        .cart-summary { background: #f7fafc; padding: 20px; border-radius: 8px; margin-top: 20px; }
+        .cart-summary-row { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        .cart-summary-row.total { font-size: 1.2rem; font-weight: 600; border-top: 2px solid #e2e8f0; padding-top: 10px; margin-top: 10px; }
+        .discount-form { display: flex; gap: 10px; margin-bottom: 15px; }
+        .discount-form input { flex: 1; }
+        .order-row { padding: 15px; border-bottom: 1px solid #e2e8f0; cursor: pointer; transition: background 0.2s; }
+        .order-row:hover { background: #f7fafc; }
+        .order-row h4 { margin-bottom: 5px; }
+        .order-row p { color: #718096; font-size: 0.9rem; }
+        .order-status { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 500; }
+        .status-pending { background: #fefcbf; color: #975a16; }
+        .status-paid { background: #c6f6d5; color: #276749; }
+        .status-processing { background: #bee3f8; color: #2b6cb0; }
+        .status-shipped { background: #e9d8fd; color: #6b46c1; }
+        .status-delivered { background: #c6f6d5; color: #276749; }
+        .status-cancelled { background: #fed7d7; color: #c53030; }
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+        .modal-content { background: white; border-radius: 12px; padding: 30px; max-width: 600px; width: 90%; max-height: 90vh; overflow-y: auto; }
+        .modal-content h2 { margin-bottom: 20px; }
+        .checkbox-group { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
+        .checkbox-group input[type="checkbox"] { width: auto; margin-top: 4px; }
+        .checkbox-group label { font-size: 0.95rem; color: #4a5568; }
+        .tabs { display: flex; border-bottom: 2px solid #e2e8f0; margin-bottom: 20px; }
+        .tabs button { background: none; border: none; padding: 12px 20px; cursor: pointer; font-size: 1rem; color: #718096; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+        .tabs button.active { color: #2b6cb0; border-bottom-color: #4299e1; }
+        .order-detail { padding: 20px; background: #f7fafc; border-radius: 8px; }
+        .order-detail h4 { margin-bottom: 15px; }
+        .order-items-table { width: 100%; border-collapse: collapse; }
+        .order-items-table th, .order-items-table td { padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        .order-items-table th { background: #edf2f7; font-weight: 500; }
+        .verification-banner { background: #fefcbf; color: #975a16; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+        @media (max-width: 600px) {
+            header .container { flex-direction: column; text-align: center; }
+            .header-right { justify-content: center; }
+            .cart-item { flex-direction: column; text-align: center; gap: 10px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>🔬 Research Materials</h1>
+            <div class="header-right">
+                <span class="user-info" id="userInfo"></span>
+                <nav id="mainNav"></nav>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="alertContainer"></div>
+        <div id="verificationBanner" class="verification-banner hidden">
+            <span>⚠️ Please verify your email address to place orders.</span>
+            <button class="btn btn-small" onclick="resendVerification()">Resend Verification Email</button>
+        </div>
+        <main id="mainContent"></main>
+    </div>
+
+    <div id="modalContainer"></div>
+
+    <script>
+        // State
+        let state = {
+            user: null,
+            csrfToken: null,
+            products: [],
+            categories: [],
+            cart: JSON.parse(localStorage.getItem('cart') || '[]'),
+            orders: [],
+            currentView: 'products',
+            selectedCategory: 'All',
+            discount: null
+        };
+
+        // API helpers
+        async function api(endpoint, options = {}) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (state.csrfToken && ['POST', 'PUT', 'DELETE'].includes(options.method)) {
+                headers['X-CSRF-Token'] = state.csrfToken;
+            }
+            const res = await fetch(endpoint, { ...options, headers, credentials: 'same-origin' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Request failed');
+            return data;
+        }
+
+        function showAlert(message, type = 'error') {
+            const container = document.getElementById('alertContainer');
+            container.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+            setTimeout(() => container.innerHTML = '', 5000);
+        }
+
+        function saveCart() {
+            localStorage.setItem('cart', JSON.stringify(state.cart));
+        }
+
+        // Initialize
+        async function init() {
+            try {
+                const tokenRes = await api('/api/csrf-token');
+                state.csrfToken = tokenRes.token;
+            } catch (e) { console.error('CSRF error:', e); }
+
+            try {
+                const user = await api('/api/me');
+                state.user = user;
+                if (!user.email_verified) {
+                    document.getElementById('verificationBanner').classList.remove('hidden');
+                }
+                if (!user.first_login_confirmed) {
+                    showFirstLoginModal();
+                }
+            } catch (e) {
+                state.user = null;
+            }
+
+            renderNav();
+            if (state.user) {
+                await loadProducts();
+                renderView();
+            } else {
+                showLogin();
+            }
+        }
+
+        function renderNav() {
+            const nav = document.getElementById('mainNav');
+            const userInfo = document.getElementById('userInfo');
+            
+            if (state.user) {
+                userInfo.textContent = `Welcome, ${state.user.full_name}`;
+                const cartCount = state.cart.reduce((sum, item) => sum + item.qty, 0);
+                nav.innerHTML = `
+                    <button onclick="showView('products')" class="${state.currentView === 'products' ? 'active' : ''}">Products</button>
+                    <button onclick="showView('cart')" class="${state.currentView === 'cart' ? 'active' : ''}">Cart${cartCount > 0 ? `<span class="cart-badge">${cartCount}</span>` : ''}</button>
+                    <button onclick="showView('orders')" class="${state.currentView === 'orders' ? 'active' : ''}">My Orders</button>
+                    ${state.user.is_admin ? '<button onclick="window.location.href=\'/admin\'">Admin</button>' : ''}
+                    <button onclick="logout()">Logout</button>
+                `;
+            } else {
+                userInfo.textContent = '';
+                nav.innerHTML = `
+                    <button onclick="showLogin()" class="active">Login</button>
+                    <button onclick="showRegister()">Register</button>
+                `;
+            }
+        }
+
+        async function loadProducts() {
+            try {
+                state.products = await api('/api/products');
+                const catRes = await api('/api/categories');
+                state.categories = ['All', ...catRes.categories];
+            } catch (e) {
+                showAlert('Failed to load products');
+            }
+        }
+
+        function showView(view) {
+            state.currentView = view;
+            renderNav();
+            renderView();
+        }
+
+        function renderView() {
+            switch (state.currentView) {
+                case 'products': renderProducts(); break;
+                case 'cart': renderCart(); break;
+                case 'orders': renderOrders(); break;
+            }
+        }
+
+        // Auth views
+        function showLogin() {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card" style="max-width: 450px; margin: 0 auto;">
+                    <h2>Login</h2>
+                    <form onsubmit="login(event)">
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="loginEmail" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="loginPassword" required>
+                        </div>
+                        <button type="submit" class="btn" style="width: 100%;">Login</button>
+                    </form>
+                    <p style="margin-top: 15px; text-align: center; color: #718096;">
+                        <a href="#" onclick="showForgotPassword()" style="color: #4299e1;">Forgot password?</a>
+                    </p>
+                    <p style="margin-top: 10px; text-align: center; color: #718096;">
+                        Don't have an account? <a href="#" onclick="showRegister()" style="color: #4299e1;">Register</a>
+                    </p>
+                </div>
+            `;
+        }
+
+        async function login(e) {
+            e.preventDefault();
+            try {
+                await api('/api/login', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        email: document.getElementById('loginEmail').value,
+                        password: document.getElementById('loginPassword').value
+                    })
+                });
+                await init();
+                showAlert('Login successful!', 'success');
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        function showRegister() {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card" style="max-width: 550px; margin: 0 auto;">
+                    <h2>Create Account</h2>
+                    <form onsubmit="register(event)">
+                        <div class="grid grid-2">
+                            <div class="form-group">
+                                <label>Full Name *</label>
+                                <input type="text" id="regName" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Email *</label>
+                                <input type="email" id="regEmail" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Phone *</label>
+                                <input type="tel" id="regPhone" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Country *</label>
+                                <input type="text" id="regCountry" required>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Organization/Institution</label>
+                            <input type="text" id="regOrg">
+                        </div>
+                        <div class="form-group">
+                            <label>Password *</label>
+                            <input type="password" id="regPassword" required minlength="8">
+                        </div>
+                        <div class="form-group">
+                            <label>Confirm Password *</label>
+                            <input type="password" id="regPassword2" required>
+                        </div>
+                        <button type="submit" class="btn" style="width: 100%;">Create Account</button>
+                    </form>
+                    <p style="margin-top: 15px; text-align: center; color: #718096;">
+                        Already have an account? <a href="#" onclick="showLogin()" style="color: #4299e1;">Login</a>
+                    </p>
+                </div>
+            `;
+        }
+
+        async function register(e) {
+            e.preventDefault();
+            const pw = document.getElementById('regPassword').value;
+            const pw2 = document.getElementById('regPassword2').value;
+            if (pw !== pw2) {
+                showAlert('Passwords do not match');
+                return;
+            }
+            try {
+                await api('/api/register', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        full_name: document.getElementById('regName').value,
+                        email: document.getElementById('regEmail').value,
+                        phone: document.getElementById('regPhone').value,
+                        country: document.getElementById('regCountry').value,
+                        organization: document.getElementById('regOrg').value,
+                        password: pw
+                    })
+                });
+                showAlert('Account created! Please check your email to verify your account.', 'success');
+                showLogin();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function logout() {
+            try {
+                await api('/api/logout', { method: 'POST' });
+            } catch (e) {}
+            state.user = null;
+            state.cart = [];
+            saveCart();
+            document.getElementById('verificationBanner').classList.add('hidden');
+            init();
+        }
+
+        function showForgotPassword() {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card" style="max-width: 450px; margin: 0 auto;">
+                    <h2>Reset Password</h2>
+                    <form onsubmit="forgotPassword(event)">
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="forgotEmail" required>
+                        </div>
+                        <button type="submit" class="btn" style="width: 100%;">Send Reset Link</button>
+                    </form>
+                    <p style="margin-top: 15px; text-align: center;">
+                        <a href="#" onclick="showLogin()" style="color: #4299e1;">Back to Login</a>
+                    </p>
+                </div>
+            `;
+        }
+
+        async function forgotPassword(e) {
+            e.preventDefault();
+            try {
+                await api('/api/forgot-password', {
+                    method: 'POST',
+                    body: JSON.stringify({ email: document.getElementById('forgotEmail').value })
+                });
+                showAlert('If an account exists with that email, a reset link has been sent.', 'success');
+                showLogin();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function resendVerification() {
+            try {
+                await api('/api/resend-verification', { method: 'POST' });
+                showAlert('Verification email sent! Please check your inbox.', 'success');
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        // Products view
+        function renderProducts() {
+            const filtered = state.selectedCategory === 'All' 
+                ? state.products 
+                : state.products.filter(p => p.category === state.selectedCategory);
+
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card">
+                    <h2>Product Catalog</h2>
+                    <div class="category-filter">
+                        ${state.categories.map(cat => `
+                            <button class="${cat === state.selectedCategory ? 'active' : ''}" onclick="filterCategory('${cat}')">${cat}</button>
+                        `).join('')}
+                    </div>
+                    <div class="grid grid-3">
+                        ${filtered.map(p => `
+                            <div class="product-card">
+                                <h3>${p.name}</h3>
+                                <p class="product-sku">SKU: ${p.sku}</p>
+                                <div class="product-price">
+                                    $${p.price_single.toFixed(2)}
+                                    ${p.price_bulk ? `<span class="bulk">Bulk (${p.bulk_quantity}+): $${p.price_bulk.toFixed(2)} each</span>` : ''}
+                                </div>
+                                <p class="product-stock ${p.stock < 10 ? 'low' : 'ok'}">
+                                    ${p.stock > 0 ? `${p.stock} in stock` : 'Out of stock'}
+                                </p>
+                                <div class="qty-control">
+                                    <button onclick="updateCartQty(${p.id}, -1)">−</button>
+                                    <input type="number" id="qty-${p.id}" value="${getCartQty(p.id)}" min="0" max="${p.stock}" onchange="setCartQty(${p.id}, this.value)">
+                                    <button onclick="updateCartQty(${p.id}, 1)">+</button>
+                                </div>
+                                <button class="btn btn-small" onclick="addToCart(${p.id})" ${p.stock === 0 ? 'disabled' : ''}>
+                                    Add to Cart
+                                </button>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function filterCategory(cat) {
+            state.selectedCategory = cat;
+            renderProducts();
+        }
+
+        function getCartQty(productId) {
+            const item = state.cart.find(i => i.productId === productId);
+            return item ? item.qty : 0;
+        }
+
+        function updateCartQty(productId, delta) {
+            const input = document.getElementById(`qty-${productId}`);
+            const newVal = Math.max(0, parseInt(input.value || 0) + delta);
+            input.value = newVal;
+        }
+
+        function setCartQty(productId, value) {
+            const input = document.getElementById(`qty-${productId}`);
+            input.value = Math.max(0, parseInt(value) || 0);
+        }
+
+        function addToCart(productId) {
+            const qty = parseInt(document.getElementById(`qty-${productId}`).value) || 1;
+            if (qty <= 0) return;
+            
+            const product = state.products.find(p => p.id === productId);
+            if (!product) return;
+
+            const existing = state.cart.find(i => i.productId === productId);
+            if (existing) {
+                existing.qty = Math.min(existing.qty + qty, product.stock);
+            } else {
+                state.cart.push({ productId, qty: Math.min(qty, product.stock) });
+            }
+            saveCart();
+            renderNav();
+            showAlert(`Added ${qty} x ${product.name} to cart`, 'success');
+        }
+
+        // Cart view
+        function renderCart() {
+            const items = state.cart.map(item => {
+                const product = state.products.find(p => p.id === item.productId);
+                if (!product) return null;
+                const price = (product.price_bulk && item.qty >= product.bulk_quantity) 
+                    ? product.price_bulk 
+                    : product.price_single;
+                return { ...item, product, price, subtotal: price * item.qty };
+            }).filter(Boolean);
+
+            const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
+            let discountAmount = 0;
+            if (state.discount) {
+                if (state.discount.discount_percent > 0) {
+                    discountAmount = subtotal * (state.discount.discount_percent / 100);
+                } else {
+                    discountAmount = state.discount.discount_amount;
+                }
+            }
+            const total = subtotal - discountAmount;
+
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card">
+                    <h2>Shopping Cart</h2>
+                    ${items.length === 0 ? '<p style="text-align: center; color: #718096;">Your cart is empty</p>' : `
+                        <div>
+                            ${items.map(item => `
+                                <div class="cart-item">
+                                    <div class="cart-item-info">
+                                        <h4>${item.product.name}</h4>
+                                        <p>$${item.price.toFixed(2)} x ${item.qty} = $${item.subtotal.toFixed(2)}</p>
+                                    </div>
+                                    <div class="qty-control">
+                                        <button onclick="changeCartItem(${item.productId}, -1)">−</button>
+                                        <input type="number" value="${item.qty}" min="1" max="${item.product.stock}" 
+                                            onchange="changeCartItem(${item.productId}, 0, this.value)">
+                                        <button onclick="changeCartItem(${item.productId}, 1)">+</button>
+                                        <button class="btn btn-danger btn-small" onclick="removeFromCart(${item.productId})">Remove</button>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div class="cart-summary">
+                            <div class="discount-form">
+                                <input type="text" id="discountCode" placeholder="Discount code" value="${state.discount?.code || ''}">
+                                <button class="btn btn-secondary btn-small" onclick="applyDiscount()">Apply</button>
+                                ${state.discount ? '<button class="btn btn-danger btn-small" onclick="removeDiscount()">Remove</button>' : ''}
+                            </div>
+                            <div class="cart-summary-row">
+                                <span>Subtotal</span>
+                                <span>$${subtotal.toFixed(2)}</span>
+                            </div>
+                            ${discountAmount > 0 ? `
+                                <div class="cart-summary-row" style="color: #38a169;">
+                                    <span>Discount (${state.discount.code})</span>
+                                    <span>-$${discountAmount.toFixed(2)}</span>
+                                </div>
+                            ` : ''}
+                            <div class="cart-summary-row total">
+                                <span>Total</span>
+                                <span>$${total.toFixed(2)}</span>
+                            </div>
+                            <button class="btn btn-success" style="width: 100%; margin-top: 15px;" onclick="proceedToCheckout()">
+                                Proceed to Checkout
+                            </button>
+                        </div>
+                    `}
+                </div>
+            `;
+        }
+
+        function changeCartItem(productId, delta, newValue = null) {
+            const item = state.cart.find(i => i.productId === productId);
+            if (!item) return;
+            const product = state.products.find(p => p.id === productId);
+            if (newValue !== null) {
+                item.qty = Math.max(1, Math.min(parseInt(newValue) || 1, product.stock));
+            } else {
+                item.qty = Math.max(1, Math.min(item.qty + delta, product.stock));
+            }
+            saveCart();
+            renderNav();
+            renderCart();
+        }
+
+        function removeFromCart(productId) {
+            state.cart = state.cart.filter(i => i.productId !== productId);
+            saveCart();
+            renderNav();
+            renderCart();
+        }
+
+        async function applyDiscount() {
+            const code = document.getElementById('discountCode').value.trim();
+            if (!code) return;
+            try {
+                const result = await api('/api/validate-discount', {
+                    method: 'POST',
+                    body: JSON.stringify({ code })
+                });
+                state.discount = result;
+                showAlert('Discount applied!', 'success');
+                renderCart();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        function removeDiscount() {
+            state.discount = null;
+            renderCart();
+        }
+
+        function proceedToCheckout() {
+            if (!state.user.email_verified) {
+                showAlert('Please verify your email address before placing an order.');
+                return;
+            }
+            showCheckoutModal();
+        }
+
+        function showCheckoutModal() {
+            const items = state.cart.map(item => {
+                const product = state.products.find(p => p.id === item.productId);
+                const price = (product.price_bulk && item.qty >= product.bulk_quantity) 
+                    ? product.price_bulk 
+                    : product.price_single;
+                return { ...item, product, price, subtotal: price * item.qty };
+            });
+            const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content">
+                        <h2>Checkout - Research Use Acknowledgment</h2>
+                        <div class="alert alert-warning">
+                            <strong>Important:</strong> These materials are intended for research purposes only.
+                        </div>
+                        <form onsubmit="submitOrder(event)">
+                            <div class="form-group">
+                                <label>Shipping Address *</label>
+                                <textarea id="shippingAddress" required rows="3" placeholder="Enter full shipping address"></textarea>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="ack1" required>
+                                <label for="ack1">I confirm that I am purchasing these materials for legitimate research purposes only.</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="ack2" required>
+                                <label for="ack2">I understand these products are not for human consumption or clinical use.</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="ack3" required>
+                                <label for="ack3">I am authorized to purchase research materials for my organization/institution.</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="ack4" required>
+                                <label for="ack4">I agree to use these materials in compliance with all applicable laws and regulations.</label>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                                <button type="submit" class="btn btn-success" style="flex: 1;">Place Order ($${subtotal.toFixed(2)})</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitOrder(e) {
+            e.preventDefault();
+            
+            const items = state.cart.map(item => ({
+                product_id: item.productId,
+                quantity: item.qty
+            }));
+
+            try {
+                const result = await api('/api/orders', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        items,
+                        discount_code: state.discount?.code || null,
+                        shipping_address: document.getElementById('shippingAddress').value,
+                        acknowledgments: {
+                            research_only: document.getElementById('ack1').checked,
+                            not_for_consumption: document.getElementById('ack2').checked,
+                            authorized: document.getElementById('ack3').checked,
+                            compliance: document.getElementById('ack4').checked
+                        }
+                    })
+                });
+                
+                state.cart = [];
+                state.discount = null;
+                saveCart();
+                closeModal();
+                showAlert(`Order ${result.order_number} placed successfully!`, 'success');
+                showView('orders');
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('modalContainer').innerHTML = '';
+        }
+
+        // Orders view
+        async function renderOrders() {
+            try {
+                state.orders = await api('/api/orders');
+            } catch (e) {
+                showAlert('Failed to load orders');
+                return;
+            }
+
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card">
+                    <h2>My Orders</h2>
+                    ${state.orders.length === 0 ? '<p style="text-align: center; color: #718096;">No orders yet</p>' : `
+                        <div>
+                            ${state.orders.map(order => `
+                                <div class="order-row" onclick="showOrderDetail(${order.id})">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <div>
+                                            <h4>${order.order_number}</h4>
+                                            <p>${new Date(order.created_at).toLocaleDateString()} - ${order.item_count} item(s)</p>
+                                        </div>
+                                        <div style="text-align: right;">
+                                            <span class="order-status status-${order.status}">${order.status}</span>
+                                            <p style="margin-top: 5px; font-weight: 600;">$${order.total.toFixed(2)}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `}
+                </div>
+            `;
+        }
+
+        function showOrderDetail(orderId) {
+            const order = state.orders.find(o => o.id === orderId);
+            if (!order) return;
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content">
+                        <h2>Order ${order.order_number}</h2>
+                        <div class="order-detail">
+                            <p><strong>Status:</strong> <span class="order-status status-${order.status}">${order.status}</span></p>
+                            <p><strong>Date:</strong> ${new Date(order.created_at).toLocaleString()}</p>
+                            ${order.tracking_number ? `<p><strong>Tracking:</strong> ${order.tracking_number}</p>` : ''}
+                            ${order.shipping_address ? `<p><strong>Ship To:</strong> ${order.shipping_address}</p>` : ''}
+                            
+                            <h4 style="margin-top: 20px;">Items</h4>
+                            <table class="order-items-table">
+                                <thead>
+                                    <tr><th>Product</th><th>Qty</th><th>Price</th><th>Subtotal</th></tr>
+                                </thead>
+                                <tbody>
+                                    ${order.items.map(item => `
+                                        <tr>
+                                            <td>${item.product_name}</td>
+                                            <td>${item.quantity}</td>
+                                            <td>$${item.price_each.toFixed(2)}</td>
+                                            <td>$${(item.quantity * item.price_each).toFixed(2)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                            
+                            <div style="text-align: right; margin-top: 15px;">
+                                <p>Subtotal: $${order.subtotal.toFixed(2)}</p>
+                                ${order.discount_amount > 0 ? `<p style="color: #38a169;">Discount: -$${order.discount_amount.toFixed(2)}</p>` : ''}
+                                <p style="font-size: 1.2rem; font-weight: 600;">Total: $${order.total.toFixed(2)}</p>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            <button class="btn" onclick="downloadInvoice(${order.id})">Download Invoice</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function downloadInvoice(orderId) {
+            try {
+                const res = await fetch(`/api/orders/${orderId}/invoice`, { credentials: 'same-origin' });
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.error || 'Failed to download invoice');
+                }
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `invoice-${orderId}.pdf`;
+                a.click();
+                window.URL.revokeObjectURL(url);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        // First login modal
+        function showFirstLoginModal() {
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal">
+                    <div class="modal-content">
+                        <h2>Welcome to Research Materials</h2>
+                        <div class="alert alert-info">
+                            Before you begin, please confirm that you understand our terms of service.
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="firstLoginAck" required>
+                            <label for="firstLoginAck">
+                                I understand that all products sold on this platform are for research purposes only 
+                                and are not intended for human consumption or clinical use.
+                            </label>
+                        </div>
+                        <button class="btn" style="width: 100%;" onclick="confirmFirstLogin()">Continue</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function confirmFirstLogin() {
+            if (!document.getElementById('firstLoginAck').checked) {
+                showAlert('Please confirm the acknowledgment');
+                return;
+            }
+            try {
+                await api('/api/confirm-first-login', { method: 'POST' });
+                closeModal();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        // URL hash routing for password reset
+        function handleHash() {
+            const hash = window.location.hash;
+            if (hash.startsWith('#reset=')) {
+                const token = hash.slice(7);
+                showResetPasswordForm(token);
+            } else if (hash.startsWith('#verify=')) {
+                const token = hash.slice(8);
+                verifyEmail(token);
+            }
+        }
+
+        function showResetPasswordForm(token) {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card" style="max-width: 450px; margin: 0 auto;">
+                    <h2>Set New Password</h2>
+                    <form onsubmit="resetPassword(event, '${token}')">
+                        <div class="form-group">
+                            <label>New Password</label>
+                            <input type="password" id="newPassword" required minlength="8">
+                        </div>
+                        <div class="form-group">
+                            <label>Confirm Password</label>
+                            <input type="password" id="newPassword2" required>
+                        </div>
+                        <button type="submit" class="btn" style="width: 100%;">Reset Password</button>
+                    </form>
+                </div>
+            `;
+        }
+
+        async function resetPassword(e, token) {
+            e.preventDefault();
+            const pw = document.getElementById('newPassword').value;
+            const pw2 = document.getElementById('newPassword2').value;
+            if (pw !== pw2) {
+                showAlert('Passwords do not match');
+                return;
+            }
+            try {
+                await api('/api/reset-password', {
+                    method: 'POST',
+                    body: JSON.stringify({ token, password: pw })
+                });
+                showAlert('Password reset successful! Please login.', 'success');
+                window.location.hash = '';
+                showLogin();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function verifyEmail(token) {
+            try {
+                await api(`/api/verify-email/${token}`, { method: 'POST' });
+                showAlert('Email verified successfully!', 'success');
+                window.location.hash = '';
+                document.getElementById('verificationBanner').classList.add('hidden');
+                if (state.user) state.user.email_verified = true;
+            } catch (err) {
+                showAlert(err.message);
+            }
+            if (!state.user) showLogin();
+        }
+
+        // Initialize on load
+        window.onhashchange = handleHash;
+        init().then(handleHash);
+    </script>
+</body>
+</html>
