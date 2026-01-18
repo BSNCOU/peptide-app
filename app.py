@@ -584,11 +584,13 @@ def verified_required(f):
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'Authentication required'}), 401
-        conn = get_db()
-        user = conn.execute('SELECT email_verified FROM users WHERE id=?', (session['user_id'],)).fetchone()
-        conn.close()
-        if not user or not user['email_verified']:
-            return jsonify({'error': 'Please verify your email first', 'code': 'EMAIL_NOT_VERIFIED'}), 403
+        # Email verification disabled until SendGrid is configured
+        # To enable: uncomment the check below and configure SENDGRID_API_KEY
+        # conn = get_db()
+        # user = conn.execute('SELECT email_verified FROM users WHERE id=?', (session['user_id'],)).fetchone()
+        # conn.close()
+        # if not user or not user['email_verified']:
+        #     return jsonify({'error': 'Please verify your email first', 'code': 'EMAIL_NOT_VERIFIED'}), 403
         return f(*args, **kwargs)
     return decorated
 

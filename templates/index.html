@@ -165,9 +165,10 @@
             try {
                 const user = await api('/api/me');
                 state.user = user;
-                if (!user.email_verified) {
-                    document.getElementById('verificationBanner').classList.remove('hidden');
-                }
+                // Email verification disabled - banner hidden
+                // if (!user.email_verified) {
+                //     document.getElementById('verificationBanner').classList.remove('hidden');
+                // }
                 if (!user.first_login_confirmed) {
                     showFirstLoginModal();
                 }
@@ -592,10 +593,11 @@
         }
 
         function proceedToCheckout() {
-            if (!state.user.email_verified) {
-                showAlert('Please verify your email address before placing an order.');
-                return;
-            }
+            // Email verification disabled
+            // if (!state.user.email_verified) {
+            //     showAlert('Please verify your email address before placing an order.');
+            //     return;
+            // }
             showCheckoutModal();
         }
 
