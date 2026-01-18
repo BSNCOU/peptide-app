@@ -648,8 +648,9 @@ def register():
         return jsonify({'error': 'Password must be at least 6 characters'}), 400
     
     acks = data.get('acknowledgments', {})
-    if not all([acks.get('use_restriction'), acks.get('intent_statement'), acks.get('no_guidance')]):
-        return jsonify({'error': 'All acknowledgments required'}), 400
+    # Registration acknowledgments disabled - users accept at checkout instead
+    # if not all([acks.get('use_restriction'), acks.get('intent_statement'), acks.get('no_guidance')]):
+    #     return jsonify({'error': 'All acknowledgments required'}), 400
     
     conn = get_db()
     if conn.execute('SELECT id FROM users WHERE email=?', (data['email'].lower(),)).fetchone():
@@ -664,9 +665,10 @@ def register():
               (data['full_name'], data['email'].lower(), data['phone'], data.get('organization',''), data['country'], generate_password_hash(data['password']), verify_token, verify_expires))
     user_id = c.lastrowid
     
-    for ack in ['use_restriction', 'intent_statement', 'no_guidance']:
-        c.execute('INSERT INTO acknowledgments (user_id,acknowledgment_type,ip_address,version_hash) VALUES (?,?,?,?)',
-                  (user_id, ack, request.remote_addr, get_ack_hash(ACKS)))
+    # Registration acknowledgments disabled
+    # for ack in ['use_restriction', 'intent_statement', 'no_guidance']:
+    #     c.execute('INSERT INTO acknowledgments (user_id,acknowledgment_type,ip_address,version_hash) VALUES (?,?,?,?)',
+    #               (user_id, ack, request.remote_addr, get_ack_hash(ACKS)))
     
     conn.commit()
     conn.close()
