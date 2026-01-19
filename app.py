@@ -340,11 +340,14 @@ def send_email(to, subject, html):
         return True, "Mock sent"
     try:
         import requests
+        print(f"[EMAIL] Sending to {to}: {subject}")
         r = requests.post('https://api.resend.com/emails',
             headers={'Authorization': f"Bearer {CONFIG['RESEND_API_KEY']}", 'Content-Type': 'application/json'},
             json={'from': CONFIG['EMAIL_FROM'], 'to': [to], 'subject': subject, 'html': html})
+        print(f"[EMAIL] Response: {r.status_code} - {r.text}")
         return r.status_code in [200, 201], r.text
     except Exception as e:
+        print(f"[EMAIL ERROR] {str(e)}")
         return False, str(e)
 
 def send_sms(to, msg):

@@ -169,9 +169,10 @@
                 // if (!user.email_verified) {
                 //     document.getElementById('verificationBanner').classList.remove('hidden');
                 // }
-                if (!user.first_login_confirmed) {
-                    showFirstLoginModal();
-                }
+                // First login modal disabled - users acknowledge at checkout
+                // if (!user.first_login_confirmed) {
+                //     showFirstLoginModal();
+                // }
             } catch (e) {
                 state.user = null;
             }
