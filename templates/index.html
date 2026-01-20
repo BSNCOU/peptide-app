@@ -653,6 +653,17 @@
         async function submitOrder(e) {
             e.preventDefault();
             
+            // Check all acknowledgments are checked
+            const ack1 = document.getElementById('ack1').checked;
+            const ack2 = document.getElementById('ack2').checked;
+            const ack3 = document.getElementById('ack3').checked;
+            const ack4 = document.getElementById('ack4').checked;
+            
+            if (!ack1 || !ack2 || !ack3 || !ack4) {
+                showAlert('Please confirm all acknowledgments');
+                return;
+            }
+            
             const items = state.cart.map(item => ({
                 product_id: item.productId,
                 quantity: item.qty
@@ -665,11 +676,12 @@
                         items,
                         discount_code: state.discount?.code || null,
                         shipping_address: document.getElementById('shippingAddress').value,
+                        final_attestation: true,
                         acknowledgments: {
-                            research_only: document.getElementById('ack1').checked,
-                            not_for_consumption: document.getElementById('ack2').checked,
-                            authorized: document.getElementById('ack3').checked,
-                            compliance: document.getElementById('ack4').checked
+                            research_only: ack1,
+                            not_for_consumption: ack2,
+                            authorized: ack3,
+                            compliance: ack4
                         }
                     })
                 });
