@@ -422,7 +422,7 @@
                                 <p class="product-sku">SKU: ${p.sku}</p>
                                 <div class="product-price">
                                     $${p.price_single.toFixed(2)}
-                                    ${p.price_bulk ? `<span class="bulk">Bulk (${p.bulk_quantity}+): $${p.price_bulk.toFixed(2)} each</span>` : ''}
+                                    ${p.price_bulk ? `<span class="bulk">Bulk (${p.bulk_quantity}+): $${(p.price_bulk / p.bulk_quantity).toFixed(2)} each</span>` : ''}
                                 </div>
                                 <p class="product-stock ${p.stock < 10 ? 'low' : 'ok'}">
                                     ${p.stock > 0 ? `${p.stock} in stock` : 'Out of stock'}
@@ -486,10 +486,21 @@
             const items = state.cart.map(item => {
                 const product = state.products.find(p => p.id === item.productId);
                 if (!product) return null;
-                const price = (product.price_bulk && item.qty >= product.bulk_quantity) 
-                    ? product.price_bulk 
-                    : product.price_single;
-                return { ...item, product, price, subtotal: price * item.qty };
+                
+                // Calculate price: bulk_price is the total for bulk_quantity items
+                let subtotal;
+                let priceDisplay;
+                if (product.price_bulk && item.qty >= product.bulk_quantity) {
+                    // Bulk pricing: price_bulk is total for bulk_quantity items
+                    const pricePerItem = product.price_bulk / product.bulk_quantity;
+                    subtotal = pricePerItem * item.qty;
+                    priceDisplay = pricePerItem;
+                } else {
+                    subtotal = product.price_single * item.qty;
+                    priceDisplay = product.price_single;
+                }
+                
+                return { ...item, product, price: priceDisplay, subtotal };
             }).filter(Boolean);
 
             const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
@@ -607,10 +618,20 @@
         function showCheckoutModal() {
             const items = state.cart.map(item => {
                 const product = state.products.find(p => p.id === item.productId);
-                const price = (product.price_bulk && item.qty >= product.bulk_quantity) 
-                    ? product.price_bulk 
-                    : product.price_single;
-                return { ...item, product, price, subtotal: price * item.qty };
+                
+                // Calculate price: bulk_price is the total for bulk_quantity items
+                let subtotal;
+                let priceDisplay;
+                if (product.price_bulk && item.qty >= product.bulk_quantity) {
+                    const pricePerItem = product.price_bulk / product.bulk_quantity;
+                    subtotal = pricePerItem * item.qty;
+                    priceDisplay = pricePerItem;
+                } else {
+                    subtotal = product.price_single * item.qty;
+                    priceDisplay = product.price_single;
+                }
+                
+                return { ...item, product, price: priceDisplay, subtotal };
             });
             const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
 

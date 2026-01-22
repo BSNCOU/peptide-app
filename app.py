@@ -882,10 +882,20 @@ def create_order():
             conn.close()
             return jsonify({'error': f"Insufficient stock for {product['name']}"}), 400
         
-        use_bulk = item.get('use_bulk', False) and product['price_bulk']
-        price = product['price_bulk'] if use_bulk else product['price_single']
-        subtotal += price * item['quantity']
-        order_items.append({'product_id': product['id'], 'quantity': item['quantity'], 'unit_price': price, 'is_bulk': 1 if use_bulk else 0})
+        # Calculate pricing - bulk_price is total for bulk_quantity items
+        qty = item['quantity']
+        if product['price_bulk'] and qty >= product['bulk_quantity']:
+            # Bulk pricing: price_bulk is total for bulk_quantity items
+            price_per_item = product['price_bulk'] / product['bulk_quantity']
+            item_subtotal = price_per_item * qty
+            use_bulk = True
+        else:
+            price_per_item = product['price_single']
+            item_subtotal = product['price_single'] * qty
+            use_bulk = False
+        
+        subtotal += item_subtotal
+        order_items.append({'product_id': product['id'], 'quantity': qty, 'unit_price': price_per_item, 'is_bulk': 1 if use_bulk else 0})
     
     discount_amount = 0
     discount_code_id = None
