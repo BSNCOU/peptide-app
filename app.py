@@ -1131,7 +1131,7 @@ def admin_get_orders():
 def admin_update_order_status(oid):
     data = request.json
     status = data.get('status')
-    valid = ['pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'cancelled']
+    valid = ['pending', 'pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
     if status not in valid:
         return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
     

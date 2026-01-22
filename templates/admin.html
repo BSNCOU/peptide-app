@@ -56,7 +56,9 @@
         .status-processing { background: #bee3f8; color: #2b6cb0; }
         .status-shipped { background: #e9d8fd; color: #6b46c1; }
         .status-delivered { background: #c6f6d5; color: #276749; }
+        .status-fulfilled { background: #c6f6d5; color: #276749; }
         .status-cancelled { background: #fed7d7; color: #c53030; }
+        .status-refunded { background: #feebc8; color: #c05621; }
         .low-stock { color: #e53e3e; font-weight: 600; }
         .inactive { opacity: 0.5; }
         .search-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -545,9 +547,9 @@
                             ${state.orders.map(o => `
                                 <tr>
                                     <td><strong>${o.order_number}</strong></td>
-                                    <td>${o.customer_name}<br><small style="color:#718096;">${o.customer_email}</small></td>
-                                    <td>${o.item_count} items</td>
-                                    <td>$${o.total.toFixed(2)}</td>
+                                    <td>${o.full_name || o.customer_name || 'Unknown'}<br><small style="color:#718096;">${o.email || o.customer_email || ''}</small></td>
+                                    <td>${o.items ? o.items.length : 0} items</td>
+                                    <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
                                     <td><span class="status-badge status-${o.status}">${o.status}</span></td>
                                     <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                     <td class="actions">
@@ -572,9 +574,9 @@
                         <h3>Order ${o.order_number}</h3>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
                             <div>
-                                <p><strong>Customer:</strong> ${o.customer_name}</p>
-                                <p><strong>Email:</strong> ${o.customer_email}</p>
-                                <p><strong>Phone:</strong> ${o.customer_phone || '-'}</p>
+                                <p><strong>Customer:</strong> ${o.full_name || o.customer_name || 'Unknown'}</p>
+                                <p><strong>Email:</strong> ${o.email || o.customer_email || '-'}</p>
+                                <p><strong>Phone:</strong> ${o.phone || o.customer_phone || '-'}</p>
                             </div>
                             <div>
                                 <p><strong>Status:</strong> <span class="status-badge status-${o.status}">${o.status}</span></p>
@@ -590,20 +592,20 @@
                         <table>
                             <thead><tr><th>Product</th><th>Qty</th><th>Price</th><th>Subtotal</th></tr></thead>
                             <tbody>
-                                ${o.items.map(i => `
+                                ${o.items && o.items.length > 0 ? o.items.map(i => `
                                     <tr>
-                                        <td>${i.product_name}</td>
+                                        <td>${i.name || i.product_name || 'Unknown'}</td>
                                         <td>${i.quantity}</td>
-                                        <td>$${i.price_each.toFixed(2)}</td>
-                                        <td>$${(i.quantity * i.price_each).toFixed(2)}</td>
+                                        <td>$${parseFloat(i.unit_price || i.price_each || 0).toFixed(2)}</td>
+                                        <td>$${(i.quantity * parseFloat(i.unit_price || i.price_each || 0)).toFixed(2)}</td>
                                     </tr>
-                                `).join('')}
+                                `).join('') : '<tr><td colspan="4">No items found</td></tr>'}
                             </tbody>
                         </table>
                         <div style="text-align: right; margin-top: 15px;">
-                            <p>Subtotal: $${o.subtotal.toFixed(2)}</p>
-                            ${o.discount_amount > 0 ? `<p style="color: #38a169;">Discount: -$${o.discount_amount.toFixed(2)}</p>` : ''}
-                            <p style="font-size: 1.1rem; font-weight: 600;">Total: $${o.total.toFixed(2)}</p>
+                            <p>Subtotal: $${parseFloat(o.subtotal || 0).toFixed(2)}</p>
+                            ${parseFloat(o.discount_amount || 0) > 0 ? `<p style="color: #38a169;">Discount: -$${parseFloat(o.discount_amount).toFixed(2)}</p>` : ''}
+                            <p style="font-size: 1.1rem; font-weight: 600;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
                         </div>
                         <div style="margin-top: 20px;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
@@ -630,7 +632,9 @@
                                     <option value="processing" ${o.status==='processing'?'selected':''}>Processing</option>
                                     <option value="shipped" ${o.status==='shipped'?'selected':''}>Shipped</option>
                                     <option value="delivered" ${o.status==='delivered'?'selected':''}>Delivered</option>
+                                    <option value="fulfilled" ${o.status==='fulfilled'?'selected':''}>Fulfilled</option>
                                     <option value="cancelled" ${o.status==='cancelled'?'selected':''}>Cancelled</option>
+                                    <option value="refunded" ${o.status==='refunded'?'selected':''}>Refunded</option>
                                 </select>
                             </div>
                             <div class="form-group">

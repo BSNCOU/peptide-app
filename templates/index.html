@@ -74,7 +74,9 @@
         .status-processing { background: #bee3f8; color: #2b6cb0; }
         .status-shipped { background: #e9d8fd; color: #6b46c1; }
         .status-delivered { background: #c6f6d5; color: #276749; }
+        .status-fulfilled { background: #c6f6d5; color: #276749; }
         .status-cancelled { background: #fed7d7; color: #c53030; }
+        .status-refunded { background: #feebc8; color: #c05621; }
         .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
         .modal-content { background: white; border-radius: 12px; padding: 30px; max-width: 600px; width: 90%; max-height: 90vh; overflow-y: auto; }
         .modal-content h2 { margin-bottom: 20px; }
@@ -720,11 +722,11 @@
                                     <div style="display: flex; justify-content: space-between; align-items: center;">
                                         <div>
                                             <h4>${order.order_number}</h4>
-                                            <p>${new Date(order.created_at).toLocaleDateString()} - ${order.item_count} item(s)</p>
+                                            <p>${new Date(order.created_at).toLocaleDateString()} - ${order.items ? order.items.length : 0} item(s)</p>
                                         </div>
                                         <div style="text-align: right;">
                                             <span class="order-status status-${order.status}">${order.status}</span>
-                                            <p style="margin-top: 5px; font-weight: 600;">$${order.total.toFixed(2)}</p>
+                                            <p style="margin-top: 5px; font-weight: 600;">$${parseFloat(order.total).toFixed(2)}</p>
                                         </div>
                                     </div>
                                 </div>
@@ -755,21 +757,21 @@
                                     <tr><th>Product</th><th>Qty</th><th>Price</th><th>Subtotal</th></tr>
                                 </thead>
                                 <tbody>
-                                    ${order.items.map(item => `
+                                    ${order.items ? order.items.map(item => `
                                         <tr>
-                                            <td>${item.product_name}</td>
+                                            <td>${item.name}</td>
                                             <td>${item.quantity}</td>
-                                            <td>$${item.price_each.toFixed(2)}</td>
-                                            <td>$${(item.quantity * item.price_each).toFixed(2)}</td>
+                                            <td>$${parseFloat(item.unit_price).toFixed(2)}</td>
+                                            <td>$${(item.quantity * parseFloat(item.unit_price)).toFixed(2)}</td>
                                         </tr>
-                                    `).join('')}
+                                    `).join('') : '<tr><td colspan="4">No items</td></tr>'}
                                 </tbody>
                             </table>
                             
                             <div style="text-align: right; margin-top: 15px;">
-                                <p>Subtotal: $${order.subtotal.toFixed(2)}</p>
-                                ${order.discount_amount > 0 ? `<p style="color: #38a169;">Discount: -$${order.discount_amount.toFixed(2)}</p>` : ''}
-                                <p style="font-size: 1.2rem; font-weight: 600;">Total: $${order.total.toFixed(2)}</p>
+                                <p>Subtotal: $${parseFloat(order.subtotal).toFixed(2)}</p>
+                                ${parseFloat(order.discount_amount) > 0 ? `<p style="color: #38a169;">Discount: -$${parseFloat(order.discount_amount).toFixed(2)}</p>` : ''}
+                                <p style="font-size: 1.2rem; font-weight: 600;">Total: $${parseFloat(order.total).toFixed(2)}</p>
                             </div>
                         </div>
                         <div style="display: flex; gap: 10px; margin-top: 20px;">
