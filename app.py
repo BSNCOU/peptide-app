@@ -1170,6 +1170,54 @@ def admin_toggle_admin(uid):
     conn.close()
     return jsonify({'message': 'Admin status toggled'})
 
+@app.route('/api/admin/users/<int:uid>', methods=['PUT'])
+@admin_required
+def admin_update_user(uid):
+    data = request.json
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    
+    conn.execute('''UPDATE users SET 
+        full_name=?, email=?, phone=?, organization=?, email_verified=?, updated_at=CURRENT_TIMESTAMP 
+        WHERE id=?''',
+        (data.get('full_name', user['full_name']),
+         data.get('email', user['email']).lower(),
+         data.get('phone', user['phone']),
+         data.get('organization', user['organization']),
+         1 if data.get('email_verified') else 0,
+         uid))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'User updated'})
+
+@app.route('/api/admin/users/<int:uid>', methods=['DELETE'])
+@admin_required
+def admin_delete_user(uid):
+    if uid == session['user_id']:
+        return jsonify({'error': 'Cannot delete yourself'}), 400
+    
+    conn = get_db()
+    user = conn.execute('SELECT is_admin FROM users WHERE id=?', (uid,)).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    if user['is_admin']:
+        conn.close()
+        return jsonify({'error': 'Cannot delete admin users'}), 400
+    
+    # Delete user's orders and related data
+    conn.execute('DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE user_id=?)', (uid,))
+    conn.execute('DELETE FROM orders WHERE user_id=?', (uid,))
+    conn.execute('DELETE FROM acknowledgments WHERE user_id=?', (uid,))
+    conn.execute('DELETE FROM notification_log WHERE user_id=?', (uid,))
+    conn.execute('DELETE FROM users WHERE id=?', (uid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'User deleted'})
+
 @app.route('/api/admin/notifications', methods=['GET'])
 @admin_required
 def admin_get_notifications():

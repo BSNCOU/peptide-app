@@ -904,10 +904,13 @@
                                     <td>${u.is_admin ? '👑 Yes' : 'No'}</td>
                                     <td>${new Date(u.created_at).toLocaleDateString()}</td>
                                     <td class="actions">
+                                        <button class="btn btn-small" onclick="showUserDetailModal(${u.id})">View</button>
+                                        <button class="btn btn-secondary btn-small" onclick="showEditUserModal(${u.id})">Edit</button>
                                         <button class="btn btn-small ${u.is_admin ? 'btn-warning' : 'btn-secondary'}" 
                                             onclick="toggleAdmin(${u.id})">
                                             ${u.is_admin ? 'Remove Admin' : 'Make Admin'}
                                         </button>
+                                        ${!u.is_admin ? `<button class="btn btn-danger btn-small" onclick="deleteUser(${u.id})">Delete</button>` : ''}
                                     </td>
                                 </tr>
                             `).join('')}
@@ -915,6 +918,104 @@
                     </table>
                 </div>
             `;
+        }
+
+        function showUserDetailModal(id) {
+            const u = state.users.find(x => x.id === id);
+            if (!u) return;
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content">
+                        <h3>User Details: ${u.full_name}</h3>
+                        <div style="display: grid; gap: 10px; margin: 20px 0;">
+                            <p><strong>Email:</strong> ${u.email}</p>
+                            <p><strong>Phone:</strong> ${u.phone || '-'}</p>
+                            <p><strong>Organization:</strong> ${u.organization || '-'}</p>
+                            <p><strong>Country:</strong> ${u.country || '-'}</p>
+                            <p><strong>Email Verified:</strong> ${u.email_verified ? 'Yes ✅' : 'No ❌'}</p>
+                            <p><strong>Admin:</strong> ${u.is_admin ? 'Yes 👑' : 'No'}</p>
+                            <p><strong>Joined:</strong> ${new Date(u.created_at).toLocaleString()}</p>
+                        </div>
+                        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function showEditUserModal(id) {
+            const u = state.users.find(x => x.id === id);
+            if (!u) return;
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content">
+                        <h3>Edit User: ${u.full_name}</h3>
+                        <form onsubmit="updateUser(event, ${id})">
+                            <div class="form-group">
+                                <label>Full Name</label>
+                                <input type="text" id="editUserName" value="${u.full_name}" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Email</label>
+                                <input type="email" id="editUserEmail" value="${u.email}" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Phone</label>
+                                <input type="text" id="editUserPhone" value="${u.phone || ''}">
+                            </div>
+                            <div class="form-group">
+                                <label>Organization</label>
+                                <input type="text" id="editUserOrg" value="${u.organization || ''}">
+                            </div>
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="editUserVerified" ${u.email_verified ? 'checked' : ''}>
+                                    Email Verified
+                                </label>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                                <button type="submit" class="btn btn-success">Save Changes</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function updateUser(e, id) {
+            e.preventDefault();
+            try {
+                await api(`/api/admin/users/${id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        full_name: document.getElementById('editUserName').value,
+                        email: document.getElementById('editUserEmail').value,
+                        phone: document.getElementById('editUserPhone').value,
+                        organization: document.getElementById('editUserOrg').value,
+                        email_verified: document.getElementById('editUserVerified').checked
+                    })
+                });
+                closeModal();
+                showAlert('User updated successfully', 'success');
+                loadUsers();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function deleteUser(id) {
+            const user = state.users.find(u => u.id === id);
+            if (!confirm(`Are you sure you want to delete user "${user.full_name}"? This cannot be undone.`)) return;
+            
+            try {
+                await api(`/api/admin/users/${id}`, { method: 'DELETE' });
+                showAlert('User deleted', 'success');
+                loadUsers();
+            } catch (err) {
+                showAlert(err.message);
+            }
         }
 
         async function toggleAdmin(id) {
