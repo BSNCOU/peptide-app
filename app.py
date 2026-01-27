@@ -1607,3 +1607,10 @@ if __name__ == '__main__':
     print("\n" + "="*60 + "\n")
     
     app.run(debug=True, port=5000)
+else:
+    # Running under gunicorn - ensure tables exist
+    try:
+        init_db()
+        import_products()
+    except Exception as e:
+        print(f"Startup init error: {e}")
