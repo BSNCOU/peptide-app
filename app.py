@@ -1547,8 +1547,7 @@ def admin_resend_verification(uid):
         <p>Please click the link below to verify your email address:</p>
         <p><a href="{verify_url}" style="display:inline-block;padding:12px 24px;background:#4299e1;color:white;text-decoration:none;border-radius:6px;">Verify Email</a></p>
         <p>Or copy this link: {verify_url}</p>
-        <p>This link expires in 24 hours.</p>''',
-        uid
+        <p>This link expires in 24 hours.</p>'''
     )
     
     return jsonify({'message': 'Verification email sent'})
