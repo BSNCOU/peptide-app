@@ -38,17 +38,204 @@ CONFIG = {
 
 DATABASE = 'research_orders.db'
 
+def is_postgres():
+    """Check if using PostgreSQL"""
+    database_url = CONFIG.get('DATABASE_URL', '')
+    return database_url and database_url.startswith('postgres')
+
+def get_raw_db():
+    """Get raw database connection - uses PostgreSQL if DATABASE_URL is set, otherwise SQLite"""
+    database_url = CONFIG.get('DATABASE_URL', '')
+    
+    if database_url and database_url.startswith('postgres'):
+        import psycopg2
+        import psycopg2.extras
+        # Handle Railway's postgres:// vs postgresql://
+        if database_url.startswith('postgres://'):
+            database_url = database_url.replace('postgres://', 'postgresql://', 1)
+        conn = psycopg2.connect(database_url)
+        return conn
+    else:
+        conn = sqlite3.connect(DATABASE)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+def dict_from_row(row, cursor=None):
+    """Convert database row to dictionary"""
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row
+    if hasattr(row, 'keys'):
+        return dict(row)
+    if cursor and cursor.description:
+        return dict(zip([col[0] for col in cursor.description], row))
+    return dict(row)
+
+class DBWrapper:
+    """Wrapper to make PostgreSQL work like SQLite with ? placeholders"""
+    def __init__(self, conn):
+        self.conn = conn
+        self._is_postgres = is_postgres()
+    
+    def execute(self, query, params=None):
+        if self._is_postgres:
+            import psycopg2.extras
+            query = query.replace('?', '%s')
+            cursor = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            cursor = self.conn.cursor()
+        
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        return DBCursor(cursor, self._is_postgres)
+    
+    def commit(self):
+        self.conn.commit()
+    
+    def close(self):
+        self.conn.close()
+
+class DBCursor:
+    """Cursor wrapper for consistent row access"""
+    def __init__(self, cursor, is_postgres):
+        self.cursor = cursor
+        self._is_postgres = is_postgres
+        self._lastrowid = None
+    
+    def execute(self, query, params=None):
+        """Execute with automatic ? to %s conversion for PostgreSQL"""
+        if self._is_postgres:
+            query = query.replace('?', '%s')
+            
+            # Add RETURNING id for INSERT queries to get lastrowid
+            query_upper = query.strip().upper()
+            needs_returning = query_upper.startswith('INSERT') and 'RETURNING' not in query_upper
+            if needs_returning:
+                query = query.rstrip(';').rstrip() + ' RETURNING id'
+        else:
+            needs_returning = False
+        
+        if params:
+            self.cursor.execute(query, params)
+        else:
+            self.cursor.execute(query)
+        
+        # For PostgreSQL, fetch the returned id
+        if self._is_postgres and needs_returning:
+            try:
+                result = self.cursor.fetchone()
+                if result and 'id' in result:
+                    self._lastrowid = result['id']
+            except:
+                pass
+        
+        return self
+    
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        if self._is_postgres:
+            return dict(row) if hasattr(row, 'keys') else row
+        return row
+    
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        if self._is_postgres:
+            return [dict(row) if hasattr(row, 'keys') else row for row in rows]
+        return rows
+    
+    @property
+    def lastrowid(self):
+        if self._is_postgres:
+            return self._lastrowid
+        return self.cursor.lastrowid
+    
+    def set_lastrowid(self, val):
+        self._lastrowid = val
+    
+    def __getattr__(self, name):
+        return getattr(self.cursor, name)
+
+class DBWrapper:
+    """Wrapper to make PostgreSQL work like SQLite with ? placeholders"""
+    def __init__(self, conn):
+        self.conn = conn
+        self._is_postgres = is_postgres()
+    
+    def execute(self, query, params=None):
+        if self._is_postgres:
+            import psycopg2.extras
+            query = query.replace('?', '%s')
+            
+            # Add RETURNING id for INSERT queries to get lastrowid
+            query_upper = query.strip().upper()
+            needs_returning = query_upper.startswith('INSERT') and 'RETURNING' not in query_upper
+            if needs_returning:
+                query = query.rstrip(';').rstrip() + ' RETURNING id'
+            
+            cursor = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            cursor = self.conn.cursor()
+            needs_returning = False
+        
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        
+        wrapped = DBCursor(cursor, self._is_postgres)
+        
+        # For PostgreSQL, fetch the returned id
+        if self._is_postgres and needs_returning:
+            try:
+                result = cursor.fetchone()
+                if result and 'id' in result:
+                    wrapped.set_lastrowid(result['id'])
+            except:
+                pass
+        
+        return wrapped
+    
+    def commit(self):
+        self.conn.commit()
+    
+    def close(self):
+        self.conn.close()
+    
+    def cursor(self):
+        """Return wrapped cursor for compatibility"""
+        if self._is_postgres:
+            import psycopg2.extras
+            return DBCursor(self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor), True)
+        return DBCursor(self.conn.cursor(), False)
+
+def get_wrapped_db():
+    """Get wrapped database connection"""
+    return DBWrapper(get_raw_db())
+
+# Alias get_db to the wrapped version for backwards compatibility
 def get_db():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get database connection with automatic ? to %s conversion for PostgreSQL"""
+    return get_wrapped_db()
 
 def init_db():
-    conn = get_db()
+    using_postgres = is_postgres()
+    conn = get_raw_db()
     c = conn.cursor()
     
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    # Use appropriate syntax for each database
+    if using_postgres:
+        auto_id = 'SERIAL PRIMARY KEY'
+    else:
+        auto_id = 'INTEGER PRIMARY KEY AUTOINCREMENT'
+    
+    # Create tables with database-appropriate syntax
+    c.execute(f'''CREATE TABLE IF NOT EXISTS users (
+        id {auto_id},
         full_name TEXT NOT NULL,
         email TEXT UNIQUE NOT NULL,
         phone TEXT NOT NULL,
@@ -62,11 +249,12 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         first_login_confirmed INTEGER DEFAULT 0,
         reset_token TEXT,
-        reset_token_expires TIMESTAMP
+        reset_token_expires TIMESTAMP,
+        updated_at TIMESTAMP
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS acknowledgments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    c.execute(f'''CREATE TABLE IF NOT EXISTS acknowledgments (
+        id {auto_id},
         user_id INTEGER NOT NULL,
         acknowledgment_type TEXT NOT NULL,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -74,8 +262,8 @@ def init_db():
         version_hash TEXT NOT NULL
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    c.execute(f'''CREATE TABLE IF NOT EXISTS products (
+        id {auto_id},
         sku TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
         description TEXT,
@@ -90,8 +278,8 @@ def init_db():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS discount_codes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    c.execute(f'''CREATE TABLE IF NOT EXISTS discount_codes (
+        id {auto_id},
         code TEXT UNIQUE NOT NULL,
         description TEXT,
         discount_percent REAL DEFAULT 0,
@@ -104,15 +292,15 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    c.execute(f'''CREATE TABLE IF NOT EXISTS orders (
+        id {auto_id},
         user_id INTEGER NOT NULL,
         order_number TEXT UNIQUE NOT NULL,
         subtotal REAL NOT NULL,
         discount_amount REAL DEFAULT 0,
         discount_code_id INTEGER DEFAULT NULL,
         total REAL NOT NULL,
-        status TEXT DEFAULT 'pending_payment',
+        status TEXT DEFAULT 'pending',
         notes TEXT,
         admin_notes TEXT,
         shipping_address TEXT,
@@ -121,8 +309,8 @@ def init_db():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS order_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    c.execute(f'''CREATE TABLE IF NOT EXISTS order_items (
+        id {auto_id},
         order_id INTEGER NOT NULL,
         product_id INTEGER NOT NULL,
         quantity INTEGER NOT NULL,
@@ -130,8 +318,8 @@ def init_db():
         is_bulk_price INTEGER DEFAULT 0
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS notification_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    c.execute(f'''CREATE TABLE IF NOT EXISTS notification_log (
+        id {auto_id},
         user_id INTEGER,
         order_id INTEGER,
         notification_type TEXT NOT NULL,
@@ -142,34 +330,55 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS rate_limits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    c.execute(f'''CREATE TABLE IF NOT EXISTS rate_limits (
+        id {auto_id},
         ip_address TEXT NOT NULL,
         endpoint TEXT NOT NULL,
         request_count INTEGER DEFAULT 1,
         window_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_rate_limits_ip ON rate_limits(ip_address, endpoint)')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS csrf_tokens (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    try:
+        c.execute('CREATE INDEX IF NOT EXISTS idx_rate_limits_ip ON rate_limits(ip_address, endpoint)')
+    except:
+        pass  # Index might already exist
+    
+    c.execute(f'''CREATE TABLE IF NOT EXISTS csrf_tokens (
+        id {auto_id},
         token TEXT UNIQUE NOT NULL,
         session_id TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         expires_at TIMESTAMP NOT NULL
     )''')
     
-    # Create default admin
-    c.execute('SELECT COUNT(*) FROM users WHERE is_admin = 1')
-    if c.fetchone()[0] == 0:
+    conn.commit()
+    
+    # Create default admin if none exists
+    if using_postgres:
+        import psycopg2.extras
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute('SELECT COUNT(*) as count FROM users WHERE is_admin = 1')
+        count = cursor.fetchone()['count']
+    else:
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM users WHERE is_admin = 1')
+        count = cursor.fetchone()[0]
+    
+    if count == 0:
         admin_pw = generate_password_hash('admin123')
-        c.execute('''INSERT INTO users (full_name, email, phone, country, password_hash, is_admin, first_login_confirmed, email_verified) 
-                     VALUES (?,?,?,?,?,1,1,1)''',
-                  ('Admin', 'admin@admin.com', '0000000000', 'US', admin_pw))
+        if using_postgres:
+            cursor.execute('''INSERT INTO users (full_name, email, phone, country, password_hash, is_admin, first_login_confirmed, email_verified) 
+                         VALUES (%s,%s,%s,%s,%s,1,1,1)''',
+                      ('Admin', 'admin@admin.com', '0000000000', 'US', admin_pw))
+        else:
+            cursor.execute('''INSERT INTO users (full_name, email, phone, country, password_hash, is_admin, first_login_confirmed, email_verified) 
+                         VALUES (?,?,?,?,?,1,1,1)''',
+                      ('Admin', 'admin@admin.com', '0000000000', 'US', admin_pw))
+        conn.commit()
         print("✓ Default admin: admin@admin.com / admin123")
     
-    conn.commit()
     conn.close()
+    print(f"✓ Database initialized ({'PostgreSQL' if using_postgres else 'SQLite'})")
 
 def import_products():
     """Import your full product catalog"""
@@ -683,18 +892,23 @@ def register():
 
 @app.route('/api/verify-email/<token>', methods=['POST'])
 def verify_email(token):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT id, email FROM users WHERE email_verify_token = ? AND email_verify_expires > ?', (token, datetime.now()))
-    user = c.fetchone()
-    if not user:
+    try:
+        conn = get_db()
+        result = conn.execute('SELECT id, email FROM users WHERE email_verify_token = ? AND email_verify_expires > ?', (token, datetime.now()))
+        user = result.fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'Invalid or expired verification link'}), 400
+        
+        user_id = user['id'] if isinstance(user, dict) else user[0]
+        conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        conn.commit()
         conn.close()
-        return jsonify({'error': 'Invalid or expired verification link'}), 400
-    
-    c.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user['id'],))
-    conn.commit()
-    conn.close()
-    return jsonify({'message': 'Email verified successfully!'})
+        print(f"[EMAIL VERIFY] User {user_id} email verified successfully")
+        return jsonify({'message': 'Email verified successfully!'})
+    except Exception as e:
+        print(f"[EMAIL VERIFY ERROR] {str(e)}")
+        return jsonify({'error': 'Verification failed'}), 500
 
 @app.route('/api/resend-verification', methods=['POST'])
 @login_required
@@ -1117,6 +1331,79 @@ def admin_delete_code(cid):
     conn.close()
     return jsonify({'message': 'Code deactivated'})
 
+@app.route('/api/admin/discount-codes/report', methods=['GET'])
+@admin_required
+def admin_discount_report():
+    """Get discount code usage report by period"""
+    period = request.args.get('period', 'month')  # 'week' or 'month'
+    
+    conn = get_db()
+    
+    # Get all discount codes with their usage stats
+    codes = conn.execute('''
+        SELECT dc.id, dc.code, dc.description, dc.discount_percent, dc.discount_amount,
+               dc.times_used, dc.active, dc.created_at
+        FROM discount_codes dc
+        ORDER BY dc.times_used DESC
+    ''').fetchall()
+    
+    # Get usage breakdown by period
+    if period == 'week':
+        # SQLite and PostgreSQL compatible - get orders from last 7 days grouped by day
+        usage_query = '''
+            SELECT dc.code, 
+                   DATE(o.created_at) as date,
+                   COUNT(*) as uses,
+                   SUM(o.discount_amount) as total_discount,
+                   SUM(o.total) as total_revenue
+            FROM orders o
+            JOIN discount_codes dc ON o.discount_code_id = dc.id
+            WHERE o.created_at >= DATE('now', '-7 days')
+            GROUP BY dc.code, DATE(o.created_at)
+            ORDER BY DATE(o.created_at) DESC, dc.code
+        '''
+    else:  # month
+        # Get orders from last 30 days grouped by week
+        usage_query = '''
+            SELECT dc.code,
+                   COUNT(*) as uses,
+                   SUM(o.discount_amount) as total_discount,
+                   SUM(o.total) as total_revenue
+            FROM orders o
+            JOIN discount_codes dc ON o.discount_code_id = dc.id
+            WHERE o.created_at >= DATE('now', '-30 days')
+            GROUP BY dc.code
+            ORDER BY uses DESC
+        '''
+    
+    try:
+        usage = conn.execute(usage_query).fetchall()
+    except:
+        usage = []
+    
+    # Get totals
+    totals_query = '''
+        SELECT COUNT(*) as total_orders_with_discount,
+               SUM(o.discount_amount) as total_discount_given,
+               SUM(o.total) as total_revenue
+        FROM orders o
+        WHERE o.discount_code_id IS NOT NULL
+        AND o.created_at >= DATE('now', '-30 days')
+    '''
+    try:
+        totals = conn.execute(totals_query).fetchone()
+    except:
+        totals = {'total_orders_with_discount': 0, 'total_discount_given': 0, 'total_revenue': 0}
+    
+    conn.close()
+    
+    return jsonify({
+        'codes': [dict(c) for c in codes],
+        'usage': [dict(u) for u in usage] if usage else [],
+        'totals': dict(totals) if totals else {},
+        'period': period
+    })
+
 @app.route('/api/admin/orders', methods=['GET'])
 @admin_required
 def admin_get_orders():
@@ -1164,10 +1451,27 @@ def admin_update_order_status(oid):
 @app.route('/api/admin/users', methods=['GET'])
 @admin_required
 def admin_get_users():
-    conn = get_db()
-    users = conn.execute('SELECT id,full_name,email,phone,organization,country,is_admin,email_verified,created_at FROM users ORDER BY created_at DESC').fetchall()
-    conn.close()
-    return jsonify([dict(u) for u in users])
+    try:
+        conn = get_db()
+        result = conn.execute('SELECT id,full_name,email,phone,organization,country,is_admin,email_verified,created_at FROM users ORDER BY created_at DESC')
+        rows = result.fetchall()
+        conn.close()
+        
+        # Convert rows to plain dicts
+        users = []
+        for row in rows:
+            if isinstance(row, dict):
+                users.append(row)
+            elif hasattr(row, 'keys'):
+                users.append({k: row[k] for k in row.keys()})
+            else:
+                # SQLite Row object
+                users.append(dict(row))
+        
+        return jsonify(users)
+    except Exception as e:
+        print(f"[ERROR] admin_get_users: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/users/<int:uid>/toggle-admin', methods=['POST'])
 @admin_required
@@ -1175,7 +1479,14 @@ def admin_toggle_admin(uid):
     if uid == session['user_id']:
         return jsonify({'error': 'Cannot change own status'}), 400
     conn = get_db()
-    conn.execute('UPDATE users SET is_admin = NOT is_admin WHERE id=?', (uid,))
+    # Get current status first
+    user = conn.execute('SELECT is_admin FROM users WHERE id=?', (uid,)).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    
+    new_status = 0 if user['is_admin'] else 1
+    conn.execute('UPDATE users SET is_admin=? WHERE id=?', (new_status, uid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Admin status toggled'})
@@ -1184,24 +1495,37 @@ def admin_toggle_admin(uid):
 @admin_required
 def admin_update_user(uid):
     data = request.json
-    conn = get_db()
-    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
-    if not user:
+    try:
+        conn = get_db()
+        result = conn.execute('SELECT * FROM users WHERE id=?', (uid,))
+        user = result.fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Handle both dict and Row objects
+        if isinstance(user, dict):
+            user_dict = user
+        elif hasattr(user, 'keys'):
+            user_dict = {k: user[k] for k in user.keys()}
+        else:
+            user_dict = dict(user)
+        
+        conn.execute('''UPDATE users SET 
+            full_name=?, email=?, phone=?, organization=?, email_verified=?, updated_at=CURRENT_TIMESTAMP 
+            WHERE id=?''',
+            (data.get('full_name', user_dict.get('full_name')),
+             data.get('email', user_dict.get('email', '')).lower(),
+             data.get('phone', user_dict.get('phone')),
+             data.get('organization', user_dict.get('organization')),
+             1 if data.get('email_verified') else 0,
+             uid))
+        conn.commit()
         conn.close()
-        return jsonify({'error': 'User not found'}), 404
-    
-    conn.execute('''UPDATE users SET 
-        full_name=?, email=?, phone=?, organization=?, email_verified=?, updated_at=CURRENT_TIMESTAMP 
-        WHERE id=?''',
-        (data.get('full_name', user['full_name']),
-         data.get('email', user['email']).lower(),
-         data.get('phone', user['phone']),
-         data.get('organization', user['organization']),
-         1 if data.get('email_verified') else 0,
-         uid))
-    conn.commit()
-    conn.close()
-    return jsonify({'message': 'User updated'})
+        return jsonify({'message': 'User updated'})
+    except Exception as e:
+        print(f"[ERROR] admin_update_user: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/users/<int:uid>', methods=['DELETE'])
 @admin_required
@@ -1209,24 +1533,31 @@ def admin_delete_user(uid):
     if uid == session['user_id']:
         return jsonify({'error': 'Cannot delete yourself'}), 400
     
-    conn = get_db()
-    user = conn.execute('SELECT is_admin FROM users WHERE id=?', (uid,)).fetchone()
-    if not user:
+    try:
+        conn = get_db()
+        result = conn.execute('SELECT is_admin FROM users WHERE id=?', (uid,))
+        user = result.fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        is_admin = user['is_admin'] if isinstance(user, dict) else user[0]
+        if is_admin:
+            conn.close()
+            return jsonify({'error': 'Cannot delete admin users'}), 400
+        
+        # Delete user's orders and related data
+        conn.execute('DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE user_id=?)', (uid,))
+        conn.execute('DELETE FROM orders WHERE user_id=?', (uid,))
+        conn.execute('DELETE FROM acknowledgments WHERE user_id=?', (uid,))
+        conn.execute('DELETE FROM notification_log WHERE user_id=?', (uid,))
+        conn.execute('DELETE FROM users WHERE id=?', (uid,))
+        conn.commit()
         conn.close()
-        return jsonify({'error': 'User not found'}), 404
-    if user['is_admin']:
-        conn.close()
-        return jsonify({'error': 'Cannot delete admin users'}), 400
-    
-    # Delete user's orders and related data
-    conn.execute('DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE user_id=?)', (uid,))
-    conn.execute('DELETE FROM orders WHERE user_id=?', (uid,))
-    conn.execute('DELETE FROM acknowledgments WHERE user_id=?', (uid,))
-    conn.execute('DELETE FROM notification_log WHERE user_id=?', (uid,))
-    conn.execute('DELETE FROM users WHERE id=?', (uid,))
-    conn.commit()
-    conn.close()
-    return jsonify({'message': 'User deleted'})
+        return jsonify({'message': 'User deleted'})
+    except Exception as e:
+        print(f"[ERROR] admin_delete_user: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/notifications', methods=['GET'])
 @admin_required
@@ -1235,6 +1566,25 @@ def admin_get_notifications():
     notifs = conn.execute('SELECT n.*,u.full_name,u.email,o.order_number FROM notification_log n LEFT JOIN users u ON n.user_id=u.id LEFT JOIN orders o ON n.order_id=o.id ORDER BY n.created_at DESC LIMIT 100').fetchall()
     conn.close()
     return jsonify([dict(n) for n in notifs])
+
+@app.route('/api/admin/reports/discounts', methods=['GET'])
+@admin_required
+def admin_discount_report():
+    conn = get_db()
+    report = conn.execute('''
+        SELECT 
+            dc.code,
+            COUNT(o.id) as order_count,
+            COALESCE(SUM(o.total), 0) as total_sales,
+            COALESCE(SUM(o.discount_amount), 0) as total_discounted
+        FROM discount_codes dc
+        LEFT JOIN orders o ON o.discount_code_id = dc.id
+        GROUP BY dc.id, dc.code
+        HAVING COUNT(o.id) > 0
+        ORDER BY total_sales DESC
+    ''').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in report])
 
 # ============================================
 # MAIN

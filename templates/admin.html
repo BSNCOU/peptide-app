@@ -96,8 +96,10 @@
         <div class="card">
             <div class="tabs">
                 <button class="active" onclick="showTab('products')">Products</button>
-                <button onclick="showTab('orders')">Orders</button>
+                <button onclick="showTab('orders')">All Orders</button>
+                <button onclick="showTab('openOrders')">Open Orders</button>
                 <button onclick="showTab('discounts')">Discount Codes</button>
+                <button onclick="showTab('reports')">Reports</button>
                 <button onclick="showTab('users')">Users</button>
                 <button onclick="showTab('notifications')">Notifications</button>
             </div>
@@ -202,12 +204,15 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            document.querySelector(`.tabs button:nth-child(${['products','orders','discounts','users','notifications'].indexOf(tab)+1})`).classList.add('active');
+            const tabList = ['products','orders','openOrders','discounts','reports','users','notifications'];
+            document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
                 case 'products': loadProducts(); break;
                 case 'orders': loadOrders(); break;
+                case 'openOrders': loadOpenOrders(); break;
                 case 'discounts': loadDiscounts(); break;
+                case 'reports': renderReports(); break;
                 case 'users': loadUsers(); break;
                 case 'notifications': loadNotifications(); break;
             }
@@ -685,6 +690,8 @@
             content.innerHTML = `
                 <div class="toolbar">
                     <button class="btn" onclick="showAddDiscountModal()">+ Add Discount Code</button>
+                    <button class="btn btn-secondary" onclick="showDiscountReport('week')">Weekly Report</button>
+                    <button class="btn btn-secondary" onclick="showDiscountReport('month')">Monthly Report</button>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
@@ -704,9 +711,9 @@
                                 <tr class="${!d.active ? 'inactive' : ''}">
                                     <td><strong>${d.code}</strong></td>
                                     <td>${d.description || '-'}</td>
-                                    <td>${d.discount_percent > 0 ? `${d.discount_percent}%` : `$${d.discount_amount.toFixed(2)}`}</td>
-                                    <td>${d.min_order_amount > 0 ? `$${d.min_order_amount.toFixed(2)}` : '-'}</td>
-                                    <td>${d.usage_count}${d.usage_limit ? ` / ${d.usage_limit}` : ''}</td>
+                                    <td>${d.discount_percent > 0 ? `${d.discount_percent}%` : `$${parseFloat(d.discount_amount || 0).toFixed(2)}`}</td>
+                                    <td>${d.min_order_amount > 0 ? `$${parseFloat(d.min_order_amount).toFixed(2)}` : '-'}</td>
+                                    <td>${d.times_used || 0}${d.usage_limit ? ` / ${d.usage_limit}` : ''}</td>
                                     <td>${d.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showEditDiscountModal(${d.id})">Edit</button>
@@ -721,6 +728,95 @@
                     </table>
                 </div>
             `;
+        }
+
+        async function showDiscountReport(period) {
+            try {
+                const report = await api(`/api/admin/discount-codes/report?period=${period}`);
+                
+                const periodLabel = period === 'week' ? 'Last 7 Days' : 'Last 30 Days';
+                const totals = report.totals || {};
+                
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 700px;">
+                            <h3>Discount Code Report - ${periodLabel}</h3>
+                            
+                            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin: 20px 0;">
+                                <div style="background: #edf2f7; padding: 15px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 1.5rem; font-weight: 600; color: #3182ce;">
+                                        ${totals.total_orders_with_discount || 0}
+                                    </div>
+                                    <div style="font-size: 0.85rem; color: #718096;">Orders with Discounts</div>
+                                </div>
+                                <div style="background: #edf2f7; padding: 15px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 1.5rem; font-weight: 600; color: #e53e3e;">
+                                        $${parseFloat(totals.total_discount_given || 0).toFixed(2)}
+                                    </div>
+                                    <div style="font-size: 0.85rem; color: #718096;">Total Discounts Given</div>
+                                </div>
+                                <div style="background: #edf2f7; padding: 15px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 1.5rem; font-weight: 600; color: #38a169;">
+                                        $${parseFloat(totals.total_revenue || 0).toFixed(2)}
+                                    </div>
+                                    <div style="font-size: 0.85rem; color: #718096;">Revenue (with discounts)</div>
+                                </div>
+                            </div>
+                            
+                            <h4 style="margin-top: 20px;">Usage by Code</h4>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Code</th>
+                                        <th>Uses</th>
+                                        <th>Discount Given</th>
+                                        <th>Revenue Generated</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${report.usage && report.usage.length > 0 
+                                        ? report.usage.map(u => `
+                                            <tr>
+                                                <td><strong>${u.code}</strong></td>
+                                                <td>${u.uses}</td>
+                                                <td>$${parseFloat(u.total_discount || 0).toFixed(2)}</td>
+                                                <td>$${parseFloat(u.total_revenue || 0).toFixed(2)}</td>
+                                            </tr>
+                                        `).join('')
+                                        : '<tr><td colspan="4" style="text-align: center; color: #718096;">No discount codes used in this period</td></tr>'
+                                    }
+                                </tbody>
+                            </table>
+                            
+                            <h4 style="margin-top: 20px;">All Codes - Total Usage</h4>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Code</th>
+                                        <th>Discount</th>
+                                        <th>Total Uses</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${report.codes.map(c => `
+                                        <tr>
+                                            <td><strong>${c.code}</strong></td>
+                                            <td>${c.discount_percent > 0 ? `${c.discount_percent}%` : `$${parseFloat(c.discount_amount || 0).toFixed(2)}`}</td>
+                                            <td>${c.times_used || 0}</td>
+                                            <td>${c.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                            
+                            <button class="btn btn-secondary" onclick="closeModal()" style="margin-top: 20px;">Close</button>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert('Failed to load report: ' + err.message);
+            }
         }
 
         function showAddDiscountModal() {
@@ -870,9 +966,16 @@
         async function loadUsers() {
             try {
                 state.users = await api('/api/admin/users');
+                if (!Array.isArray(state.users)) {
+                    console.error('Invalid users response:', state.users);
+                    state.users = [];
+                }
                 renderUsers();
             } catch (e) {
-                showAlert('Failed to load users');
+                console.error('Failed to load users:', e);
+                showAlert('Failed to load users: ' + e.message);
+                state.users = [];
+                renderUsers();
             }
         }
 
@@ -1071,6 +1174,257 @@
                     </table>
                 </div>
             `;
+        }
+
+        // Open Orders
+        async function loadOpenOrders() {
+            try {
+                state.orders = await api('/api/admin/orders');
+                renderOpenOrders();
+            } catch (e) {
+                showAlert('Failed to load orders');
+            }
+        }
+
+        function renderOpenOrders() {
+            const openOrders = state.orders.filter(o => 
+                !['fulfilled', 'delivered', 'cancelled', 'refunded'].includes(o.status)
+            );
+            
+            const content = document.getElementById('tabContent');
+            content.innerHTML = `
+                <div style="margin-bottom: 15px;">
+                    <h3 style="color: #2d3748;">Open Orders (${openOrders.length})</h3>
+                    <p style="color: #718096; font-size: 0.9rem;">Orders that need to be fulfilled</p>
+                </div>
+                ${openOrders.length === 0 ? '<p style="text-align: center; color: #718096; padding: 40px;">🎉 No open orders! All caught up.</p>' : `
+                    <div style="overflow-x: auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Order #</th>
+                                    <th>Customer</th>
+                                    <th>Items</th>
+                                    <th>Total</th>
+                                    <th>Status</th>
+                                    <th>Date</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${openOrders.map(o => `
+                                    <tr>
+                                        <td><strong>${o.order_number}</strong></td>
+                                        <td>${o.full_name || o.customer_name || 'Unknown'}<br><small style="color:#718096;">${o.email || o.customer_email || ''}</small></td>
+                                        <td>${o.items ? o.items.length : 0} items</td>
+                                        <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
+                                        <td><span class="status-badge status-${o.status}">${o.status}</span></td>
+                                        <td>${new Date(o.created_at).toLocaleDateString()}</td>
+                                        <td class="actions">
+                                            <button class="btn btn-small" onclick="showOpenOrderDetailModal(${o.id})">View</button>
+                                            <button class="btn btn-success btn-small" onclick="markOrderFulfilled(${o.id})">✓ Complete</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `}
+            `;
+        }
+
+        function showOpenOrderDetailModal(id) {
+            const o = state.orders.find(x => x.id === id);
+            if (!o) return;
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content">
+                        <h3>Order ${o.order_number}</h3>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                            <div>
+                                <p><strong>Customer:</strong> ${o.full_name || o.customer_name || 'Unknown'}</p>
+                                <p><strong>Email:</strong> ${o.email || o.customer_email || '-'}</p>
+                                <p><strong>Phone:</strong> ${o.phone || o.customer_phone || '-'}</p>
+                            </div>
+                            <div>
+                                <p><strong>Status:</strong> <span class="status-badge status-${o.status}">${o.status}</span></p>
+                                <p><strong>Date:</strong> ${new Date(o.created_at).toLocaleString()}</p>
+                            </div>
+                        </div>
+                        ${o.shipping_address ? `
+                            <p><strong>Shipping Address:</strong></p>
+                            <p style="background: #f7fafc; padding: 10px; border-radius: 6px; margin-bottom: 15px; white-space: pre-line;">${o.shipping_address}</p>
+                        ` : ''}
+                        <h4 style="margin-bottom: 10px;">Items to Ship</h4>
+                        <table>
+                            <thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Price</th></tr></thead>
+                            <tbody>
+                                ${o.items && o.items.length > 0 ? o.items.map(i => `
+                                    <tr>
+                                        <td>${i.name || i.product_name || 'Unknown'}</td>
+                                        <td>${i.sku || '-'}</td>
+                                        <td><strong>${i.quantity}</strong></td>
+                                        <td>$${parseFloat(i.unit_price || i.price_each || 0).toFixed(2)}</td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="4">No items found</td></tr>'}
+                            </tbody>
+                        </table>
+                        <div style="text-align: right; margin-top: 15px;">
+                            <p style="font-size: 1.1rem; font-weight: 600;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            <button class="btn btn-success" onclick="markOrderFulfilled(${o.id}); closeModal();">✓ Mark as Fulfilled</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function markOrderFulfilled(id) {
+            if (!confirm('Mark this order as fulfilled?')) return;
+            try {
+                await api(`/api/admin/orders/${id}/status`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ status: 'fulfilled' })
+                });
+                showAlert('Order marked as fulfilled!', 'success');
+                loadOpenOrders();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        // Reports
+        async function renderReports() {
+            const content = document.getElementById('tabContent');
+            content.innerHTML = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+                    <div class="card" style="margin-bottom: 0;">
+                        <h3 style="margin-bottom: 15px;">📊 Discount Code Report</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Sales breakdown by discount code</p>
+                        <button class="btn" onclick="loadDiscountReport()">Generate Report</button>
+                        <div id="discountReportContent" style="margin-top: 20px;"></div>
+                    </div>
+                    <div class="card" style="margin-bottom: 0;">
+                        <h3 style="margin-bottom: 15px;">📦 Order Summary</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Overview of order statuses</p>
+                        <button class="btn" onclick="loadOrderSummary()">Generate Report</button>
+                        <div id="orderSummaryContent" style="margin-top: 20px;"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadDiscountReport() {
+            try {
+                const report = await api('/api/admin/reports/discounts');
+                const container = document.getElementById('discountReportContent');
+                
+                if (report.length === 0) {
+                    container.innerHTML = '<p style="color: #718096;">No discount codes have been used yet.</p>';
+                    return;
+                }
+                
+                const totalRevenue = report.reduce((sum, r) => sum + r.total_sales, 0);
+                const totalOrders = report.reduce((sum, r) => sum + r.order_count, 0);
+                const totalDiscount = report.reduce((sum, r) => sum + r.total_discounted, 0);
+                
+                container.innerHTML = `
+                    <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center;">
+                            <div>
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #2b6cb0;">$${totalRevenue.toFixed(2)}</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Total Sales</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #38a169;">${totalOrders}</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Orders</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #e53e3e;">$${totalDiscount.toFixed(2)}</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Discounts Given</div>
+                            </div>
+                        </div>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Code</th>
+                                <th>Orders</th>
+                                <th>Total Sales</th>
+                                <th>Discounts Given</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${report.map(r => `
+                                <tr>
+                                    <td><strong>${r.code}</strong></td>
+                                    <td>${r.order_count}</td>
+                                    <td>$${r.total_sales.toFixed(2)}</td>
+                                    <td style="color: #e53e3e;">-$${r.total_discounted.toFixed(2)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (err) {
+                document.getElementById('discountReportContent').innerHTML = `<p style="color: #e53e3e;">Error: ${err.message}</p>`;
+            }
+        }
+
+        async function loadOrderSummary() {
+            try {
+                const orders = await api('/api/admin/orders');
+                const container = document.getElementById('orderSummaryContent');
+                
+                const statusCounts = {};
+                const statusTotals = {};
+                orders.forEach(o => {
+                    statusCounts[o.status] = (statusCounts[o.status] || 0) + 1;
+                    statusTotals[o.status] = (statusTotals[o.status] || 0) + parseFloat(o.total || 0);
+                });
+                
+                const statuses = Object.keys(statusCounts).sort();
+                const totalOrders = orders.length;
+                const totalRevenue = orders.reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
+                
+                container.innerHTML = `
+                    <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; text-align: center;">
+                            <div>
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #2b6cb0;">${totalOrders}</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Total Orders</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #38a169;">$${totalRevenue.toFixed(2)}</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Total Revenue</div>
+                            </div>
+                        </div>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Status</th>
+                                <th>Count</th>
+                                <th>Total Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${statuses.map(status => `
+                                <tr>
+                                    <td><span class="status-badge status-${status}">${status}</span></td>
+                                    <td>${statusCounts[status]}</td>
+                                    <td>$${statusTotals[status].toFixed(2)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (err) {
+                document.getElementById('orderSummaryContent').innerHTML = `<p style="color: #e53e3e;">Error: ${err.message}</p>`;
+            }
         }
 
         async function logout() {
