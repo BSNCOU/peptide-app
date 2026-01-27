@@ -1011,6 +1011,7 @@
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showUserDetailModal(${u.id})">View</button>
                                         <button class="btn btn-secondary btn-small" onclick="showEditUserModal(${u.id})">Edit</button>
+                                        ${!u.email_verified ? `<button class="btn btn-success btn-small" onclick="resendVerification(${u.id})">Resend</button>` : ''}
                                         <button class="btn btn-small ${u.is_admin ? 'btn-warning' : 'btn-secondary'}" 
                                             onclick="toggleAdmin(${u.id})">
                                             ${u.is_admin ? 'Remove Admin' : 'Make Admin'}
@@ -1132,6 +1133,18 @@
                 await api(`/api/admin/users/${id}/toggle-admin`, { method: 'POST' });
                 showAlert('User updated', 'success');
                 loadUsers();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function resendVerification(id) {
+            const user = state.users.find(u => u.id === id);
+            if (!confirm(`Resend verification email to ${user.email}?`)) return;
+            
+            try {
+                await api(`/api/admin/users/${id}/resend-verification`, { method: 'POST' });
+                showAlert('Verification email sent!', 'success');
             } catch (err) {
                 showAlert(err.message);
             }

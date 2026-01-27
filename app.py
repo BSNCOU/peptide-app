@@ -1508,6 +1508,44 @@ def admin_toggle_admin(uid):
     conn.close()
     return jsonify({'message': 'Admin status toggled'})
 
+@app.route('/api/admin/users/<int:uid>/resend-verification', methods=['POST'])
+@admin_required
+def admin_resend_verification(uid):
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    
+    if user['email_verified']:
+        conn.close()
+        return jsonify({'error': 'User already verified'}), 400
+    
+    # Generate new verification token
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now() + timedelta(hours=24)
+    
+    conn.execute('UPDATE users SET email_verify_token=?, email_verify_expires=? WHERE id=?', 
+                 (token, expires, uid))
+    conn.commit()
+    conn.close()
+    
+    # Send verification email
+    verify_url = f"{CONFIG['APP_URL']}/verify?token={token}"
+    send_email(
+        user['email'],
+        'Verify Your Email - Research Materials',
+        f'''<h2>Email Verification</h2>
+        <p>Hi {user['full_name']},</p>
+        <p>Please click the link below to verify your email address:</p>
+        <p><a href="{verify_url}" style="display:inline-block;padding:12px 24px;background:#4299e1;color:white;text-decoration:none;border-radius:6px;">Verify Email</a></p>
+        <p>Or copy this link: {verify_url}</p>
+        <p>This link expires in 24 hours.</p>''',
+        user['id']
+    )
+    
+    return jsonify({'message': 'Verification email sent'})
+
 @app.route('/api/admin/users/<int:uid>', methods=['PUT'])
 @admin_required
 def admin_update_user(uid):
