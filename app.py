@@ -429,31 +429,42 @@ def import_products():
     ]
     
     conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM products')
-    if c.fetchone()[0] > 0:
+    try:
+        # Check if products exist
+        result = conn.execute('SELECT COUNT(*) as cnt FROM products').fetchone()
+        count = result['cnt'] if isinstance(result, dict) else result[0]
+        if count > 0:
+            print(f"Products already exist ({count}), skipping import")
+            conn.close()
+            return False
+        
+        desc = "This material is supplied for laboratory research purposes only. NOT for human or animal consumption."
+        for i, (sku, name, p1, p2, cat) in enumerate(products):
+            conn.execute('INSERT INTO products (sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,sort_order) VALUES (?,?,?,?,?,10,100,?,?)',
+                      (sku, name, desc, p1, p2, cat, i))
+        
+        codes = [
+            ('RESEARCH10', '10% off orders $50+', 10, 0, 50, 100), 
+            ('FIRST20', '20% off first order', 20, 0, 0, 50), 
+            ('BULK15', '15% off orders $200+', 15, 0, 200, None)
+        ]
+        for code, d, pct, amt, minord, lim in codes:
+            try:
+                conn.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit) VALUES (?,?,?,?,?,?)',
+                          (code, d, pct, amt, minord, lim))
+            except: pass
+        
+        conn.commit()
         conn.close()
-        return False
-    
-    desc = "This material is supplied for laboratory research purposes only. NOT for human or animal consumption."
-    for i, (sku, name, p1, p2, cat) in enumerate(products):
-        c.execute('INSERT INTO products (sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,sort_order) VALUES (?,?,?,?,?,10,100,?,?)',
-                  (sku, name, desc, p1, p2, cat, i))
-    
-    codes = [
-        ('RESEARCH10', '10% off orders $50+', 10, 0, 50, 100), 
-        ('FIRST20', '20% off first order', 20, 0, 0, 50), 
-        ('BULK15', '15% off orders $200+', 15, 0, 200, None)
-    ]
-    for code, d, pct, amt, minord, lim in codes:
+        print(f"✓ Products imported ({len(products)} items)")
+        return True
+    except Exception as e:
+        print(f"Import products error: {e}")
         try:
-            c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit) VALUES (?,?,?,?,?,?)',
-                      (code, d, pct, amt, minord, lim))
-        except: pass
-    
-    conn.commit()
-    conn.close()
-    return True
+            conn.close()
+        except:
+            pass
+        return False
 
 # ============================================
 # RATE LIMITING
@@ -1611,6 +1622,10 @@ else:
     # Running under gunicorn - ensure tables exist
     try:
         init_db()
+    except Exception as e:
+        print(f"Database init error: {e}")
+    
+    try:
         import_products()
     except Exception as e:
-        print(f"Startup init error: {e}")
+        print(f"Product import error: {e}")
