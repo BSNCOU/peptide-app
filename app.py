@@ -1569,7 +1569,7 @@ def admin_get_notifications():
 
 @app.route('/api/admin/reports/discounts', methods=['GET'])
 @admin_required
-def admin_discount_report():
+def admin_reports_discounts():
     conn = get_db()
     report = conn.execute('''
         SELECT 
