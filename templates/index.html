@@ -634,6 +634,16 @@
                 return { ...item, product, price: priceDisplay, subtotal };
             });
             const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
+            
+            // Apply discount if exists
+            let discountAmount = 0;
+            if (state.discount) {
+                if (state.discount.discount_percent > 0) {
+                    discountAmount = subtotal * (state.discount.discount_percent / 100);
+                } else {
+                    discountAmount = state.discount.discount_amount;
+                }
+            }
 
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
@@ -644,8 +654,27 @@
                         </div>
                         <form onsubmit="submitOrder(event)">
                             <div class="form-group">
+                                <label><strong>Delivery Method *</strong></label>
+                                <div style="display: flex; gap: 20px; margin-top: 10px;">
+                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px 20px; border: 2px solid #e2e8f0; border-radius: 8px; flex: 1;">
+                                        <input type="radio" name="deliveryMethod" value="pickup" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})" checked>
+                                        <div>
+                                            <strong>Pickup</strong><br>
+                                            <small style="color: #718096;">Free - Pick up at location</small>
+                                        </div>
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px 20px; border: 2px solid #e2e8f0; border-radius: 8px; flex: 1;">
+                                        <input type="radio" name="deliveryMethod" value="ship" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})">
+                                        <div>
+                                            <strong>Ship</strong><br>
+                                            <small style="color: #718096;">+$20.00 shipping fee</small>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                            <div id="shippingAddressGroup" class="form-group" style="display: none;">
                                 <label>Shipping Address *</label>
-                                <textarea id="shippingAddress" required rows="3" placeholder="Enter full shipping address"></textarea>
+                                <textarea id="shippingAddress" rows="3" placeholder="Enter full shipping address"></textarea>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="ack1" required>
@@ -663,14 +692,52 @@
                                 <input type="checkbox" id="ack4" required>
                                 <label for="ack4">I agree to use these materials in compliance with all applicable laws and regulations.</label>
                             </div>
-                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            <div id="checkoutTotals" style="background: #f7fafc; padding: 15px; border-radius: 8px; margin: 15px 0;">
+                                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                                    <span>Subtotal:</span>
+                                    <span>$${subtotal.toFixed(2)}</span>
+                                </div>
+                                ${discountAmount > 0 ? `
+                                <div style="display: flex; justify-content: space-between; margin-bottom: 5px; color: #38a169;">
+                                    <span>Discount:</span>
+                                    <span>-$${discountAmount.toFixed(2)}</span>
+                                </div>
+                                ` : ''}
+                                <div id="shippingLine" style="display: none; justify-content: space-between; margin-bottom: 5px;">
+                                    <span>Shipping:</span>
+                                    <span>$20.00</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-weight: 600; font-size: 1.1rem; border-top: 1px solid #e2e8f0; padding-top: 10px; margin-top: 10px;">
+                                    <span>Total:</span>
+                                    <span id="checkoutTotal">$${(subtotal - discountAmount).toFixed(2)}</span>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 10px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                                <button type="submit" class="btn btn-success" style="flex: 1;">Place Order ($${subtotal.toFixed(2)})</button>
+                                <button type="submit" class="btn btn-success" style="flex: 1;">Place Order</button>
                             </div>
                         </form>
                     </div>
                 </div>
             `;
+        }
+        
+        function updateCheckoutTotal(subtotal, discountAmount) {
+            const deliveryMethod = document.querySelector('input[name="deliveryMethod"]:checked').value;
+            const shippingCost = deliveryMethod === 'ship' ? 20 : 0;
+            const total = subtotal - discountAmount + shippingCost;
+            
+            document.getElementById('checkoutTotal').textContent = '$' + total.toFixed(2);
+            document.getElementById('shippingLine').style.display = deliveryMethod === 'ship' ? 'flex' : 'none';
+            document.getElementById('shippingAddressGroup').style.display = deliveryMethod === 'ship' ? 'block' : 'none';
+            
+            // Make shipping address required only for ship
+            const addressField = document.getElementById('shippingAddress');
+            if (deliveryMethod === 'ship') {
+                addressField.setAttribute('required', 'required');
+            } else {
+                addressField.removeAttribute('required');
+            }
         }
 
         async function submitOrder(e) {
@@ -687,6 +754,14 @@
                 return;
             }
             
+            const deliveryMethod = document.querySelector('input[name="deliveryMethod"]:checked').value;
+            const shippingAddress = document.getElementById('shippingAddress').value;
+            
+            if (deliveryMethod === 'ship' && !shippingAddress.trim()) {
+                showAlert('Please enter a shipping address');
+                return;
+            }
+            
             const items = state.cart.map(item => ({
                 product_id: item.productId,
                 quantity: item.qty
@@ -698,7 +773,8 @@
                     body: JSON.stringify({
                         items,
                         discount_code: state.discount?.code || null,
-                        shipping_address: document.getElementById('shippingAddress').value,
+                        delivery_method: deliveryMethod,
+                        shipping_address: deliveryMethod === 'ship' ? shippingAddress : 'Pickup',
                         final_attestation: true,
                         acknowledgments: {
                             research_only: ack1,
@@ -769,8 +845,9 @@
                         <div class="order-detail">
                             <p><strong>Status:</strong> <span class="order-status status-${order.status}">${order.status}</span></p>
                             <p><strong>Date:</strong> ${new Date(order.created_at).toLocaleString()}</p>
+                            <p><strong>Delivery:</strong> ${order.delivery_method === 'ship' ? '📦 Shipping' : '🏪 Pickup'}</p>
                             ${order.tracking_number ? `<p><strong>Tracking:</strong> ${order.tracking_number}</p>` : ''}
-                            ${order.shipping_address ? `<p><strong>Ship To:</strong> ${order.shipping_address}</p>` : ''}
+                            ${order.delivery_method === 'ship' && order.shipping_address ? `<p><strong>Ship To:</strong> ${order.shipping_address}</p>` : ''}
                             
                             <h4 style="margin-top: 20px;">Items</h4>
                             <table class="order-items-table">
@@ -792,6 +869,7 @@
                             <div style="text-align: right; margin-top: 15px;">
                                 <p>Subtotal: $${parseFloat(order.subtotal).toFixed(2)}</p>
                                 ${parseFloat(order.discount_amount) > 0 ? `<p style="color: #38a169;">Discount: -$${parseFloat(order.discount_amount).toFixed(2)}</p>` : ''}
+                                ${parseFloat(order.shipping_cost || 0) > 0 ? `<p>Shipping: $${parseFloat(order.shipping_cost).toFixed(2)}</p>` : ''}
                                 <p style="font-size: 1.2rem; font-weight: 600;">Total: $${parseFloat(order.total).toFixed(2)}</p>
                             </div>
                         </div>

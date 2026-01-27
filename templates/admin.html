@@ -585,13 +585,14 @@
                             </div>
                             <div>
                                 <p><strong>Status:</strong> <span class="status-badge status-${o.status}">${o.status}</span></p>
+                                <p><strong>Delivery:</strong> ${o.delivery_method === 'ship' ? '📦 Ship' : '🏪 Pickup'}</p>
                                 <p><strong>Date:</strong> ${new Date(o.created_at).toLocaleString()}</p>
                                 ${o.tracking_number ? `<p><strong>Tracking:</strong> ${o.tracking_number}</p>` : ''}
                             </div>
                         </div>
-                        ${o.shipping_address ? `
+                        ${o.delivery_method === 'ship' && o.shipping_address ? `
                             <p><strong>Shipping Address:</strong></p>
-                            <p style="background: #f7fafc; padding: 10px; border-radius: 6px; margin-bottom: 15px;">${o.shipping_address}</p>
+                            <p style="background: #f7fafc; padding: 10px; border-radius: 6px; margin-bottom: 15px; white-space: pre-line;">${o.shipping_address}</p>
                         ` : ''}
                         <h4 style="margin-bottom: 10px;">Items</h4>
                         <table>
@@ -610,6 +611,7 @@
                         <div style="text-align: right; margin-top: 15px;">
                             <p>Subtotal: $${parseFloat(o.subtotal || 0).toFixed(2)}</p>
                             ${parseFloat(o.discount_amount || 0) > 0 ? `<p style="color: #38a169;">Discount: -$${parseFloat(o.discount_amount).toFixed(2)}</p>` : ''}
+                            ${parseFloat(o.shipping_cost || 0) > 0 ? `<p>Shipping: $${parseFloat(o.shipping_cost).toFixed(2)}</p>` : ''}
                             <p style="font-size: 1.1rem; font-weight: 600;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
                         </div>
                         <div style="margin-top: 20px;">

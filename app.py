@@ -299,6 +299,8 @@ def init_db():
         subtotal REAL NOT NULL,
         discount_amount REAL DEFAULT 0,
         discount_code_id INTEGER DEFAULT NULL,
+        shipping_cost REAL DEFAULT 0,
+        delivery_method TEXT DEFAULT 'pickup',
         total REAL NOT NULL,
         status TEXT DEFAULT 'pending',
         notes TEXT,
@@ -1134,11 +1136,15 @@ def create_order():
             discount_amount = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
             c.execute('UPDATE discount_codes SET times_used=times_used+1 WHERE id=?', (discount['id'],))
     
-    total = subtotal - discount_amount
+    # Handle delivery method and shipping cost
+    delivery_method = data.get('delivery_method', 'pickup')
+    shipping_cost = 20.0 if delivery_method == 'ship' else 0.0
+    
+    total = subtotal - discount_amount + shipping_cost
     order_number = gen_order_num()
     
-    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?)',
-              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, total, data.get('notes', ''), data.get('shipping_address', '')))
+    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,delivery_method,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?)',
+              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, delivery_method, total, data.get('notes', ''), data.get('shipping_address', '')))
     order_id = c.lastrowid
     
     for item in order_items:
@@ -1155,7 +1161,7 @@ def create_order():
     send_order_confirmation(order_id)
     check_low_stock()
     
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'total': total, 'status': 'pending_payment'}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'shipping_cost': shipping_cost, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
 
 @app.route('/api/orders', methods=['GET'])
 @login_required
