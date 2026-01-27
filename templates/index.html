@@ -167,10 +167,10 @@
             try {
                 const user = await api('/api/me');
                 state.user = user;
-                // Email verification disabled - banner hidden
-                // if (!user.email_verified) {
-                //     document.getElementById('verificationBanner').classList.remove('hidden');
-                // }
+                // Show verification banner if email not verified
+                if (!user.email_verified) {
+                    document.getElementById('verificationBanner').classList.remove('hidden');
+                }
                 // First login modal disabled - users acknowledge at checkout
                 // if (!user.first_login_confirmed) {
                 //     showFirstLoginModal();
@@ -240,14 +240,14 @@
             document.getElementById('mainContent').innerHTML = `
                 <div class="card" style="max-width: 450px; margin: 0 auto;">
                     <h2>Login</h2>
-                    <form onsubmit="login(event)">
+                    <form onsubmit="login(event)" autocomplete="off">
                         <div class="form-group">
                             <label>Email</label>
-                            <input type="text" id="loginEmail" required placeholder="your@email.com">
+                            <input type="text" id="loginEmail" required autocomplete="off">
                         </div>
                         <div class="form-group">
                             <label>Password</label>
-                            <input type="password" id="loginPassword" required>
+                            <input type="text" id="loginPassword" required autocomplete="off" style="-webkit-text-security: disc;">
                         </div>
                         <button type="submit" class="btn" style="width: 100%;">Login</button>
                     </form>

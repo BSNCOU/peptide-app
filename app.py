@@ -809,13 +809,12 @@ def verified_required(f):
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'Authentication required'}), 401
-        # Email verification disabled until Resend is configured
-        # To enable: uncomment the check below and configure RESEND_API_KEY
-        # conn = get_db()
-        # user = conn.execute('SELECT email_verified FROM users WHERE id=?', (session['user_id'],)).fetchone()
-        # conn.close()
-        # if not user or not user['email_verified']:
-        #     return jsonify({'error': 'Please verify your email first', 'code': 'EMAIL_NOT_VERIFIED'}), 403
+        # Check email verification
+        conn = get_db()
+        user = conn.execute('SELECT email_verified FROM users WHERE id=?', (session['user_id'],)).fetchone()
+        conn.close()
+        if not user or not user['email_verified']:
+            return jsonify({'error': 'Please verify your email first', 'code': 'EMAIL_NOT_VERIFIED'}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -1512,12 +1511,20 @@ def admin_toggle_admin(uid):
 @admin_required
 def admin_resend_verification(uid):
     conn = get_db()
-    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
-    if not user:
+    result = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+    if not result:
         conn.close()
         return jsonify({'error': 'User not found'}), 404
     
-    if user['email_verified']:
+    # Convert to dict for consistent access
+    if isinstance(result, dict):
+        user = result
+    elif hasattr(result, 'keys'):
+        user = {k: result[k] for k in result.keys()}
+    else:
+        user = dict(result)
+    
+    if user.get('email_verified'):
         conn.close()
         return jsonify({'error': 'User already verified'}), 400
     
@@ -1541,7 +1548,7 @@ def admin_resend_verification(uid):
         <p><a href="{verify_url}" style="display:inline-block;padding:12px 24px;background:#4299e1;color:white;text-decoration:none;border-radius:6px;">Verify Email</a></p>
         <p>Or copy this link: {verify_url}</p>
         <p>This link expires in 24 hours.</p>''',
-        user['id']
+        uid
     )
     
     return jsonify({'message': 'Verification email sent'})
