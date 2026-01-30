@@ -932,10 +932,7 @@ def verify_email(token):
         
         user_id = user['id'] if isinstance(user, dict) else user[0]
         
-        if is_postgres():
-            conn.execute('UPDATE users SET email_verified = TRUE, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
-        else:
-            conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
         
         conn.commit()
         conn.close()
@@ -968,11 +965,8 @@ def verify_email_page():
         user_id = user['id'] if isinstance(user, dict) else user[0]
         print(f"[EMAIL VERIFY] Found user {user_id}, updating verified status")
         
-        # Update - use TRUE for postgres, 1 for sqlite
-        if is_postgres():
-            conn.execute('UPDATE users SET email_verified = TRUE, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
-        else:
-            conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        # Update email_verified to 1
+        conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
         conn.commit()
         
         # Verify the update worked
