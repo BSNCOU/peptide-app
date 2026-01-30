@@ -3,7 +3,7 @@ Research Materials Ordering Platform - Production Ready
 Flask Backend with Admin Dashboard, Notifications, Security, PDF Invoices
 """
 
-from flask import Flask, request, jsonify, render_template, session, make_response
+from flask import Flask, request, jsonify, render_template, session, make_response, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 import hashlib
 import secrets
