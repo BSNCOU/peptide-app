@@ -80,9 +80,9 @@
         .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
         .modal-content { background: white; border-radius: 12px; padding: 30px; max-width: 600px; width: 90%; max-height: 90vh; overflow-y: auto; }
         .modal-content h2 { margin-bottom: 20px; }
-        .checkbox-group { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
-        .checkbox-group input[type="checkbox"] { width: auto; margin-top: 4px; }
-        .checkbox-group label { font-size: 0.95rem; color: #4a5568; }
+        .checkbox-group { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 15px; }
+        .checkbox-group input[type="checkbox"] { width: 22px; height: 22px; min-width: 22px; margin-top: 2px; cursor: pointer; }
+        .checkbox-group label { font-size: 0.95rem; color: #4a5568; cursor: pointer; }
         .tabs { display: flex; border-bottom: 2px solid #e2e8f0; margin-bottom: 20px; }
         .tabs button { background: none; border: none; padding: 12px 20px; cursor: pointer; font-size: 1rem; color: #718096; border-bottom: 2px solid transparent; margin-bottom: -2px; }
         .tabs button.active { color: #2b6cb0; border-bottom-color: #4299e1; }
@@ -673,19 +673,19 @@
                         <form onsubmit="submitOrder(event)">
                             <div class="form-group">
                                 <label><strong>Delivery Method *</strong></label>
-                                <div style="display: flex; gap: 20px; margin-top: 10px;">
-                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px 20px; border: 2px solid #e2e8f0; border-radius: 8px; flex: 1;">
-                                        <input type="radio" name="deliveryMethod" value="pickup" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})" checked>
+                                <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+                                    <label style="display: flex; align-items: center; gap: 12px; cursor: pointer; padding: 15px; border: 2px solid #e2e8f0; border-radius: 8px;">
+                                        <input type="radio" name="deliveryMethod" value="pickup" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})" checked style="width: 20px; height: 20px; min-width: 20px;">
                                         <div>
-                                            <strong>Pickup</strong><br>
-                                            <small style="color: #718096;">Free - Pick up at location</small>
+                                            <strong>Pickup</strong> - Free<br>
+                                            <small style="color: #718096;">Pick up at location</small>
                                         </div>
                                     </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px 20px; border: 2px solid #e2e8f0; border-radius: 8px; flex: 1;">
-                                        <input type="radio" name="deliveryMethod" value="ship" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})">
+                                    <label style="display: flex; align-items: center; gap: 12px; cursor: pointer; padding: 15px; border: 2px solid #e2e8f0; border-radius: 8px;">
+                                        <input type="radio" name="deliveryMethod" value="ship" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})" style="width: 20px; height: 20px; min-width: 20px;">
                                         <div>
-                                            <strong>Ship</strong><br>
-                                            <small style="color: #718096;">+$20.00 shipping fee</small>
+                                            <strong>Ship</strong> - +$20.00<br>
+                                            <small style="color: #718096;">Shipping fee</small>
                                         </div>
                                     </label>
                                 </div>
@@ -695,19 +695,19 @@
                                 <textarea id="shippingAddress" rows="3" placeholder="Enter full shipping address"></textarea>
                             </div>
                             <div class="checkbox-group">
-                                <input type="checkbox" id="ack1" required>
+                                <input type="checkbox" id="ack1">
                                 <label for="ack1">I confirm that I am purchasing these materials for legitimate research purposes only.</label>
                             </div>
                             <div class="checkbox-group">
-                                <input type="checkbox" id="ack2" required>
+                                <input type="checkbox" id="ack2">
                                 <label for="ack2">I understand these products are not for human consumption or clinical use.</label>
                             </div>
                             <div class="checkbox-group">
-                                <input type="checkbox" id="ack3" required>
+                                <input type="checkbox" id="ack3">
                                 <label for="ack3">I am authorized to purchase research materials for my organization/institution.</label>
                             </div>
                             <div class="checkbox-group">
-                                <input type="checkbox" id="ack4" required>
+                                <input type="checkbox" id="ack4">
                                 <label for="ack4">I agree to use these materials in compliance with all applicable laws and regulations.</label>
                             </div>
                             <div id="checkoutTotals" style="background: #f7fafc; padding: 15px; border-radius: 8px; margin: 15px 0;">
@@ -730,9 +730,9 @@
                                     <span id="checkoutTotal">$${(subtotal - discountAmount).toFixed(2)}</span>
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 10px;">
-                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                                <button type="submit" class="btn btn-success" style="flex: 1;">Place Order</button>
+                            <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
+                                <button type="submit" class="btn btn-success" style="padding: 15px; font-size: 1.1rem;">Place Order</button>
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()" style="padding: 12px;">Cancel</button>
                             </div>
                         </form>
                     </div>
