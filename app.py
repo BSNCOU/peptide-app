@@ -821,7 +821,15 @@ def verified_required(f):
         conn = get_db()
         user = conn.execute('SELECT email_verified FROM users WHERE id=?', (session['user_id'],)).fetchone()
         conn.close()
-        if not user or not user['email_verified']:
+        
+        if not user:
+            print(f"[VERIFIED CHECK] User {session['user_id']} not found")
+            return jsonify({'error': 'Please verify your email first', 'code': 'EMAIL_NOT_VERIFIED'}), 403
+        
+        verified = user['email_verified'] if isinstance(user, dict) else user[0]
+        print(f"[VERIFIED CHECK] User {session['user_id']} email_verified = {verified}")
+        
+        if not verified:
             return jsonify({'error': 'Please verify your email first', 'code': 'EMAIL_NOT_VERIFIED'}), 403
         return f(*args, **kwargs)
     return decorated
@@ -914,14 +922,21 @@ def register():
 def verify_email(token):
     try:
         conn = get_db()
-        result = conn.execute('SELECT id, email FROM users WHERE email_verify_token = ? AND email_verify_expires > ?', (token, datetime.now()))
+        
+        result = conn.execute('SELECT id, email FROM users WHERE email_verify_token = ?', (token,))
         user = result.fetchone()
+        
         if not user:
             conn.close()
             return jsonify({'error': 'Invalid or expired verification link'}), 400
         
         user_id = user['id'] if isinstance(user, dict) else user[0]
-        conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        
+        if is_postgres():
+            conn.execute('UPDATE users SET email_verified = TRUE, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        else:
+            conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        
         conn.commit()
         conn.close()
         print(f"[EMAIL VERIFY] User {user_id} email verified successfully")
@@ -933,25 +948,44 @@ def verify_email(token):
 @app.route('/verify', methods=['GET'])
 def verify_email_page():
     token = request.args.get('token')
+    print(f"[EMAIL VERIFY] Received verification request with token: {token[:20] if token else 'None'}...")
+    
     if not token:
         return redirect('/?error=missing_token')
     
     try:
         conn = get_db()
-        result = conn.execute('SELECT id, email FROM users WHERE email_verify_token = ? AND email_verify_expires > ?', (token, datetime.now()))
+        
+        # First check if token exists at all
+        result = conn.execute('SELECT id, email FROM users WHERE email_verify_token = ?', (token,))
         user = result.fetchone()
+        
         if not user:
+            print(f"[EMAIL VERIFY] Token not found in database")
             conn.close()
             return redirect('/?error=invalid_token')
         
         user_id = user['id'] if isinstance(user, dict) else user[0]
-        conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        print(f"[EMAIL VERIFY] Found user {user_id}, updating verified status")
+        
+        # Update - use TRUE for postgres, 1 for sqlite
+        if is_postgres():
+            conn.execute('UPDATE users SET email_verified = TRUE, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        else:
+            conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
         conn.commit()
+        
+        # Verify the update worked
+        check = conn.execute('SELECT email_verified FROM users WHERE id = ?', (user_id,)).fetchone()
+        verified_status = check['email_verified'] if isinstance(check, dict) else check[0]
+        print(f"[EMAIL VERIFY] User {user_id} email_verified is now: {verified_status}")
+        
         conn.close()
-        print(f"[EMAIL VERIFY] User {user_id} email verified successfully via link")
         return redirect('/?verified=1')
     except Exception as e:
         print(f"[EMAIL VERIFY ERROR] {str(e)}")
+        import traceback
+        traceback.print_exc()
         return redirect('/?error=verification_failed')
 
 @app.route('/api/resend-verification', methods=['POST'])
@@ -983,6 +1017,7 @@ def resend_verification():
 @rate_limit('login')
 def login():
     data = request.json
+    print(f"[LOGIN] Attempt for email: {data.get('email')}")
     if not data.get('email') or not data.get('password'):
         return jsonify({'error': 'Email and password required'}), 400
     
@@ -990,10 +1025,16 @@ def login():
     user = conn.execute('SELECT * FROM users WHERE email=?', (data['email'].lower(),)).fetchone()
     conn.close()
     
-    if not user or not check_password_hash(user['password_hash'], data['password']):
+    if not user:
+        print(f"[LOGIN] User not found: {data.get('email')}")
+        return jsonify({'error': 'Invalid credentials'}), 401
+    
+    if not check_password_hash(user['password_hash'], data['password']):
+        print(f"[LOGIN] Wrong password for: {data.get('email')}")
         return jsonify({'error': 'Invalid credentials'}), 401
     
     session['user_id'] = user['id']
+    print(f"[LOGIN] Success for user {user['id']}: {user['email']}")
     return jsonify({'message': 'Login successful', 'user': {'id': user['id'], 'full_name': user['full_name'], 'email': user['email'], 'is_admin': bool(user['is_admin']), 'first_login_confirmed': bool(user['first_login_confirmed']), 'email_verified': bool(user['email_verified'])}})
 
 @app.route('/api/logout', methods=['POST'])
