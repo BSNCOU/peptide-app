@@ -600,7 +600,7 @@ def log_notification(user_id, order_id, ntype, channel, recipient, status, error
     conn.close()
 
 def send_verification_email(email, token):
-    url = f"{CONFIG['APP_URL']}/#/verify-email/{token}"
+    url = f"{CONFIG['APP_URL']}/verify?token={token}"
     html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px;">
     <h2>Verify Your Email</h2>
     <p>Thank you for registering. Please verify your email by clicking the button below:</p>
