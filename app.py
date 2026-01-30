@@ -498,7 +498,8 @@ def check_rate_limit(endpoint, limit=None, window=None):
     result = c.fetchone()
     
     if result:
-        if result[0] >= max_requests:
+        count = result['request_count'] if isinstance(result, dict) or hasattr(result, 'keys') else result[0]
+        if count >= max_requests:
             conn.close()
             return False
         c.execute('UPDATE rate_limits SET request_count = request_count + 1 WHERE ip_address = ? AND endpoint = ?', (ip, endpoint))
