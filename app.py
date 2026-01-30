@@ -620,17 +620,21 @@ def log_notification(user_id, order_id, ntype, channel, recipient, status, error
 
 def send_verification_email(email, token):
     url = f"{CONFIG['APP_URL']}/verify?token={token}"
-    html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px;">
-    <h2>Verify Your Email</h2>
-    <p>Thank you for registering. Please verify your email by clicking the button below:</p>
+    html = f"""<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;color:#333;">
+    <h2 style="color:#2d3748;">Verify Your Research Account</h2>
+    <p>Thank you for creating a research account with The Peptide Wizard.</p>
+    <p>Please verify your email address to activate your account:</p>
     <p style="text-align:center;margin:30px 0;">
         <a href="{url}" style="background:#3b82f6;color:white;padding:14px 28px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:600;">Verify Email</a>
     </p>
     <p style="color:#666;font-size:13px;">This link expires in 24 hours.</p>
-    <hr style="border:none;border-top:1px solid #eee;margin:20px 0;"/>
-    <p style="color:#999;font-size:12px;">FOR RESEARCH USE ONLY. NOT FOR HUMAN OR ANIMAL CONSUMPTION.</p>
+    <hr style="border:none;border-top:1px solid #eee;margin:30px 0;"/>
+    <p style="color:#666;font-size:12px;line-height:1.6;">
+        <strong>Reminder:</strong> All materials offered by The Peptide Wizard are designated 
+        <strong>Research Use Only</strong> and are not intended for human or veterinary use.
+    </p>
     </body></html>"""
-    return send_email(email, "Verify Your Email - Research Materials", html)
+    return send_email(email, "Verify Your Research Account – The Peptide Wizard", html)
 
 def send_order_confirmation(order_id):
     conn = get_db()
@@ -872,6 +876,16 @@ def gen_order_num():
 def get_ack_hash(t):
     return hashlib.sha256(str(t).encode()).hexdigest()[:16]
 
+# RUO Acknowledgment version - update this if terms change
+RUO_ACKNOWLEDGMENT_VERSION = "v1.0-2026-01"
+RUO_ACKNOWLEDGMENT_TEXT = """By creating an account with The Peptide Wizard, I acknowledge and agree to the following:
+- All products offered are Research Use Only (RUO) materials.
+- Products are not intended for human or veterinary use, including but not limited to injection, ingestion, or topical application.
+- I am purchasing these materials solely for legitimate research, analytical, or educational purposes.
+- I understand that The Peptide Wizard does not provide medical advice, dosing guidance, or instructions for human use.
+- I accept full responsibility for ensuring that my purchase, handling, and use of these materials complies with all applicable local, state, and federal laws and regulations.
+- I acknowledge that misuse of these materials is strictly prohibited."""
+
 ACKS = {
     'use_restriction': "FOR RESEARCH USE ONLY, not for human/animal consumption",
     'intent_statement': "Purchasing solely for laboratory research purposes",
@@ -906,10 +920,9 @@ def register():
     if len(data['password']) < 6:
         return jsonify({'error': 'Password must be at least 6 characters'}), 400
     
-    acks = data.get('acknowledgments', {})
-    # Registration acknowledgments disabled - users accept at checkout instead
-    # if not all([acks.get('use_restriction'), acks.get('intent_statement'), acks.get('no_guidance')]):
-    #     return jsonify({'error': 'All acknowledgments required'}), 400
+    # Require RUO acknowledgment
+    if not data.get('ruo_acknowledged'):
+        return jsonify({'error': 'You must accept the Research Use Only terms to create an account.'}), 400
     
     conn = get_db()
     if conn.execute('SELECT id FROM users WHERE email=?', (data['email'].lower(),)).fetchone():
@@ -924,10 +937,10 @@ def register():
               (data['full_name'], data['email'].lower(), data['phone'], data.get('organization',''), data['country'], generate_password_hash(data['password']), verify_token, verify_expires))
     user_id = c.lastrowid
     
-    # Registration acknowledgments disabled
-    # for ack in ['use_restriction', 'intent_statement', 'no_guidance']:
-    #     c.execute('INSERT INTO acknowledgments (user_id,acknowledgment_type,ip_address,version_hash) VALUES (?,?,?,?)',
-    #               (user_id, ack, request.remote_addr, get_ack_hash(ACKS)))
+    # Log RUO acknowledgment for compliance audit trail
+    c.execute('INSERT INTO acknowledgments (user_id,acknowledgment_type,ip_address,version_hash) VALUES (?,?,?,?)',
+              (user_id, 'ruo_registration', request.remote_addr, get_ack_hash(RUO_ACKNOWLEDGMENT_VERSION)))
+    print(f"[COMPLIANCE] User {user_id} accepted RUO terms at registration - IP: {request.remote_addr}, Version: {RUO_ACKNOWLEDGMENT_VERSION}")
     
     conn.commit()
     conn.close()
@@ -1069,7 +1082,14 @@ def get_me():
 @login_required
 def confirm_first_login():
     conn = get_db()
-    conn.execute('UPDATE users SET first_login_confirmed=1 WHERE id=?', (session['user_id'],))
+    c = conn.cursor()
+    
+    # Log first login reaffirmation for compliance
+    c.execute('INSERT INTO acknowledgments (user_id,acknowledgment_type,ip_address,version_hash) VALUES (?,?,?,?)',
+              (session['user_id'], 'ruo_first_login_reaffirmation', request.remote_addr, get_ack_hash(RUO_ACKNOWLEDGMENT_VERSION)))
+    print(f"[COMPLIANCE] User {session['user_id']} reaffirmed RUO terms at first login - IP: {request.remote_addr}")
+    
+    c.execute('UPDATE users SET first_login_confirmed=1 WHERE id=?', (session['user_id'],))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Confirmed'})

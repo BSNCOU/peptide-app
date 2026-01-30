@@ -189,10 +189,10 @@
                 } else {
                     document.getElementById('verificationBanner').classList.add('hidden');
                 }
-                // First login modal disabled - users acknowledge at checkout
-                // if (!user.first_login_confirmed) {
-                //     showFirstLoginModal();
-                // }
+                // First login reaffirmation - required for compliance
+                if (!user.first_login_confirmed) {
+                    showFirstLoginModal();
+                }
             } catch (e) {
                 state.user = null;
             }
@@ -298,8 +298,24 @@
 
         function showRegister() {
             document.getElementById('mainContent').innerHTML = `
-                <div class="card" style="max-width: 550px; margin: 0 auto;">
-                    <h2>Create Account</h2>
+                <div class="card" style="max-width: 600px; margin: 0 auto;">
+                    <h2>Create Research Account</h2>
+                    
+                    <div style="background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+                        <h3 style="margin-top: 0; color: #2d3748; font-size: 1.1rem;">Research Use Only Acknowledgment</h3>
+                        <p style="color: #4a5568; font-size: 0.95rem; line-height: 1.6;">
+                            By creating an account with The Peptide Wizard, I acknowledge and agree to the following:
+                        </p>
+                        <ul style="color: #4a5568; font-size: 0.9rem; line-height: 1.8; margin: 15px 0; padding-left: 20px;">
+                            <li>All products offered are <strong>Research Use Only (RUO)</strong> materials.</li>
+                            <li>Products are <strong>not intended for human or veterinary use</strong>, including but not limited to injection, ingestion, or topical application.</li>
+                            <li>I am purchasing these materials solely for <strong>legitimate research, analytical, or educational purposes</strong>.</li>
+                            <li>I understand that The Peptide Wizard does not provide medical advice, dosing guidance, or instructions for human use.</li>
+                            <li>I accept full responsibility for ensuring that my purchase, handling, and use of these materials complies with all applicable local, state, and federal laws and regulations.</li>
+                            <li>I acknowledge that <strong>misuse of these materials is strictly prohibited</strong>.</li>
+                        </ul>
+                    </div>
+                    
                     <form onsubmit="register(event)">
                         <div class="grid grid-2">
                             <div class="form-group">
@@ -308,11 +324,11 @@
                             </div>
                             <div class="form-group">
                                 <label>Email *</label>
-                                <input type="text" id="regEmail" required placeholder="your@email.com">
+                                <input type="text" id="regEmail" required placeholder="your@email.com" autocomplete="off">
                             </div>
                             <div class="form-group">
                                 <label>Phone *</label>
-                                <input type="text" id="regPhone" required placeholder="e.g. 555-123-4567">
+                                <input type="text" id="regPhone" required placeholder="e.g. 555-123-4567" autocomplete="off">
                             </div>
                             <div class="form-group">
                                 <label>Country *</label>
@@ -331,7 +347,18 @@
                             <label>Confirm Password *</label>
                             <input type="password" id="regPassword2" required>
                         </div>
-                        <button type="submit" class="btn" style="width: 100%;">Create Account</button>
+                        
+                        <div class="checkbox-group" style="background: #fffbeb; padding: 15px; border-radius: 8px; border: 1px solid #f6e05e; margin: 20px 0;">
+                            <input type="checkbox" id="ruoAcknowledgment" style="width: 22px; height: 22px; min-width: 22px;">
+                            <label for="ruoAcknowledgment" style="font-weight: 500; color: #744210;">
+                                I certify that I have read, understand, and agree to the Research Use Only terms above.
+                            </label>
+                        </div>
+                        <p style="font-size: 0.85rem; color: #718096; text-align: center; margin-bottom: 15px;">
+                            You may not create an account or place orders without accepting these terms.
+                        </p>
+                        
+                        <button type="submit" class="btn" style="width: 100%; padding: 14px; font-size: 1rem;">Create Research Account</button>
                     </form>
                     <p style="margin-top: 15px; text-align: center; color: #718096;">
                         Already have an account? <a href="#" onclick="showLogin()" style="color: #4299e1;">Login</a>
@@ -342,6 +369,13 @@
 
         async function register(e) {
             e.preventDefault();
+            
+            // Check RUO acknowledgment
+            if (!document.getElementById('ruoAcknowledgment').checked) {
+                showAlert('You must accept the Research Use Only terms to create an account.');
+                return;
+            }
+            
             const pw = document.getElementById('regPassword').value;
             const pw2 = document.getElementById('regPassword2').value;
             if (pw !== pw2) {
@@ -357,7 +391,8 @@
                         phone: document.getElementById('regPhone').value,
                         country: document.getElementById('regCountry').value,
                         organization: document.getElementById('regOrg').value,
-                        password: pw
+                        password: pw,
+                        ruo_acknowledged: true
                     })
                 });
                 showAlert('Account created! Please check your email to verify your account.', 'success');
@@ -922,19 +957,22 @@
         function showFirstLoginModal() {
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal">
-                    <div class="modal-content">
-                        <h2>Welcome to Research Materials</h2>
-                        <div class="alert alert-info">
-                            Before you begin, please confirm that you understand our terms of service.
+                    <div class="modal-content" onclick="event.stopPropagation()">
+                        <h2 style="color: #2d3748;">Research Use Reaffirmation</h2>
+                        <div style="background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 15px 0;">
+                            <p style="color: #4a5568; font-size: 0.95rem; line-height: 1.6; margin: 0;">
+                                Before accessing products, you must reaffirm that you are purchasing materials for 
+                                <strong>research use only</strong>. All materials offered by The Peptide Wizard are 
+                                designated Research Use Only (RUO) and are not intended for human or veterinary use.
+                            </p>
                         </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="firstLoginAck" required>
-                            <label for="firstLoginAck">
-                                I understand that all products sold on this platform are for research purposes only 
-                                and are not intended for human consumption or clinical use.
+                        <div class="checkbox-group" style="background: #fffbeb; padding: 15px; border-radius: 8px; border: 1px solid #f6e05e;">
+                            <input type="checkbox" id="firstLoginAck" style="width: 22px; height: 22px; min-width: 22px;">
+                            <label for="firstLoginAck" style="font-weight: 500; color: #744210;">
+                                I reaffirm that I understand all products are for Research Use Only and are not intended for human or veterinary use.
                             </label>
                         </div>
-                        <button class="btn" style="width: 100%;" onclick="confirmFirstLogin()">Continue</button>
+                        <button class="btn" style="width: 100%; margin-top: 20px; padding: 14px;" onclick="confirmFirstLogin()">Continue to Products</button>
                     </div>
                 </div>
             `;
