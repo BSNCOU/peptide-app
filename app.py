@@ -23,8 +23,9 @@ app.config['SESSION_COOKIE_SECURE'] = os.environ.get('PRODUCTION', False)
 # ============================================
 
 CONFIG = {
-    'RESEND_API_KEY': os.environ.get('RESEND_API_KEY', ''),
-    'EMAIL_FROM': os.environ.get('EMAIL_FROM', 'onboarding@resend.dev'),
+    'MAILGUN_API_KEY': os.environ.get('MAILGUN_API_KEY', ''),
+    'MAILGUN_DOMAIN': os.environ.get('MAILGUN_DOMAIN', ''),
+    'EMAIL_FROM': os.environ.get('EMAIL_FROM', 'orders@mail.thepeptidewizard.com'),
     'TWILIO_ACCOUNT_SID': os.environ.get('TWILIO_ACCOUNT_SID', ''),
     'TWILIO_AUTH_TOKEN': os.environ.get('TWILIO_AUTH_TOKEN', ''),
     'TWILIO_PHONE_NUMBER': os.environ.get('TWILIO_PHONE_NUMBER', ''),
@@ -557,17 +558,23 @@ def verify_csrf_token(token):
 # ============================================
 
 def send_email(to, subject, html):
-    if not CONFIG['RESEND_API_KEY']:
+    if not CONFIG['MAILGUN_API_KEY'] or not CONFIG['MAILGUN_DOMAIN']:
         print(f"[EMAIL MOCK] To: {to}, Subject: {subject}")
         return True, "Mock sent"
     try:
         import requests
         print(f"[EMAIL] Sending to {to}: {subject}")
-        r = requests.post('https://api.resend.com/emails',
-            headers={'Authorization': f"Bearer {CONFIG['RESEND_API_KEY']}", 'Content-Type': 'application/json'},
-            json={'from': CONFIG['EMAIL_FROM'], 'to': [to], 'subject': subject, 'html': html})
+        r = requests.post(
+            f"https://api.mailgun.net/v3/{CONFIG['MAILGUN_DOMAIN']}/messages",
+            auth=("api", CONFIG['MAILGUN_API_KEY']),
+            data={
+                "from": CONFIG['EMAIL_FROM'],
+                "to": [to],
+                "subject": subject,
+                "html": html
+            })
         print(f"[EMAIL] Response: {r.status_code} - {r.text}")
-        return r.status_code in [200, 201], r.text
+        return r.status_code == 200, r.text
     except Exception as e:
         print(f"[EMAIL ERROR] {str(e)}")
         return False, str(e)
@@ -1655,7 +1662,7 @@ if __name__ == '__main__':
     print("\n" + "="*60)
     print("The Peptide Wizard - Ordering Platform")
     print("="*60)
-    print(f"\n📧 Email: {'Resend' if CONFIG['RESEND_API_KEY'] else 'Mock mode'}")
+    print(f"\n📧 Email: {'Mailgun' if CONFIG['MAILGUN_API_KEY'] else 'Mock mode'}")
     print(f"📱 SMS: {'Twilio' if CONFIG['TWILIO_ACCOUNT_SID'] else 'Mock mode'}")
     
     init_db()
