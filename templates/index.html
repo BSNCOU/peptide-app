@@ -665,12 +665,12 @@
 
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
-                    <div class="modal-content">
+                    <div class="modal-content" onclick="event.stopPropagation()">
                         <h2>Checkout - Research Use Acknowledgment</h2>
                         <div class="alert alert-warning">
                             <strong>Important:</strong> These materials are intended for research purposes only.
                         </div>
-                        <form onsubmit="submitOrder(event)">
+                        <form id="checkoutForm">
                             <div class="form-group">
                                 <label><strong>Delivery Method *</strong></label>
                                 <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
@@ -731,7 +731,7 @@
                                 </div>
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
-                                <button type="submit" class="btn btn-success" style="padding: 15px; font-size: 1.1rem;">Place Order</button>
+                                <button type="button" class="btn btn-success" onclick="submitOrder()" style="padding: 15px; font-size: 1.1rem;">Place Order</button>
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()" style="padding: 12px;">Cancel</button>
                             </div>
                         </form>
@@ -758,9 +758,7 @@
             }
         }
 
-        async function submitOrder(e) {
-            e.preventDefault();
-            
+        async function submitOrder() {
             // Check all acknowledgments are checked
             const ack1 = document.getElementById('ack1').checked;
             const ack2 = document.getElementById('ack2').checked;
@@ -773,7 +771,8 @@
             }
             
             const deliveryMethod = document.querySelector('input[name="deliveryMethod"]:checked').value;
-            const shippingAddress = document.getElementById('shippingAddress').value;
+            const shippingAddressEl = document.getElementById('shippingAddress');
+            const shippingAddress = shippingAddressEl ? shippingAddressEl.value : '';
             
             if (deliveryMethod === 'ship' && !shippingAddress.trim()) {
                 showAlert('Please enter a shipping address');
