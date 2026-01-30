@@ -356,6 +356,25 @@ def init_db():
     
     conn.commit()
     
+    # Add columns if they don't exist (for existing databases)
+    try:
+        if using_postgres:
+            c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_cost REAL DEFAULT 0")
+            c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_method TEXT DEFAULT 'pickup'")
+        else:
+            # SQLite doesn't have IF NOT EXISTS for columns, so try/except
+            try:
+                c.execute("ALTER TABLE orders ADD COLUMN shipping_cost REAL DEFAULT 0")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE orders ADD COLUMN delivery_method TEXT DEFAULT 'pickup'")
+            except:
+                pass
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Column migration skipped or already done: {e}")
+    
     # Create default admin if none exists
     if using_postgres:
         import psycopg2.extras
