@@ -930,6 +930,30 @@ def verify_email(token):
         print(f"[EMAIL VERIFY ERROR] {str(e)}")
         return jsonify({'error': 'Verification failed'}), 500
 
+@app.route('/verify', methods=['GET'])
+def verify_email_page():
+    token = request.args.get('token')
+    if not token:
+        return redirect('/?error=missing_token')
+    
+    try:
+        conn = get_db()
+        result = conn.execute('SELECT id, email FROM users WHERE email_verify_token = ? AND email_verify_expires > ?', (token, datetime.now()))
+        user = result.fetchone()
+        if not user:
+            conn.close()
+            return redirect('/?error=invalid_token')
+        
+        user_id = user['id'] if isinstance(user, dict) else user[0]
+        conn.execute('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        print(f"[EMAIL VERIFY] User {user_id} email verified successfully via link")
+        return redirect('/?verified=1')
+    except Exception as e:
+        print(f"[EMAIL VERIFY ERROR] {str(e)}")
+        return redirect('/?error=verification_failed')
+
 @app.route('/api/resend-verification', methods=['POST'])
 @login_required
 @rate_limit('forgot_password')

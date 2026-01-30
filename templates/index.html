@@ -159,6 +159,22 @@
 
         // Initialize
         async function init() {
+            // Check for URL parameters (verification result)
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('verified') === '1') {
+                showAlert('Email verified successfully! You can now log in.', 'success');
+                window.history.replaceState({}, document.title, '/');
+            }
+            if (urlParams.get('error')) {
+                const errorMsg = {
+                    'missing_token': 'Missing verification token',
+                    'invalid_token': 'Invalid or expired verification link',
+                    'verification_failed': 'Verification failed. Please try again.'
+                }[urlParams.get('error')] || 'An error occurred';
+                showAlert(errorMsg);
+                window.history.replaceState({}, document.title, '/');
+            }
+            
             try {
                 const tokenRes = await api('/api/csrf-token');
                 state.csrfToken = tokenRes.token;
