@@ -183,9 +183,11 @@
             try {
                 const user = await api('/api/me');
                 state.user = user;
-                // Show verification banner if email not verified
+                // Show/hide verification banner based on email status
                 if (!user.email_verified) {
                     document.getElementById('verificationBanner').classList.remove('hidden');
+                } else {
+                    document.getElementById('verificationBanner').classList.add('hidden');
                 }
                 // First login modal disabled - users acknowledge at checkout
                 // if (!user.first_login_confirmed) {
