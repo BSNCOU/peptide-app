@@ -403,6 +403,13 @@ def init_db():
     except Exception as e:
         print(f"Note: Column migration: {e}")
     
+    # Fix any NULL active fields
+    try:
+        c.execute("UPDATE products SET active = 1 WHERE active IS NULL")
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Active field fix: {e}")
+    
     # Create default admin if none exists
     if using_postgres:
         import psycopg2.extras

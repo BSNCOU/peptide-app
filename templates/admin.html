@@ -234,7 +234,8 @@
 
         function renderProducts() {
             const content = document.getElementById('tabContent');
-            const activeProducts = state.products.filter(p => p.active === 1 || p.active === true);
+            // Handle NULL active field - treat as active
+            const activeProducts = state.products.filter(p => p.active === 1 || p.active === true || p.active === null || p.active === undefined);
             const inactiveProducts = state.products.filter(p => p.active === 0 || p.active === false);
             const showInactive = state.showInactiveProducts || false;
             const displayProducts = showInactive ? state.products : activeProducts;
@@ -276,8 +277,9 @@
                                 const reorderQty = p.reorder_qty !== null && p.reorder_qty !== undefined ? p.reorder_qty : 4;
                                 const minUnits = reorderQty * 10;
                                 const needsReorder = reorderQty > 0 && p.stock < minUnits;
+                                const isActive = p.active === 1 || p.active === true || p.active === null || p.active === undefined;
                                 return `
-                                <tr class="${!p.active ? 'inactive' : ''}" style="${!p.active ? 'background: #fff5f5;' : ''}">
+                                <tr class="${!isActive ? 'inactive' : ''}" style="${!isActive ? 'background: #fff5f5;' : ''}">
                                     <td>${p.sku}</td>
                                     <td>${p.name}</td>
                                     <td>$${p.price_single.toFixed(2)}${p.price_bulk ? ` / $${p.price_bulk.toFixed(2)}` : ''}</td>
@@ -285,10 +287,10 @@
                                     <td><span class="${marginClass}">${margin}${margin !== '-' ? '%' : ''}</span></td>
                                     <td class="${p.stock < 10 ? 'low-stock' : ''}">${p.stock}</td>
                                     <td>${reorderQty > 0 ? reorderQty + ' boxes' : '<span style="color:#a0aec0">-</span>'}${needsReorder ? ' ⚠️' : ''}</td>
-                                    <td>${p.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
+                                    <td>${isActive ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showEditProductModal(${p.id})">Edit</button>
-                                        ${p.active 
+                                        ${isActive 
                                             ? `<button class="btn btn-danger btn-small" onclick="deleteProduct(${p.id})">Deactivate</button>`
                                             : `<button class="btn btn-success btn-small" onclick="restoreProduct(${p.id})">Restore</button>`
                                         }
