@@ -249,6 +249,7 @@
                                 <th>Cost</th>
                                 <th>Margin</th>
                                 <th>Stock</th>
+                                <th>Reorder</th>
                                 <th>Status</th>
                                 <th>Actions</th>
                             </tr>
@@ -257,6 +258,9 @@
                             ${state.products.map(p => {
                                 const margin = p.cost > 0 ? ((p.price_single - p.cost) / p.price_single * 100).toFixed(0) : '-';
                                 const marginClass = p.cost > 0 ? (margin < 20 ? 'low-stock' : margin < 40 ? '' : 'status-paid') : '';
+                                const reorderQty = p.reorder_qty !== null && p.reorder_qty !== undefined ? p.reorder_qty : 4;
+                                const minUnits = reorderQty * 10;
+                                const needsReorder = reorderQty > 0 && p.stock < minUnits;
                                 return `
                                 <tr class="${!p.active ? 'inactive' : ''}">
                                     <td>${p.sku}</td>
@@ -265,6 +269,7 @@
                                     <td>${p.cost > 0 ? '$' + p.cost.toFixed(2) : '<span style="color:#a0aec0">-</span>'}</td>
                                     <td><span class="${marginClass}">${margin}${margin !== '-' ? '%' : ''}</span></td>
                                     <td class="${p.stock < 10 ? 'low-stock' : ''}">${p.stock}</td>
+                                    <td>${reorderQty > 0 ? reorderQty + ' boxes' : '<span style="color:#a0aec0">-</span>'}${needsReorder ? ' ⚠️' : ''}</td>
                                     <td>${p.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showEditProductModal(${p.id})">Edit</button>
@@ -321,12 +326,19 @@
                                     <input type="number" id="prodCost" step="0.01" value="0">
                                 </div>
                                 <div class="form-group">
-                                    <label>Category</label>
-                                    <input type="text" id="prodCategory">
+                                    <label>Reorder Qty (boxes)</label>
+                                    <input type="number" id="prodReorderQty" value="4" min="0">
+                                    <small style="color: #718096;">0 = don't reorder</small>
                                 </div>
                                 <div class="form-group">
                                     <label>Stock *</label>
                                     <input type="number" id="prodStock" required value="0">
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Category</label>
+                                    <input type="text" id="prodCategory">
                                 </div>
                             </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
@@ -353,7 +365,8 @@
                         bulk_quantity: parseInt(document.getElementById('prodBulkQty').value) || 10,
                         category: document.getElementById('prodCategory').value,
                         stock: parseInt(document.getElementById('prodStock').value),
-                        cost: parseFloat(document.getElementById('prodCost').value) || 0
+                        cost: parseFloat(document.getElementById('prodCost').value) || 0,
+                        reorder_qty: parseInt(document.getElementById('prodReorderQty').value) || 4
                     })
                 });
                 closeModal();
@@ -370,6 +383,7 @@
             
             // Calculate margin if cost is set
             const margin = p.cost > 0 ? ((p.price_single - p.cost) / p.price_single * 100).toFixed(1) : 'N/A';
+            const reorderQty = p.reorder_qty !== null && p.reorder_qty !== undefined ? p.reorder_qty : 4;
             
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
@@ -411,12 +425,19 @@
                                     <small style="color: #718096;">Margin: ${margin}%</small>
                                 </div>
                                 <div class="form-group">
-                                    <label>Category</label>
-                                    <input type="text" id="prodCategory" value="${p.category || ''}">
+                                    <label>Reorder Qty (boxes)</label>
+                                    <input type="number" id="prodReorderQty" value="${reorderQty}" min="0">
+                                    <small style="color: #718096;">0 = don't reorder</small>
                                 </div>
                                 <div class="form-group">
                                     <label>Stock *</label>
                                     <input type="number" id="prodStock" value="${p.stock}" required>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Category</label>
+                                    <input type="text" id="prodCategory" value="${p.category || ''}">
                                 </div>
                             </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
@@ -443,7 +464,8 @@
                         bulk_quantity: parseInt(document.getElementById('prodBulkQty').value) || 10,
                         category: document.getElementById('prodCategory').value,
                         stock: parseInt(document.getElementById('prodStock').value),
-                        cost: parseFloat(document.getElementById('prodCost').value) || 0
+                        cost: parseFloat(document.getElementById('prodCost').value) || 0,
+                        reorder_qty: parseInt(document.getElementById('prodReorderQty').value) || 0
                     })
                 });
                 closeModal();
@@ -1670,15 +1692,12 @@ BC10,8.00</pre>
                     
                     <div class="card" style="margin-bottom: 0;">
                         <h3 style="margin-bottom: 15px;">📦 Inventory & Reorder</h3>
-                        <p style="color: #718096; margin-bottom: 15px;">Stock levels and purchase orders</p>
+                        <p style="color: #718096; margin-bottom: 15px;">Stock levels based on per-product reorder quantities</p>
                         <div class="form-row" style="margin-bottom: 15px;">
-                            <div class="form-group" style="margin-bottom: 0;">
-                                <label style="font-size: 0.8rem;">Min Boxes (10-packs)</label>
-                                <input type="number" id="minBoxes" value="4" min="1" style="width: 80px;">
-                            </div>
                             <div class="form-group" style="margin-bottom: 0;">
                                 <label style="font-size: 0.8rem;">Order Threshold $</label>
                                 <input type="number" id="orderThreshold" value="1000" min="100" style="width: 100px;">
+                                <small style="color: #718096;">Min order to generate</small>
                             </div>
                         </div>
                         <button class="btn" onclick="loadInventoryReport()">Check Inventory</button>
@@ -1787,14 +1806,13 @@ BC10,8.00</pre>
         }
 
         async function loadInventoryReport() {
-            const minBoxes = parseInt(document.getElementById('minBoxes').value) || 4;
             const orderThreshold = parseFloat(document.getElementById('orderThreshold').value) || 1000;
             const container = document.getElementById('inventoryReportContent');
             
             container.innerHTML = '<p style="color: #718096;">Loading...</p>';
             
             try {
-                const report = await api(`/api/admin/reports/inventory?min_boxes=${minBoxes}&order_threshold=${orderThreshold}`);
+                const report = await api(`/api/admin/reports/inventory?order_threshold=${orderThreshold}`);
                 
                 const needsOrder = report.needs_reorder || [];
                 const orderTotal = needsOrder.reduce((sum, p) => sum + (p.order_cost || 0), 0);
@@ -1838,14 +1856,14 @@ BC10,8.00</pre>
                         
                         <div style="max-height: 250px; overflow-y: auto;">
                             <table style="font-size: 0.85rem;">
-                                <thead><tr><th>SKU</th><th>Product</th><th>Stock</th><th>Need</th><th>Order Qty</th><th>Cost</th></tr></thead>
+                                <thead><tr><th>SKU</th><th>Product</th><th>Stock</th><th>Min</th><th>Order Qty</th><th>Cost</th></tr></thead>
                                 <tbody>
                                     ${needsOrder.map(p => `
                                         <tr>
                                             <td><strong>${p.sku}</strong></td>
                                             <td>${p.name}</td>
                                             <td class="low-stock">${p.stock}</td>
-                                            <td>${minBoxes * 10}</td>
+                                            <td>${p.min_units} (${p.reorder_qty} boxes)</td>
                                             <td>${p.boxes_to_order} boxes</td>
                                             <td>$${parseFloat(p.order_cost || 0).toFixed(2)}</td>
                                         </tr>
@@ -1859,7 +1877,7 @@ BC10,8.00</pre>
                 `;
                 
                 // Store for WhatsApp order generation
-                window.reorderData = { needsOrder, orderTotal, minBoxes };
+                window.reorderData = { needsOrder, orderTotal };
                 
             } catch (err) {
                 container.innerHTML = '<p style="color: #e53e3e;">Error: ' + err.message + '</p>';

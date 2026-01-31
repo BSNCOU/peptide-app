@@ -389,14 +389,19 @@ def init_db():
     try:
         if using_postgres:
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS cost REAL DEFAULT 0")
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS reorder_qty INTEGER DEFAULT 4")
         else:
             try:
                 c.execute("ALTER TABLE products ADD COLUMN cost REAL DEFAULT 0")
             except:
                 pass
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN reorder_qty INTEGER DEFAULT 4")
+            except:
+                pass
         conn.commit()
     except Exception as e:
-        print(f"Note: Cost column migration: {e}")
+        print(f"Note: Column migration: {e}")
     
     # Create default admin if none exists
     if using_postgres:
@@ -1372,8 +1377,8 @@ def admin_add_product():
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('INSERT INTO products (sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,sort_order,cost) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                  (data['sku'].upper(), data['name'], data.get('description', 'For research use only.'), data['price_single'], data.get('price_bulk'), data.get('bulk_quantity', 10), data.get('stock', 0), data.get('category'), data.get('sort_order', 0), data.get('cost', 0)))
+        c.execute('INSERT INTO products (sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,sort_order,cost,reorder_qty) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                  (data['sku'].upper(), data['name'], data.get('description', 'For research use only.'), data['price_single'], data.get('price_bulk'), data.get('bulk_quantity', 10), data.get('stock', 0), data.get('category'), data.get('sort_order', 0), data.get('cost', 0), data.get('reorder_qty', 4)))
         conn.commit()
         pid = c.lastrowid
         conn.close()
@@ -1389,8 +1394,8 @@ def admin_add_product():
 def admin_update_product(pid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,stock=?,category=?,active=?,sort_order=?,cost=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                 (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0), pid))
+    conn.execute('UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,stock=?,category=?,active=?,sort_order=?,cost=?,reorder_qty=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                 (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0), data.get('reorder_qty',4), pid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Product updated'})
@@ -1564,17 +1569,14 @@ def admin_financial_report():
 @app.route('/api/admin/reports/inventory', methods=['GET'])
 @admin_required
 def admin_inventory_report():
-    """Get inventory report with reorder recommendations"""
-    min_boxes = int(request.args.get('min_boxes', 4))  # Minimum boxes (10-packs) to keep on hand
+    """Get inventory report with reorder recommendations based on per-product reorder_qty"""
     order_threshold = float(request.args.get('order_threshold', 1000))  # Minimum order value
-    
-    min_units = min_boxes * 10  # Convert boxes to units
     
     conn = get_db()
     
-    # Get all active products with their stock and costs
+    # Get all active products with their stock, costs, and reorder quantities
     products = conn.execute('''
-        SELECT id, sku, name, stock, cost, price_single, price_bulk
+        SELECT id, sku, name, stock, cost, price_single, price_bulk, reorder_qty
         FROM products 
         WHERE active = 1
         ORDER BY sku
@@ -1586,18 +1588,31 @@ def admin_inventory_report():
     inventory_cost = 0
     potential_revenue = 0
     needs_reorder = []
+    all_products = []
     
     for p in products:
         stock = p['stock'] or 0
         cost = float(p['cost'] or 0)
         price = float(p['price_single'] or 0)
+        reorder_qty = p['reorder_qty'] if p['reorder_qty'] is not None else 4  # Default to 4 boxes
+        min_units = reorder_qty * 10  # Convert boxes to units
         
         total_units += stock
         inventory_cost += stock * cost
         potential_revenue += stock * price
         
-        # Check if needs reorder (below minimum boxes threshold)
-        if stock < min_units and cost > 0:
+        # Add to all products list for display
+        all_products.append({
+            'sku': p['sku'],
+            'name': p['name'],
+            'stock': stock,
+            'cost': cost,
+            'reorder_qty': reorder_qty,
+            'min_units': min_units
+        })
+        
+        # Check if needs reorder (below minimum AND reorder_qty > 0)
+        if reorder_qty > 0 and stock < min_units and cost > 0:
             # Calculate how many boxes to order to get back to minimum
             units_needed = min_units - stock
             boxes_to_order = max(1, (units_needed + 9) // 10)  # Round up to nearest box
@@ -1610,6 +1625,8 @@ def admin_inventory_report():
                 'name': p['name'],
                 'stock': stock,
                 'cost': cost,
+                'reorder_qty': reorder_qty,
+                'min_units': min_units,
                 'boxes_to_order': boxes_to_order,
                 'order_cost': order_cost
             })
@@ -1619,7 +1636,7 @@ def admin_inventory_report():
         'inventory_cost': inventory_cost,
         'potential_revenue': potential_revenue,
         'needs_reorder': needs_reorder,
-        'min_boxes': min_boxes,
+        'all_products': all_products,
         'order_threshold': order_threshold
     })
 
