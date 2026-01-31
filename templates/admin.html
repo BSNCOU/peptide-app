@@ -121,7 +121,8 @@
             notifications: [],
             inventory: [],
             currentTab: 'products',
-            orderStatusFilter: ''
+            orderStatusFilter: '',
+            showInactiveProducts: false
         };
 
         async function api(endpoint, options = {}) {
@@ -233,11 +234,27 @@
 
         function renderProducts() {
             const content = document.getElementById('tabContent');
+            const activeProducts = state.products.filter(p => p.active);
+            const inactiveProducts = state.products.filter(p => !p.active);
+            const showInactive = state.showInactiveProducts || false;
+            const displayProducts = showInactive ? state.products : activeProducts;
+            
             content.innerHTML = `
                 <div class="toolbar">
                     <button class="btn" onclick="showAddProductModal()">+ Add Product</button>
                     <button class="btn btn-secondary" onclick="showBulkStockModal()">📦 Bulk Stock Update</button>
                     <button class="btn btn-secondary" onclick="showBulkCostsModal()">💰 Upload Costs</button>
+                    <div style="margin-left: auto; display: flex; align-items: center; gap: 15px;">
+                        <span style="color: #718096; font-size: 0.9rem;">
+                            ${activeProducts.length} active${inactiveProducts.length > 0 ? `, <span style="color: #e53e3e;">${inactiveProducts.length} inactive</span>` : ''}
+                        </span>
+                        ${inactiveProducts.length > 0 ? `
+                            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                <input type="checkbox" ${showInactive ? 'checked' : ''} onchange="toggleInactiveProducts(this.checked)">
+                                <span style="font-size: 0.9rem;">Show Inactive</span>
+                            </label>
+                        ` : ''}
+                    </div>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
@@ -255,14 +272,14 @@
                             </tr>
                         </thead>
                         <tbody>
-                            ${state.products.map(p => {
+                            ${displayProducts.map(p => {
                                 const margin = p.cost > 0 ? ((p.price_single - p.cost) / p.price_single * 100).toFixed(0) : '-';
                                 const marginClass = p.cost > 0 ? (margin < 20 ? 'low-stock' : margin < 40 ? '' : 'status-paid') : '';
                                 const reorderQty = p.reorder_qty !== null && p.reorder_qty !== undefined ? p.reorder_qty : 4;
                                 const minUnits = reorderQty * 10;
                                 const needsReorder = reorderQty > 0 && p.stock < minUnits;
                                 return `
-                                <tr class="${!p.active ? 'inactive' : ''}">
+                                <tr class="${!p.active ? 'inactive' : ''}" style="${!p.active ? 'background: #fff5f5;' : ''}">
                                     <td>${p.sku}</td>
                                     <td>${p.name}</td>
                                     <td>$${p.price_single.toFixed(2)}${p.price_bulk ? ` / $${p.price_bulk.toFixed(2)}` : ''}</td>
@@ -284,6 +301,11 @@
                     </table>
                 </div>
             `;
+        }
+        
+        function toggleInactiveProducts(show) {
+            state.showInactiveProducts = show;
+            renderProducts();
         }
 
         function showAddProductModal() {
@@ -478,10 +500,12 @@
         }
 
         async function deleteProduct(id) {
-            if (!confirm('Are you sure you want to deactivate this product?')) return;
+            const product = state.products.find(p => p.id === id);
+            const productName = product ? product.name : 'this product';
+            if (!confirm(`⚠️ DEACTIVATE PRODUCT\n\nAre you sure you want to deactivate "${productName}"?\n\nThis will:\n• Hide it from the store\n• Keep all order history\n• You can restore it later via "Show Inactive" checkbox`)) return;
             try {
                 await api(`/api/admin/products/${id}`, { method: 'DELETE' });
-                showAlert('Product deactivated', 'success');
+                showAlert('Product deactivated. Check "Show Inactive" to restore.', 'success');
                 loadProducts();
             } catch (err) {
                 showAlert(err.message);
