@@ -333,6 +333,16 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
+    c.execute(f'''CREATE TABLE IF NOT EXISTS inventory_receipts (
+        id {auto_id},
+        product_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        received_date DATE NOT NULL,
+        lot_number TEXT,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
     c.execute(f'''CREATE TABLE IF NOT EXISTS rate_limits (
         id {auto_id},
         ip_address TEXT NOT NULL,
@@ -1319,7 +1329,8 @@ def download_invoice(oid):
 @admin_required
 def admin_stats():
     conn = get_db()
-    orders = conn.execute('SELECT COUNT(*) as count, SUM(total) as total FROM orders').fetchone()
+    # Exclude cancelled/refunded orders from revenue
+    orders = conn.execute("SELECT COUNT(*) as count, SUM(total) as total FROM orders WHERE status NOT IN ('cancelled', 'refunded')").fetchone()
     by_status = {r['status']: r['count'] for r in conn.execute('SELECT status, COUNT(*) as count FROM orders GROUP BY status').fetchall()}
     users = conn.execute('SELECT COUNT(*) as count FROM users WHERE is_admin=0').fetchone()
     products = conn.execute('SELECT COUNT(*) as count FROM products WHERE active=1').fetchone()
@@ -1453,77 +1464,146 @@ def admin_delete_code(cid):
     conn.close()
     return jsonify({'message': 'Code deactivated'})
 
+@app.route('/api/admin/discount-codes/<int:cid>/permanent', methods=['DELETE'])
+@admin_required
+def admin_permanent_delete_code(cid):
+    """Permanently delete a discount code - only if never used"""
+    conn = get_db()
+    
+    # Check if code has been used
+    code = conn.execute('SELECT times_used FROM discount_codes WHERE id=?', (cid,)).fetchone()
+    if not code:
+        conn.close()
+        return jsonify({'error': 'Discount code not found'}), 404
+    
+    if code['times_used'] > 0:
+        conn.close()
+        return jsonify({'error': 'Cannot delete a discount code that has been used. Deactivate it instead.'}), 400
+    
+    conn.execute('DELETE FROM discount_codes WHERE id=?', (cid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'Discount code permanently deleted'})
+
+@app.route('/api/admin/inventory-receipts', methods=['GET'])
+@admin_required
+def admin_get_inventory_receipts():
+    """Get all inventory receipts with product names"""
+    conn = get_db()
+    receipts = conn.execute('''
+        SELECT ir.*, p.name as product_name, p.sku
+        FROM inventory_receipts ir
+        JOIN products p ON ir.product_id = p.id
+        ORDER BY ir.received_date DESC, ir.created_at DESC
+        LIMIT 100
+    ''').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in receipts])
+
+@app.route('/api/admin/inventory-receipts', methods=['POST'])
+@admin_required
+def admin_create_inventory_receipt():
+    """Create inventory receipt and update product stock"""
+    data = request.json
+    
+    product_id = data.get('product_id')
+    quantity = data.get('quantity')
+    received_date = data.get('received_date')
+    lot_number = data.get('lot_number')
+    notes = data.get('notes', '')
+    
+    if not product_id or not quantity or not received_date:
+        return jsonify({'error': 'product_id, quantity, and received_date are required'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Generate lot number if not provided
+    if not lot_number:
+        product = conn.execute('SELECT sku FROM products WHERE id=?', (product_id,)).fetchone()
+        if product:
+            sku = product['sku']
+            date_str = received_date.replace('-', '')
+            import random
+            random_suffix = random.randint(100, 999)
+            lot_number = f"{sku}-{date_str}-{random_suffix}"
+    
+    # Create receipt record
+    c.execute('''INSERT INTO inventory_receipts (product_id, quantity, received_date, lot_number, notes)
+                 VALUES (?, ?, ?, ?, ?)''', (product_id, quantity, received_date, lot_number, notes))
+    
+    # Update product stock
+    c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (quantity, product_id))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"[INVENTORY] Received {quantity} units for product {product_id}, Lot: {lot_number}")
+    
+    return jsonify({
+        'message': 'Inventory received and stock updated',
+        'lot_number': lot_number
+    }), 201
+
 @app.route('/api/admin/discount-codes/report', methods=['GET'])
 @admin_required
 def admin_discount_report():
-    """Get discount code usage report by period"""
-    period = request.args.get('period', 'month')  # 'week' or 'month'
+    """Get discount code usage report - supports date range"""
+    start_date = request.args.get('start_date')  # YYYY-MM-DD format
+    end_date = request.args.get('end_date')      # YYYY-MM-DD format
     
     conn = get_db()
     
-    # Get all discount codes with their usage stats
-    codes = conn.execute('''
-        SELECT dc.id, dc.code, dc.description, dc.discount_percent, dc.discount_amount,
-               dc.times_used, dc.active, dc.created_at
-        FROM discount_codes dc
-        ORDER BY dc.times_used DESC
-    ''').fetchall()
+    # Build date filter
+    if start_date and end_date:
+        date_filter = f"o.created_at >= '{start_date}' AND o.created_at < '{end_date}' + INTERVAL '1 day'" if is_postgres() else f"DATE(o.created_at) >= '{start_date}' AND DATE(o.created_at) <= '{end_date}'"
+    else:
+        # Default to last 30 days
+        date_filter = "o.created_at >= DATE('now', '-30 days')" if not is_postgres() else "o.created_at >= CURRENT_DATE - INTERVAL '30 days'"
     
-    # Get usage breakdown by period
-    if period == 'week':
-        # SQLite and PostgreSQL compatible - get orders from last 7 days grouped by day
-        usage_query = '''
-            SELECT dc.code, 
-                   DATE(o.created_at) as date,
-                   COUNT(*) as uses,
-                   SUM(o.discount_amount) as total_discount,
-                   SUM(o.total) as total_revenue
-            FROM orders o
-            JOIN discount_codes dc ON o.discount_code_id = dc.id
-            WHERE o.created_at >= DATE('now', '-7 days')
-            GROUP BY dc.code, DATE(o.created_at)
-            ORDER BY DATE(o.created_at) DESC, dc.code
-        '''
-    else:  # month
-        # Get orders from last 30 days grouped by week
-        usage_query = '''
-            SELECT dc.code,
-                   COUNT(*) as uses,
-                   SUM(o.discount_amount) as total_discount,
-                   SUM(o.total) as total_revenue
-            FROM orders o
-            JOIN discount_codes dc ON o.discount_code_id = dc.id
-            WHERE o.created_at >= DATE('now', '-30 days')
-            GROUP BY dc.code
-            ORDER BY uses DESC
-        '''
+    # Get usage breakdown by code in the date range
+    usage_query = f'''
+        SELECT dc.code,
+               COUNT(*) as times_used,
+               SUM(o.discount_amount) as total_discount,
+               SUM(o.total) as total_revenue
+        FROM orders o
+        JOIN discount_codes dc ON o.discount_code_id = dc.id
+        WHERE {date_filter}
+        AND o.status != 'cancelled'
+        GROUP BY dc.code
+        ORDER BY times_used DESC
+    '''
     
     try:
         usage = conn.execute(usage_query).fetchall()
-    except:
+    except Exception as e:
+        print(f"Usage query error: {e}")
         usage = []
     
-    # Get totals
-    totals_query = '''
+    # Get totals for the date range
+    totals_query = f'''
         SELECT COUNT(*) as total_orders_with_discount,
-               SUM(o.discount_amount) as total_discount_given,
-               SUM(o.total) as total_revenue
+               COALESCE(SUM(o.discount_amount), 0) as total_discount_given,
+               COALESCE(SUM(o.total), 0) as total_revenue
         FROM orders o
         WHERE o.discount_code_id IS NOT NULL
-        AND o.created_at >= DATE('now', '-30 days')
+        AND o.status != 'cancelled'
+        AND {date_filter}
     '''
     try:
         totals = conn.execute(totals_query).fetchone()
-    except:
+    except Exception as e:
+        print(f"Totals query error: {e}")
         totals = {'total_orders_with_discount': 0, 'total_discount_given': 0, 'total_revenue': 0}
     
     conn.close()
     
     return jsonify({
-        'codes': [dict(c) for c in codes],
         'usage': [dict(u) for u in usage] if usage else [],
         'totals': dict(totals) if totals else {},
-        'period': period
+        'start_date': start_date,
+        'end_date': end_date
     })
 
 @app.route('/api/admin/orders', methods=['GET'])

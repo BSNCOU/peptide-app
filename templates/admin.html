@@ -96,6 +96,7 @@
         <div class="card">
             <div class="tabs">
                 <button class="active" onclick="showTab('products')">Products</button>
+                <button onclick="showTab('inventory')">Inventory</button>
                 <button onclick="showTab('orders')">All Orders</button>
                 <button onclick="showTab('openOrders')">Open Orders</button>
                 <button onclick="showTab('discounts')">Discount Codes</button>
@@ -118,6 +119,7 @@
             discounts: [],
             users: [],
             notifications: [],
+            inventory: [],
             currentTab: 'products',
             orderStatusFilter: ''
         };
@@ -204,11 +206,12 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','orders','openOrders','discounts','reports','users','notifications'];
+            const tabList = ['products','inventory','orders','openOrders','discounts','reports','users','notifications'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
                 case 'products': loadProducts(); break;
+                case 'inventory': loadInventory(); break;
                 case 'orders': loadOrders(); break;
                 case 'openOrders': loadOpenOrders(); break;
                 case 'discounts': loadDiscounts(); break;
@@ -508,6 +511,169 @@
             }
         }
 
+        // Inventory - Receive Products with Lot Numbers
+        async function loadInventory() {
+            try {
+                state.products = await api('/api/admin/products');
+                state.inventory = await api('/api/admin/inventory-receipts');
+                renderInventory();
+            } catch (e) {
+                showAlert('Failed to load inventory');
+            }
+        }
+
+        function renderInventory() {
+            const activeProducts = state.products.filter(p => p.active);
+            const content = document.getElementById('tabContent');
+            content.innerHTML = `
+                <div class="toolbar">
+                    <h3 style="color: #2d3748;">Inventory Management</h3>
+                    <button class="btn" onclick="showReceiveInventoryModal()">📦 Receive Inventory</button>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px;">
+                    <div class="card" style="margin-bottom: 0;">
+                        <h4 style="margin-bottom: 15px;">Current Stock Levels</h4>
+                        <div style="max-height: 300px; overflow-y: auto;">
+                            <table>
+                                <thead><tr><th>Product</th><th>SKU</th><th>Stock</th></tr></thead>
+                                <tbody>
+                                    ${activeProducts.map(p => `
+                                        <tr>
+                                            <td>${p.name}</td>
+                                            <td>${p.sku}</td>
+                                            <td class="${p.stock < 10 ? 'low-stock' : ''}">${p.stock}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                
+                <h4 style="margin-bottom: 15px;">Recent Inventory Receipts</h4>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date Received</th>
+                                <th>Lot Number</th>
+                                <th>Product</th>
+                                <th>Qty Received</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${state.inventory && state.inventory.length > 0 
+                                ? state.inventory.map(r => `
+                                    <tr>
+                                        <td>${new Date(r.received_date).toLocaleDateString()}</td>
+                                        <td><strong>${r.lot_number}</strong></td>
+                                        <td>${r.product_name || r.sku}</td>
+                                        <td>${r.quantity}</td>
+                                        <td>${r.notes || '-'}</td>
+                                    </tr>
+                                `).join('')
+                                : '<tr><td colspan="5" style="text-align: center; color: #718096;">No inventory receipts yet</td></tr>'
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        function showReceiveInventoryModal() {
+            const activeProducts = state.products.filter(p => p.active);
+            const today = new Date().toISOString().split('T')[0];
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content">
+                        <h3>📦 Receive Inventory</h3>
+                        <form onsubmit="receiveInventory(event)">
+                            <div class="form-group">
+                                <label>Product *</label>
+                                <select id="receiveProductId" required onchange="generateLotNumber()">
+                                    <option value="">Select product...</option>
+                                    ${activeProducts.map(p => `<option value="${p.id}" data-sku="${p.sku}">${p.name} (${p.sku})</option>`).join('')}
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Quantity Received *</label>
+                                    <input type="number" id="receiveQty" min="1" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Date Received *</label>
+                                    <input type="date" id="receiveDate" value="${today}" required onchange="generateLotNumber()">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Lot Number</label>
+                                <input type="text" id="receiveLotNumber" placeholder="Auto-generated or enter manually">
+                                <small style="color: #718096;">Format: SKU-YYYYMMDD-XXX (auto-generated when you select product and date)</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Notes</label>
+                                <textarea id="receiveNotes" rows="2" placeholder="Supplier, invoice #, etc."></textarea>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                                <button type="submit" class="btn btn-success">Receive & Update Stock</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function generateLotNumber() {
+            const productSelect = document.getElementById('receiveProductId');
+            const dateInput = document.getElementById('receiveDate');
+            const lotInput = document.getElementById('receiveLotNumber');
+            
+            if (productSelect.value && dateInput.value) {
+                const sku = productSelect.options[productSelect.selectedIndex].dataset.sku;
+                const dateStr = dateInput.value.replace(/-/g, '');
+                const random = Math.floor(Math.random() * 900 + 100); // 3 digit random
+                lotInput.value = `${sku}-${dateStr}-${random}`;
+            }
+        }
+
+        async function receiveInventory(e) {
+            e.preventDefault();
+            
+            const productId = document.getElementById('receiveProductId').value;
+            const quantity = parseInt(document.getElementById('receiveQty').value);
+            const receivedDate = document.getElementById('receiveDate').value;
+            const lotNumber = document.getElementById('receiveLotNumber').value;
+            const notes = document.getElementById('receiveNotes').value;
+            
+            if (!productId || !quantity || !receivedDate) {
+                showAlert('Please fill in all required fields');
+                return;
+            }
+            
+            try {
+                await api('/api/admin/inventory-receipts', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        product_id: productId,
+                        quantity: quantity,
+                        received_date: receivedDate,
+                        lot_number: lotNumber || null,
+                        notes: notes
+                    })
+                });
+                closeModal();
+                showAlert(`Received ${quantity} units. Stock updated!`, 'success');
+                loadInventory();
+                loadStats();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
         // Orders
         async function loadOrders() {
             try {
@@ -692,8 +858,7 @@
             content.innerHTML = `
                 <div class="toolbar">
                     <button class="btn" onclick="showAddDiscountModal()">+ Add Discount Code</button>
-                    <button class="btn btn-secondary" onclick="showDiscountReport('week')">Weekly Report</button>
-                    <button class="btn btn-secondary" onclick="showDiscountReport('month')">Monthly Report</button>
+                    <button class="btn btn-secondary" onclick="showDiscountReportModal()">📊 Date Range Report</button>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
@@ -720,7 +885,11 @@
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showEditDiscountModal(${d.id})">Edit</button>
                                         ${d.active 
-                                            ? `<button class="btn btn-danger btn-small" onclick="deleteDiscount(${d.id})">Deactivate</button>`
+                                            ? `<button class="btn btn-warning btn-small" onclick="deactivateDiscount(${d.id})">Deactivate</button>`
+                                            : ''
+                                        }
+                                        ${(d.times_used || 0) === 0
+                                            ? `<button class="btn btn-danger btn-small" onclick="permanentlyDeleteDiscount(${d.id})">Delete</button>`
                                             : ''
                                         }
                                     </td>
@@ -732,17 +901,50 @@
             `;
         }
 
-        async function showDiscountReport(period) {
+        function showDiscountReportModal() {
+            const today = new Date().toISOString().split('T')[0];
+            const lastMonth = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 400px;">
+                        <h3>Generate Discount Report</h3>
+                        <div class="form-group">
+                            <label>Start Date</label>
+                            <input type="date" id="reportStartDate" value="${lastMonth}">
+                        </div>
+                        <div class="form-group">
+                            <label>End Date</label>
+                            <input type="date" id="reportEndDate" value="${today}">
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button class="btn" onclick="generateDiscountReport()">Generate Report</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function generateDiscountReport() {
+            const startDate = document.getElementById('reportStartDate').value;
+            const endDate = document.getElementById('reportEndDate').value;
+            
+            if (!startDate || !endDate) {
+                showAlert('Please select both start and end dates');
+                return;
+            }
+            
             try {
-                const report = await api(`/api/admin/discount-codes/report?period=${period}`);
+                const report = await api(`/api/admin/discount-codes/report?start_date=${startDate}&end_date=${endDate}`);
                 
-                const periodLabel = period === 'week' ? 'Last 7 Days' : 'Last 30 Days';
                 const totals = report.totals || {};
                 
                 document.getElementById('modalContainer').innerHTML = `
                     <div class="modal" onclick="if(event.target===this)closeModal()">
                         <div class="modal-content" style="max-width: 700px;">
-                            <h3>Discount Code Report - ${periodLabel}</h3>
+                            <h3>Discount Code Report</h3>
+                            <p style="color: #718096; margin-bottom: 15px;">${startDate} to ${endDate}</p>
                             
                             <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin: 20px 0;">
                                 <div style="background: #edf2f7; padding: 15px; border-radius: 8px; text-align: center;">
@@ -780,44 +982,49 @@
                                         ? report.usage.map(u => `
                                             <tr>
                                                 <td><strong>${u.code}</strong></td>
-                                                <td>${u.uses}</td>
-                                                <td>$${parseFloat(u.total_discount || 0).toFixed(2)}</td>
-                                                <td>$${parseFloat(u.total_revenue || 0).toFixed(2)}</td>
+                                                <td>${u.times_used}</td>
+                                                <td style="color: #e53e3e;">$${parseFloat(u.total_discount).toFixed(2)}</td>
+                                                <td style="color: #38a169;">$${parseFloat(u.total_revenue).toFixed(2)}</td>
                                             </tr>
                                         `).join('')
-                                        : '<tr><td colspan="4" style="text-align: center; color: #718096;">No discount codes used in this period</td></tr>'
+                                        : '<tr><td colspan="4" style="text-align:center; color:#718096;">No discount usage in this period</td></tr>'
                                     }
                                 </tbody>
                             </table>
-                            
-                            <h4 style="margin-top: 20px;">All Codes - Total Usage</h4>
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Code</th>
-                                        <th>Discount</th>
-                                        <th>Total Uses</th>
-                                        <th>Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${report.codes.map(c => `
-                                        <tr>
-                                            <td><strong>${c.code}</strong></td>
-                                            <td>${c.discount_percent > 0 ? `${c.discount_percent}%` : `$${parseFloat(c.discount_amount || 0).toFixed(2)}`}</td>
-                                            <td>${c.times_used || 0}</td>
-                                            <td>${c.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
-                            
-                            <button class="btn btn-secondary" onclick="closeModal()" style="margin-top: 20px;">Close</button>
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            </div>
                         </div>
                     </div>
                 `;
             } catch (err) {
-                showAlert('Failed to load report: ' + err.message);
+                showAlert(err.message);
+            }
+        }
+
+        async function deactivateDiscount(id) {
+            if (!confirm('Deactivate this discount code?')) return;
+            try {
+                await api(`/api/admin/discount-codes/${id}`, {
+                    method: 'DELETE'
+                });
+                showAlert('Discount code deactivated', 'success');
+                loadDiscounts();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function permanentlyDeleteDiscount(id) {
+            if (!confirm('Permanently delete this discount code? This cannot be undone.')) return;
+            try {
+                await api(`/api/admin/discount-codes/${id}/permanent`, {
+                    method: 'DELETE'
+                });
+                showAlert('Discount code deleted', 'success');
+                loadDiscounts();
+            } catch (err) {
+                showAlert(err.message);
             }
         }
 
@@ -947,17 +1154,6 @@
                 });
                 closeModal();
                 showAlert('Discount code updated', 'success');
-                loadDiscounts();
-            } catch (err) {
-                showAlert(err.message);
-            }
-        }
-
-        async function deleteDiscount(id) {
-            if (!confirm('Are you sure you want to deactivate this discount code?')) return;
-            try {
-                await api(`/api/admin/discount-codes/${id}`, { method: 'DELETE' });
-                showAlert('Discount code deactivated', 'success');
                 loadDiscounts();
             } catch (err) {
                 showAlert(err.message);
@@ -1238,6 +1434,7 @@
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOpenOrderDetailModal(${o.id})">View</button>
                                             <button class="btn btn-success btn-small" onclick="markOrderFulfilled(${o.id})">✓ Complete</button>
+                                            <button class="btn btn-danger btn-small" onclick="cancelOrder(${o.id})">✗ Cancel</button>
                                         </td>
                                     </tr>
                                 `).join('')}
@@ -1291,6 +1488,7 @@
                         <div style="display: flex; gap: 10px; margin-top: 20px;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                             <button class="btn btn-success" onclick="markOrderFulfilled(${o.id}); closeModal();">✓ Mark as Fulfilled</button>
+                            <button class="btn btn-danger" onclick="cancelOrder(${o.id}); closeModal();">✗ Cancel Order</button>
                         </div>
                     </div>
                 </div>
@@ -1306,6 +1504,21 @@
                 });
                 showAlert('Order marked as fulfilled!', 'success');
                 loadOpenOrders();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function cancelOrder(id) {
+            if (!confirm('Are you sure you want to cancel this order? This will remove it from revenue calculations.')) return;
+            try {
+                await api(`/api/admin/orders/${id}/status`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ status: 'cancelled' })
+                });
+                showAlert('Order cancelled!', 'success');
+                loadOpenOrders();
+                loadStats();
             } catch (err) {
                 showAlert(err.message);
             }
