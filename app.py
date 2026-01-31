@@ -385,6 +385,19 @@ def init_db():
     except Exception as e:
         print(f"Note: Column migration skipped or already done: {e}")
     
+    # Add cost column to products if it doesn't exist
+    try:
+        if using_postgres:
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS cost REAL DEFAULT 0")
+        else:
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN cost REAL DEFAULT 0")
+            except:
+                pass
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Cost column migration: {e}")
+    
     # Create default admin if none exists
     if using_postgres:
         import psycopg2.extras
@@ -1359,23 +1372,25 @@ def admin_add_product():
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('INSERT INTO products (sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,sort_order) VALUES (?,?,?,?,?,?,?,?,?)',
-                  (data['sku'].upper(), data['name'], data.get('description', 'For research use only.'), data['price_single'], data.get('price_bulk'), data.get('bulk_quantity', 10), data.get('stock', 0), data.get('category'), data.get('sort_order', 0)))
+        c.execute('INSERT INTO products (sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,sort_order,cost) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                  (data['sku'].upper(), data['name'], data.get('description', 'For research use only.'), data['price_single'], data.get('price_bulk'), data.get('bulk_quantity', 10), data.get('stock', 0), data.get('category'), data.get('sort_order', 0), data.get('cost', 0)))
         conn.commit()
         pid = c.lastrowid
         conn.close()
         return jsonify({'message': 'Product added', 'id': pid}), 201
-    except sqlite3.IntegrityError:
+    except Exception as e:
         conn.close()
-        return jsonify({'error': 'SKU already exists'}), 400
+        if 'UNIQUE' in str(e).upper() or 'duplicate' in str(e).lower():
+            return jsonify({'error': 'SKU already exists'}), 400
+        return jsonify({'error': str(e)}), 400
 
 @app.route('/api/admin/products/<int:pid>', methods=['PUT'])
 @admin_required
 def admin_update_product(pid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,stock=?,category=?,active=?,sort_order=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                 (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 1 if data.get('active',True) else 0, data.get('sort_order',0), pid))
+    conn.execute('UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,stock=?,category=?,active=?,sort_order=?,cost=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                 (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0), pid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Product updated'})
@@ -1415,6 +1430,136 @@ def admin_bulk_update_stock():
     conn.commit()
     conn.close()
     return jsonify({'message': f'{updated} products updated'})
+
+@app.route('/api/admin/products/bulk-update-costs', methods=['POST'])
+@admin_required
+def admin_bulk_update_costs():
+    """Bulk update product costs from CSV data (SKU, Cost)"""
+    data = request.json
+    costs = data.get('costs', [])
+    
+    if not costs:
+        return jsonify({'error': 'No costs data provided'}), 400
+    
+    conn = get_db()
+    updated = 0
+    not_found = []
+    
+    for item in costs:
+        sku = str(item.get('sku', '')).strip().upper()
+        cost = item.get('cost', 0)
+        
+        if not sku:
+            continue
+            
+        try:
+            cost = float(cost) if cost else 0
+        except:
+            continue
+        
+        # Try to find and update the product
+        result = conn.execute('SELECT id FROM products WHERE UPPER(sku) = ?', (sku,)).fetchone()
+        if result:
+            conn.execute('UPDATE products SET cost = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (cost, result['id']))
+            updated += 1
+        else:
+            not_found.append(sku)
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        'message': f'{updated} products updated',
+        'updated': updated,
+        'not_found': not_found
+    })
+
+@app.route('/api/admin/reports/financial', methods=['GET'])
+@admin_required
+def admin_financial_report():
+    """Get financial report with costs, revenue, and margins"""
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    conn = get_db()
+    
+    # Build date filter
+    date_filter = "1=1"
+    if start_date and end_date:
+        date_filter = f"DATE(o.created_at) >= '{start_date}' AND DATE(o.created_at) <= '{end_date}'"
+    
+    # Get order summary excluding cancelled/refunded
+    orders_query = f'''
+        SELECT 
+            COUNT(*) as total_orders,
+            COALESCE(SUM(o.total), 0) as gross_revenue,
+            COALESCE(SUM(o.discount_amount), 0) as total_discounts,
+            COALESCE(SUM(o.shipping_cost), 0) as shipping_collected
+        FROM orders o
+        WHERE o.status NOT IN ('cancelled', 'refunded')
+        AND {date_filter}
+    '''
+    orders = conn.execute(orders_query).fetchone()
+    
+    # Get COGS (cost of goods sold) from order items
+    cogs_query = f'''
+        SELECT COALESCE(SUM(oi.quantity * p.cost), 0) as cogs
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.id
+        JOIN products p ON oi.product_id = p.id
+        WHERE o.status NOT IN ('cancelled', 'refunded')
+        AND {date_filter}
+    '''
+    cogs = conn.execute(cogs_query).fetchone()
+    
+    # Get product-level breakdown
+    product_query = f'''
+        SELECT 
+            p.sku,
+            p.name,
+            p.cost,
+            p.price_single,
+            SUM(oi.quantity) as units_sold,
+            SUM(oi.quantity * oi.unit_price) as revenue,
+            SUM(oi.quantity * p.cost) as cost_of_goods,
+            SUM(oi.quantity * (oi.unit_price - p.cost)) as gross_profit
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.id
+        JOIN products p ON oi.product_id = p.id
+        WHERE o.status NOT IN ('cancelled', 'refunded')
+        AND {date_filter}
+        GROUP BY p.id, p.sku, p.name, p.cost, p.price_single
+        ORDER BY gross_profit DESC
+    '''
+    products = conn.execute(product_query).fetchall()
+    
+    # Get current inventory value
+    inventory = conn.execute('SELECT SUM(stock * cost) as inventory_value, SUM(stock) as total_units FROM products WHERE active = 1').fetchone()
+    
+    conn.close()
+    
+    gross_revenue = float(orders['gross_revenue'] or 0)
+    total_cogs = float(cogs['cogs'] or 0)
+    gross_profit = gross_revenue - total_cogs
+    
+    return jsonify({
+        'summary': {
+            'total_orders': orders['total_orders'] or 0,
+            'gross_revenue': gross_revenue,
+            'total_discounts': float(orders['total_discounts'] or 0),
+            'shipping_collected': float(orders['shipping_collected'] or 0),
+            'cogs': total_cogs,
+            'gross_profit': gross_profit,
+            'gross_margin_pct': (gross_profit / gross_revenue * 100) if gross_revenue > 0 else 0
+        },
+        'inventory': {
+            'total_value': float(inventory['inventory_value'] or 0),
+            'total_units': inventory['total_units'] or 0
+        },
+        'products': [dict(p) for p in products],
+        'start_date': start_date,
+        'end_date': end_date
+    })
 
 @app.route('/api/admin/discount-codes', methods=['GET'])
 @admin_required

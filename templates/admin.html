@@ -237,6 +237,7 @@
                 <div class="toolbar">
                     <button class="btn" onclick="showAddProductModal()">+ Add Product</button>
                     <button class="btn btn-secondary" onclick="showBulkStockModal()">📦 Bulk Stock Update</button>
+                    <button class="btn btn-secondary" onclick="showBulkCostsModal()">💰 Upload Costs</button>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
@@ -244,20 +245,25 @@
                             <tr>
                                 <th>SKU</th>
                                 <th>Name</th>
-                                <th>Category</th>
                                 <th>Price</th>
+                                <th>Cost</th>
+                                <th>Margin</th>
                                 <th>Stock</th>
                                 <th>Status</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            ${state.products.map(p => `
+                            ${state.products.map(p => {
+                                const margin = p.cost > 0 ? ((p.price_single - p.cost) / p.price_single * 100).toFixed(0) : '-';
+                                const marginClass = p.cost > 0 ? (margin < 20 ? 'low-stock' : margin < 40 ? '' : 'status-paid') : '';
+                                return `
                                 <tr class="${!p.active ? 'inactive' : ''}">
                                     <td>${p.sku}</td>
                                     <td>${p.name}</td>
-                                    <td>${p.category || '-'}</td>
                                     <td>$${p.price_single.toFixed(2)}${p.price_bulk ? ` / $${p.price_bulk.toFixed(2)}` : ''}</td>
+                                    <td>${p.cost > 0 ? '$' + p.cost.toFixed(2) : '<span style="color:#a0aec0">-</span>'}</td>
+                                    <td><span class="${marginClass}">${margin}${margin !== '-' ? '%' : ''}</span></td>
                                     <td class="${p.stock < 10 ? 'low-stock' : ''}">${p.stock}</td>
                                     <td>${p.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
                                     <td class="actions">
@@ -268,7 +274,7 @@
                                         }
                                     </td>
                                 </tr>
-                            `).join('')}
+                            `}).join('')}
                         </tbody>
                     </table>
                 </div>
@@ -311,6 +317,10 @@
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
+                                    <label>Your Cost (per unit)</label>
+                                    <input type="number" id="prodCost" step="0.01" value="0">
+                                </div>
+                                <div class="form-group">
                                     <label>Category</label>
                                     <input type="text" id="prodCategory">
                                 </div>
@@ -342,7 +352,8 @@
                         price_bulk: parseFloat(document.getElementById('prodBulkPrice').value) || null,
                         bulk_quantity: parseInt(document.getElementById('prodBulkQty').value) || 10,
                         category: document.getElementById('prodCategory').value,
-                        stock: parseInt(document.getElementById('prodStock').value)
+                        stock: parseInt(document.getElementById('prodStock').value),
+                        cost: parseFloat(document.getElementById('prodCost').value) || 0
                     })
                 });
                 closeModal();
@@ -356,6 +367,9 @@
         function showEditProductModal(id) {
             const p = state.products.find(x => x.id === id);
             if (!p) return;
+            
+            // Calculate margin if cost is set
+            const margin = p.cost > 0 ? ((p.price_single - p.cost) / p.price_single * 100).toFixed(1) : 'N/A';
             
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
@@ -392,6 +406,11 @@
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
+                                    <label>Your Cost (per unit)</label>
+                                    <input type="number" id="prodCost" step="0.01" value="${p.cost || 0}">
+                                    <small style="color: #718096;">Margin: ${margin}%</small>
+                                </div>
+                                <div class="form-group">
                                     <label>Category</label>
                                     <input type="text" id="prodCategory" value="${p.category || ''}">
                                 </div>
@@ -416,13 +435,15 @@
                 await api(`/api/admin/products/${id}`, {
                     method: 'PUT',
                     body: JSON.stringify({
+                        sku: document.getElementById('prodSku').value,
                         name: document.getElementById('prodName').value,
                         description: document.getElementById('prodDesc').value,
                         price_single: parseFloat(document.getElementById('prodPrice').value),
                         price_bulk: parseFloat(document.getElementById('prodBulkPrice').value) || null,
                         bulk_quantity: parseInt(document.getElementById('prodBulkQty').value) || 10,
                         category: document.getElementById('prodCategory').value,
-                        stock: parseInt(document.getElementById('prodStock').value)
+                        stock: parseInt(document.getElementById('prodStock').value),
+                        cost: parseFloat(document.getElementById('prodCost').value) || 0
                     })
                 });
                 closeModal();
@@ -506,6 +527,104 @@
                 showAlert('Stock levels updated', 'success');
                 loadProducts();
                 loadStats();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        function showBulkCostsModal() {
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 700px;">
+                        <h3>💰 Upload Product Costs</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Upload a CSV file with SKU and Cost columns to bulk update your product costs.</p>
+                        
+                        <div style="background: #edf2f7; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                            <strong>CSV Format:</strong>
+                            <pre style="background: white; padding: 10px; border-radius: 4px; margin-top: 10px; font-size: 0.85rem;">SKU,Cost
+SM10,6.50
+TR10,7.00
+BC10,8.00</pre>
+                            <small style="color: #718096;">Note: Cost should be per unit (not per box). First row should be headers.</small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Select CSV File</label>
+                            <input type="file" id="costsFile" accept=".csv,.txt" onchange="previewCostsFile()">
+                        </div>
+                        
+                        <div id="costsPreview" style="display: none; margin-bottom: 20px;">
+                            <h4 style="margin-bottom: 10px;">Preview:</h4>
+                            <div style="max-height: 200px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px;">
+                                <table id="costsPreviewTable">
+                                    <thead><tr><th>SKU</th><th>Cost</th></tr></thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px;">
+                            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button type="button" class="btn btn-success" onclick="uploadCosts()" id="uploadCostsBtn" disabled>Upload & Update Costs</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        let parsedCosts = [];
+
+        function previewCostsFile() {
+            const file = document.getElementById('costsFile').files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const text = e.target.result;
+                const lines = text.trim().split('\\n');
+                
+                parsedCosts = [];
+                const tbody = document.querySelector('#costsPreviewTable tbody');
+                tbody.innerHTML = '';
+                
+                for (let i = 1; i < lines.length; i++) { // Skip header
+                    const parts = lines[i].split(',');
+                    if (parts.length >= 2) {
+                        const sku = parts[0].trim().toUpperCase();
+                        const cost = parseFloat(parts[1].trim()) || 0;
+                        if (sku && cost > 0) {
+                            parsedCosts.push({ sku, cost });
+                            tbody.innerHTML += '<tr><td>' + sku + '</td><td>$' + cost.toFixed(2) + '</td></tr>';
+                        }
+                    }
+                }
+                
+                document.getElementById('costsPreview').style.display = 'block';
+                document.getElementById('uploadCostsBtn').disabled = parsedCosts.length === 0;
+            };
+            reader.readAsText(file);
+        }
+
+        async function uploadCosts() {
+            if (parsedCosts.length === 0) {
+                showAlert('No valid costs to upload');
+                return;
+            }
+            
+            try {
+                const result = await api('/api/admin/products/bulk-update-costs', {
+                    method: 'POST',
+                    body: JSON.stringify({ costs: parsedCosts })
+                });
+                
+                closeModal();
+                
+                let msg = result.updated + ' products updated';
+                if (result.not_found && result.not_found.length > 0) {
+                    msg += '. SKUs not found: ' + result.not_found.join(', ');
+                }
+                showAlert(msg, 'success');
+                loadProducts();
             } catch (err) {
                 showAlert(err.message);
             }
@@ -1527,8 +1646,27 @@
         // Reports
         async function renderReports() {
             const content = document.getElementById('tabContent');
+            const today = new Date().toISOString().split('T')[0];
+            const lastMonth = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+            
             content.innerHTML = `
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+                    <div class="card" style="margin-bottom: 0;">
+                        <h3 style="margin-bottom: 15px;">💰 Financial Report</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Revenue, costs, and margins</p>
+                        <div class="form-row" style="margin-bottom: 15px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">Start</label>
+                                <input type="date" id="finStartDate" value="${lastMonth}">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">End</label>
+                                <input type="date" id="finEndDate" value="${today}">
+                            </div>
+                        </div>
+                        <button class="btn" onclick="loadFinancialReport()">Generate Report</button>
+                        <div id="financialReportContent" style="margin-top: 20px;"></div>
+                    </div>
                     <div class="card" style="margin-bottom: 0;">
                         <h3 style="margin-bottom: 15px;">📊 Discount Code Report</h3>
                         <p style="color: #718096; margin-bottom: 15px;">Sales breakdown by discount code</p>
@@ -1543,6 +1681,70 @@
                     </div>
                 </div>
             `;
+        }
+
+        async function loadFinancialReport() {
+            const startDate = document.getElementById('finStartDate').value;
+            const endDate = document.getElementById('finEndDate').value;
+            const container = document.getElementById('financialReportContent');
+            
+            container.innerHTML = '<p style="color: #718096;">Loading...</p>';
+            
+            try {
+                const report = await api(`/api/admin/reports/financial?start_date=${startDate}&end_date=${endDate}`);
+                const s = report.summary;
+                const inv = report.inventory;
+                
+                container.innerHTML = `
+                    <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;">
+                            <div style="text-align: center; padding: 10px; background: white; border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #38a169;">$${s.gross_revenue.toFixed(2)}</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Gross Revenue</div>
+                            </div>
+                            <div style="text-align: center; padding: 10px; background: white; border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #e53e3e;">$${s.cogs.toFixed(2)}</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Cost of Goods</div>
+                            </div>
+                            <div style="text-align: center; padding: 10px; background: white; border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #2b6cb0;">$${s.gross_profit.toFixed(2)}</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Gross Profit</div>
+                            </div>
+                            <div style="text-align: center; padding: 10px; background: white; border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #805ad5;">${s.gross_margin_pct.toFixed(1)}%</div>
+                                <div style="font-size: 0.8rem; color: #718096;">Gross Margin</div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e2e8f0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; font-size: 0.9rem;">
+                            <div><span style="color: #718096;">Orders:</span> <strong>${s.total_orders}</strong></div>
+                            <div><span style="color: #718096;">Discounts:</span> <strong>$${s.total_discounts.toFixed(2)}</strong></div>
+                            <div><span style="color: #718096;">Inventory Value:</span> <strong>$${inv.total_value.toFixed(2)}</strong></div>
+                            <div><span style="color: #718096;">Units in Stock:</span> <strong>${inv.total_units}</strong></div>
+                        </div>
+                    </div>
+                    ${report.products.length > 0 ? `
+                        <h4 style="margin-bottom: 10px;">Top Products by Profit</h4>
+                        <div style="max-height: 200px; overflow-y: auto;">
+                            <table style="font-size: 0.85rem;">
+                                <thead><tr><th>Product</th><th>Units</th><th>Revenue</th><th>COGS</th><th>Profit</th></tr></thead>
+                                <tbody>
+                                    ${report.products.slice(0, 10).map(p => `
+                                        <tr>
+                                            <td>${p.sku}</td>
+                                            <td>${p.units_sold}</td>
+                                            <td>$${parseFloat(p.revenue || 0).toFixed(2)}</td>
+                                            <td>$${parseFloat(p.cost_of_goods || 0).toFixed(2)}</td>
+                                            <td style="color: ${p.gross_profit >= 0 ? '#38a169' : '#e53e3e'};">$${parseFloat(p.gross_profit || 0).toFixed(2)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    ` : '<p style="color: #718096;">No sales in this period.</p>'}
+                `;
+            } catch (err) {
+                container.innerHTML = '<p style="color: #e53e3e;">Error loading report: ' + err.message + '</p>';
+            }
         }
 
         async function loadDiscountReport() {
