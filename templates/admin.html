@@ -234,27 +234,25 @@
 
         function renderProducts() {
             const content = document.getElementById('tabContent');
-            const activeProducts = state.products.filter(p => p.active);
-            const inactiveProducts = state.products.filter(p => !p.active);
+            const activeProducts = state.products.filter(p => p.active === 1 || p.active === true);
+            const inactiveProducts = state.products.filter(p => p.active === 0 || p.active === false);
             const showInactive = state.showInactiveProducts || false;
             const displayProducts = showInactive ? state.products : activeProducts;
             
             content.innerHTML = `
-                <div class="toolbar">
+                <div class="toolbar" style="justify-content: flex-start;">
                     <button class="btn" onclick="showAddProductModal()">+ Add Product</button>
                     <button class="btn btn-secondary" onclick="showBulkStockModal()">📦 Bulk Stock Update</button>
                     <button class="btn btn-secondary" onclick="showBulkCostsModal()">💰 Upload Costs</button>
-                    <div style="margin-left: auto; display: flex; align-items: center; gap: 15px;">
-                        <span style="color: #718096; font-size: 0.9rem;">
-                            ${activeProducts.length} active${inactiveProducts.length > 0 ? `, <span style="color: #e53e3e;">${inactiveProducts.length} inactive</span>` : ''}
-                        </span>
-                        ${inactiveProducts.length > 0 ? `
-                            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
-                                <input type="checkbox" ${showInactive ? 'checked' : ''} onchange="toggleInactiveProducts(this.checked)">
-                                <span style="font-size: 0.9rem;">Show Inactive</span>
-                            </label>
-                        ` : ''}
-                    </div>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding: 10px; background: #f7fafc; border-radius: 6px;">
+                    <span style="color: #4a5568; font-size: 0.9rem;">
+                        <strong>${activeProducts.length}</strong> active products${inactiveProducts.length > 0 ? `, <strong style="color: #e53e3e;">${inactiveProducts.length}</strong> inactive` : ''}
+                    </span>
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; ${inactiveProducts.length > 0 ? 'background: #fef3c7;' : 'background: #edf2f7;'} padding: 6px 12px; border-radius: 4px;">
+                        <input type="checkbox" ${showInactive ? 'checked' : ''} onchange="toggleInactiveProducts(this.checked)" style="width: 16px; height: 16px;">
+                        <span style="font-size: 0.9rem; font-weight: 500;">Show Inactive (${inactiveProducts.length})</span>
+                    </label>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
