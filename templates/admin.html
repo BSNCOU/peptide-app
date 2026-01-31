@@ -197,7 +197,7 @@
                 ${lowStockCount > 0 ? `
                     <div class="alert alert-warning">
                         <strong>⚠️ Low Stock Alert:</strong> 
-                        ${s.low_stock_items.map(i => `${i.name} (${i.stock} left)`).join(', ')}
+                        ${s.low_stock_items.map(i => `${i.sku} (${i.stock}/${i.reorder_qty * 10})`).join(', ')}
                     </div>
                 ` : ''}
             `;

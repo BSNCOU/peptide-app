@@ -1353,10 +1353,17 @@ def admin_stats():
     users = conn.execute('SELECT COUNT(*) as count FROM users WHERE is_admin=0').fetchone()
     products = conn.execute('SELECT COUNT(*) as count FROM products WHERE active=1').fetchone()
     recent = conn.execute('SELECT o.order_number,o.total,o.status,o.created_at,u.full_name,u.email FROM orders o JOIN users u ON o.user_id=u.id ORDER BY o.created_at DESC LIMIT 10').fetchall()
-    low_stock = conn.execute('SELECT * FROM products WHERE stock <= ? AND active = 1', (CONFIG['LOW_STOCK_THRESHOLD'],)).fetchall()
+    
+    # Low stock: products where stock < (reorder_qty * 10) AND reorder_qty > 0
+    low_stock = conn.execute('''
+        SELECT * FROM products 
+        WHERE active = 1 
+        AND reorder_qty > 0 
+        AND stock < (reorder_qty * 10)
+    ''').fetchall()
     conn.close()
     
-    return jsonify({'total_orders': orders['count'] or 0, 'total_revenue': orders['total'] or 0, 'orders_by_status': by_status, 'total_users': users['count'] or 0, 'total_products': products['count'] or 0, 'recent_orders': [dict(r) for r in recent], 'low_stock_items': [dict(p) for p in low_stock], 'low_stock_threshold': CONFIG['LOW_STOCK_THRESHOLD']})
+    return jsonify({'total_orders': orders['count'] or 0, 'total_revenue': orders['total'] or 0, 'orders_by_status': by_status, 'total_users': users['count'] or 0, 'total_products': products['count'] or 0, 'recent_orders': [dict(r) for r in recent], 'low_stock_items': [dict(p) for p in low_stock]})
 
 @app.route('/api/admin/products', methods=['GET'])
 @admin_required
