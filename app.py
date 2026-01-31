@@ -1561,6 +1561,152 @@ def admin_financial_report():
         'end_date': end_date
     })
 
+@app.route('/api/admin/reports/inventory', methods=['GET'])
+@admin_required
+def admin_inventory_report():
+    """Get inventory report with reorder recommendations"""
+    min_boxes = int(request.args.get('min_boxes', 4))  # Minimum boxes (10-packs) to keep on hand
+    order_threshold = float(request.args.get('order_threshold', 1000))  # Minimum order value
+    
+    min_units = min_boxes * 10  # Convert boxes to units
+    
+    conn = get_db()
+    
+    # Get all active products with their stock and costs
+    products = conn.execute('''
+        SELECT id, sku, name, stock, cost, price_single, price_bulk
+        FROM products 
+        WHERE active = 1
+        ORDER BY sku
+    ''').fetchall()
+    
+    conn.close()
+    
+    total_units = 0
+    inventory_cost = 0
+    potential_revenue = 0
+    needs_reorder = []
+    
+    for p in products:
+        stock = p['stock'] or 0
+        cost = float(p['cost'] or 0)
+        price = float(p['price_single'] or 0)
+        
+        total_units += stock
+        inventory_cost += stock * cost
+        potential_revenue += stock * price
+        
+        # Check if needs reorder (below minimum boxes threshold)
+        if stock < min_units and cost > 0:
+            # Calculate how many boxes to order to get back to minimum
+            units_needed = min_units - stock
+            boxes_to_order = max(1, (units_needed + 9) // 10)  # Round up to nearest box
+            
+            # Order cost is boxes * (cost per unit * 10 units per box)
+            order_cost = boxes_to_order * cost * 10
+            
+            needs_reorder.append({
+                'sku': p['sku'],
+                'name': p['name'],
+                'stock': stock,
+                'cost': cost,
+                'boxes_to_order': boxes_to_order,
+                'order_cost': order_cost
+            })
+    
+    return jsonify({
+        'total_units': total_units,
+        'inventory_cost': inventory_cost,
+        'potential_revenue': potential_revenue,
+        'needs_reorder': needs_reorder,
+        'min_boxes': min_boxes,
+        'order_threshold': order_threshold
+    })
+
+@app.route('/api/admin/reports/orders', methods=['GET'])
+@admin_required
+def admin_orders_report():
+    """Get order summary report with date range"""
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    conn = get_db()
+    
+    # Build date filter
+    date_filter = "1=1"
+    if start_date and end_date:
+        date_filter = f"DATE(created_at) >= '{start_date}' AND DATE(created_at) <= '{end_date}'"
+    
+    # Get totals
+    totals = conn.execute(f'''
+        SELECT COUNT(*) as total_orders, COALESCE(SUM(total), 0) as total_revenue
+        FROM orders WHERE {date_filter}
+    ''').fetchone()
+    
+    # Get by status
+    by_status = conn.execute(f'''
+        SELECT status, COUNT(*) as count, COALESCE(SUM(total), 0) as total
+        FROM orders WHERE {date_filter}
+        GROUP BY status ORDER BY count DESC
+    ''').fetchall()
+    
+    conn.close()
+    
+    return jsonify({
+        'total_orders': totals['total_orders'] or 0,
+        'total_revenue': float(totals['total_revenue'] or 0),
+        'by_status': [dict(s) for s in by_status],
+        'start_date': start_date,
+        'end_date': end_date
+    })
+
+@app.route('/api/admin/reports/discounts', methods=['GET'])
+@admin_required
+def admin_discounts_report():
+    """Get discount usage report with date range"""
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    conn = get_db()
+    
+    # Build date filter
+    date_filter = "1=1"
+    if start_date and end_date:
+        date_filter = f"DATE(o.created_at) >= '{start_date}' AND DATE(o.created_at) <= '{end_date}'"
+    
+    # Get usage by code
+    usage = conn.execute(f'''
+        SELECT dc.code,
+               COUNT(*) as times_used,
+               COALESCE(SUM(o.discount_amount), 0) as total_discount,
+               COALESCE(SUM(o.total), 0) as total_revenue
+        FROM orders o
+        JOIN discount_codes dc ON o.discount_code_id = dc.id
+        WHERE o.status != 'cancelled' AND {date_filter}
+        GROUP BY dc.code
+        ORDER BY times_used DESC
+    ''').fetchall()
+    
+    # Get totals
+    totals = conn.execute(f'''
+        SELECT COUNT(*) as total_orders_with_discount,
+               COALESCE(SUM(o.discount_amount), 0) as total_discount_given,
+               COALESCE(SUM(o.total), 0) as total_revenue
+        FROM orders o
+        WHERE o.discount_code_id IS NOT NULL
+        AND o.status != 'cancelled'
+        AND {date_filter}
+    ''').fetchone()
+    
+    conn.close()
+    
+    return jsonify({
+        'usage': [dict(u) for u in usage],
+        'totals': dict(totals) if totals else {},
+        'start_date': start_date,
+        'end_date': end_date
+    })
+
 @app.route('/api/admin/discount-codes', methods=['GET'])
 @admin_required
 def admin_get_codes():
@@ -1689,67 +1835,6 @@ def admin_create_inventory_receipt():
         'message': 'Inventory received and stock updated',
         'lot_number': lot_number
     }), 201
-
-@app.route('/api/admin/discount-codes/report', methods=['GET'])
-@admin_required
-def admin_discount_report():
-    """Get discount code usage report - supports date range"""
-    start_date = request.args.get('start_date')  # YYYY-MM-DD format
-    end_date = request.args.get('end_date')      # YYYY-MM-DD format
-    
-    conn = get_db()
-    
-    # Build date filter
-    if start_date and end_date:
-        date_filter = f"o.created_at >= '{start_date}' AND o.created_at < '{end_date}' + INTERVAL '1 day'" if is_postgres() else f"DATE(o.created_at) >= '{start_date}' AND DATE(o.created_at) <= '{end_date}'"
-    else:
-        # Default to last 30 days
-        date_filter = "o.created_at >= DATE('now', '-30 days')" if not is_postgres() else "o.created_at >= CURRENT_DATE - INTERVAL '30 days'"
-    
-    # Get usage breakdown by code in the date range
-    usage_query = f'''
-        SELECT dc.code,
-               COUNT(*) as times_used,
-               SUM(o.discount_amount) as total_discount,
-               SUM(o.total) as total_revenue
-        FROM orders o
-        JOIN discount_codes dc ON o.discount_code_id = dc.id
-        WHERE {date_filter}
-        AND o.status != 'cancelled'
-        GROUP BY dc.code
-        ORDER BY times_used DESC
-    '''
-    
-    try:
-        usage = conn.execute(usage_query).fetchall()
-    except Exception as e:
-        print(f"Usage query error: {e}")
-        usage = []
-    
-    # Get totals for the date range
-    totals_query = f'''
-        SELECT COUNT(*) as total_orders_with_discount,
-               COALESCE(SUM(o.discount_amount), 0) as total_discount_given,
-               COALESCE(SUM(o.total), 0) as total_revenue
-        FROM orders o
-        WHERE o.discount_code_id IS NOT NULL
-        AND o.status != 'cancelled'
-        AND {date_filter}
-    '''
-    try:
-        totals = conn.execute(totals_query).fetchone()
-    except Exception as e:
-        print(f"Totals query error: {e}")
-        totals = {'total_orders_with_discount': 0, 'total_discount_given': 0, 'total_revenue': 0}
-    
-    conn.close()
-    
-    return jsonify({
-        'usage': [dict(u) for u in usage] if usage else [],
-        'totals': dict(totals) if totals else {},
-        'start_date': start_date,
-        'end_date': end_date
-    })
 
 @app.route('/api/admin/orders', methods=['GET'])
 @admin_required

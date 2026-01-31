@@ -1650,7 +1650,7 @@ BC10,8.00</pre>
             const lastMonth = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
             
             content.innerHTML = `
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px;">
                     <div class="card" style="margin-bottom: 0;">
                         <h3 style="margin-bottom: 15px;">💰 Financial Report</h3>
                         <p style="color: #718096; margin-bottom: 15px;">Revenue, costs, and margins</p>
@@ -1667,15 +1667,54 @@ BC10,8.00</pre>
                         <button class="btn" onclick="loadFinancialReport()">Generate Report</button>
                         <div id="financialReportContent" style="margin-top: 20px;"></div>
                     </div>
+                    
+                    <div class="card" style="margin-bottom: 0;">
+                        <h3 style="margin-bottom: 15px;">📦 Inventory & Reorder</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Stock levels and purchase orders</p>
+                        <div class="form-row" style="margin-bottom: 15px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">Min Boxes (10-packs)</label>
+                                <input type="number" id="minBoxes" value="4" min="1" style="width: 80px;">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">Order Threshold $</label>
+                                <input type="number" id="orderThreshold" value="1000" min="100" style="width: 100px;">
+                            </div>
+                        </div>
+                        <button class="btn" onclick="loadInventoryReport()">Check Inventory</button>
+                        <div id="inventoryReportContent" style="margin-top: 20px;"></div>
+                    </div>
+                    
                     <div class="card" style="margin-bottom: 0;">
                         <h3 style="margin-bottom: 15px;">📊 Discount Code Report</h3>
                         <p style="color: #718096; margin-bottom: 15px;">Sales breakdown by discount code</p>
+                        <div class="form-row" style="margin-bottom: 15px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">Start</label>
+                                <input type="date" id="discStartDate" value="${lastMonth}">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">End</label>
+                                <input type="date" id="discEndDate" value="${today}">
+                            </div>
+                        </div>
                         <button class="btn" onclick="loadDiscountReport()">Generate Report</button>
                         <div id="discountReportContent" style="margin-top: 20px;"></div>
                     </div>
+                    
                     <div class="card" style="margin-bottom: 0;">
-                        <h3 style="margin-bottom: 15px;">📦 Order Summary</h3>
+                        <h3 style="margin-bottom: 15px;">🧾 Order Summary</h3>
                         <p style="color: #718096; margin-bottom: 15px;">Overview of order statuses</p>
+                        <div class="form-row" style="margin-bottom: 15px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">Start</label>
+                                <input type="date" id="orderStartDate" value="${lastMonth}">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">End</label>
+                                <input type="date" id="orderEndDate" value="${today}">
+                            </div>
+                        </div>
                         <button class="btn" onclick="loadOrderSummary()">Generate Report</button>
                         <div id="orderSummaryContent" style="margin-top: 20px;"></div>
                     </div>
@@ -1747,53 +1786,169 @@ BC10,8.00</pre>
             }
         }
 
-        async function loadDiscountReport() {
+        async function loadInventoryReport() {
+            const minBoxes = parseInt(document.getElementById('minBoxes').value) || 4;
+            const orderThreshold = parseFloat(document.getElementById('orderThreshold').value) || 1000;
+            const container = document.getElementById('inventoryReportContent');
+            
+            container.innerHTML = '<p style="color: #718096;">Loading...</p>';
+            
             try {
-                const report = await api('/api/admin/reports/discounts');
-                const container = document.getElementById('discountReportContent');
+                const report = await api(`/api/admin/reports/inventory?min_boxes=${minBoxes}&order_threshold=${orderThreshold}`);
                 
-                if (report.length === 0) {
-                    container.innerHTML = '<p style="color: #718096;">No discount codes have been used yet.</p>';
-                    return;
-                }
-                
-                const totalRevenue = report.reduce((sum, r) => sum + r.total_sales, 0);
-                const totalOrders = report.reduce((sum, r) => sum + r.order_count, 0);
-                const totalDiscount = report.reduce((sum, r) => sum + r.total_discounted, 0);
+                const needsOrder = report.needs_reorder || [];
+                const orderTotal = needsOrder.reduce((sum, p) => sum + (p.order_cost || 0), 0);
+                const readyToOrder = orderTotal >= orderThreshold;
                 
                 container.innerHTML = `
                     <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
                         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center;">
                             <div>
-                                <div style="font-size: 1.5rem; font-weight: 600; color: #2b6cb0;">$${totalRevenue.toFixed(2)}</div>
-                                <div style="font-size: 0.8rem; color: #718096;">Total Sales</div>
+                                <div style="font-size: 1.3rem; font-weight: 600; color: #2b6cb0;">$${parseFloat(report.inventory_cost || 0).toFixed(2)}</div>
+                                <div style="font-size: 0.75rem; color: #718096;">Inventory Cost</div>
                             </div>
                             <div>
-                                <div style="font-size: 1.5rem; font-weight: 600; color: #38a169;">${totalOrders}</div>
-                                <div style="font-size: 0.8rem; color: #718096;">Orders</div>
+                                <div style="font-size: 1.3rem; font-weight: 600; color: #38a169;">$${parseFloat(report.potential_revenue || 0).toFixed(2)}</div>
+                                <div style="font-size: 0.75rem; color: #718096;">Potential Sales</div>
                             </div>
                             <div>
-                                <div style="font-size: 1.5rem; font-weight: 600; color: #e53e3e;">$${totalDiscount.toFixed(2)}</div>
-                                <div style="font-size: 0.8rem; color: #718096;">Discounts Given</div>
+                                <div style="font-size: 1.3rem; font-weight: 600; color: #805ad5;">${report.total_units || 0}</div>
+                                <div style="font-size: 0.75rem; color: #718096;">Units in Stock</div>
                             </div>
                         </div>
                     </div>
-                    <table>
+                    
+                    ${needsOrder.length > 0 ? `
+                        <div style="background: ${readyToOrder ? '#fed7d7' : '#fefcbf'}; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <strong style="color: ${readyToOrder ? '#c53030' : '#975a16'};">
+                                    ${readyToOrder ? '🚨 Order Ready!' : '⚠️ Low Stock Items'} 
+                                    (${needsOrder.length} products)
+                                </strong>
+                                <span style="font-size: 1.1rem; font-weight: 600;">Order Total: $${orderTotal.toFixed(2)}</span>
+                            </div>
+                            ${readyToOrder ? `
+                                <button class="btn btn-danger" onclick="generateWhatsAppOrder()" style="margin-bottom: 15px;">
+                                    📱 Generate WhatsApp Order
+                                </button>
+                            ` : `
+                                <p style="font-size: 0.85rem; color: #975a16;">Order total needs to reach $${orderThreshold.toFixed(0)} to generate order.</p>
+                            `}
+                        </div>
+                        
+                        <div style="max-height: 250px; overflow-y: auto;">
+                            <table style="font-size: 0.85rem;">
+                                <thead><tr><th>SKU</th><th>Product</th><th>Stock</th><th>Need</th><th>Order Qty</th><th>Cost</th></tr></thead>
+                                <tbody>
+                                    ${needsOrder.map(p => `
+                                        <tr>
+                                            <td><strong>${p.sku}</strong></td>
+                                            <td>${p.name}</td>
+                                            <td class="low-stock">${p.stock}</td>
+                                            <td>${minBoxes * 10}</td>
+                                            <td>${p.boxes_to_order} boxes</td>
+                                            <td>$${parseFloat(p.order_cost || 0).toFixed(2)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    ` : `
+                        <p style="color: #38a169; text-align: center; padding: 20px;">✅ All products are well stocked!</p>
+                    `}
+                `;
+                
+                // Store for WhatsApp order generation
+                window.reorderData = { needsOrder, orderTotal, minBoxes };
+                
+            } catch (err) {
+                container.innerHTML = '<p style="color: #e53e3e;">Error: ' + err.message + '</p>';
+            }
+        }
+
+        function generateWhatsAppOrder() {
+            if (!window.reorderData || !window.reorderData.needsOrder.length) {
+                showAlert('No items to order');
+                return;
+            }
+            
+            const items = window.reorderData.needsOrder;
+            const total = window.reorderData.orderTotal;
+            
+            let orderText = "PEPTIDE ORDER\\n";
+            orderText += "=============\\n\\n";
+            
+            items.forEach(p => {
+                orderText += `${p.sku}, ${p.boxes_to_order}, $${(p.cost * 10).toFixed(2)}\\n`;
+            });
+            
+            orderText += `\\n=============\\nTOTAL: $${total.toFixed(2)}`;
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content">
+                        <h3>📱 WhatsApp Order</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Copy and paste into WhatsApp:</p>
+                        <textarea id="whatsappOrder" readonly style="width: 100%; height: 300px; font-family: monospace; font-size: 0.9rem; padding: 15px; border: 2px solid #e2e8f0; border-radius: 6px;">${orderText.replace(/\\n/g, '\n')}</textarea>
+                        <div style="display: flex; gap: 10px; margin-top: 15px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            <button class="btn btn-success" onclick="copyWhatsAppOrder()">📋 Copy to Clipboard</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function copyWhatsAppOrder() {
+            const textarea = document.getElementById('whatsappOrder');
+            textarea.select();
+            document.execCommand('copy');
+            showAlert('Order copied to clipboard!', 'success');
+        }
+
+        async function loadDiscountReport() {
+            const startDate = document.getElementById('discStartDate').value;
+            const endDate = document.getElementById('discEndDate').value;
+            
+            try {
+                const report = await api(`/api/admin/reports/discounts?start_date=${startDate}&end_date=${endDate}`);
+                const container = document.getElementById('discountReportContent');
+                
+                if (!report.usage || report.usage.length === 0) {
+                    container.innerHTML = '<p style="color: #718096;">No discount codes used in this period.</p>';
+                    return;
+                }
+                
+                const t = report.totals || {};
+                
+                container.innerHTML = `
+                    <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center;">
+                            <div>
+                                <div style="font-size: 1.3rem; font-weight: 600; color: #2b6cb0;">$${parseFloat(t.total_revenue || 0).toFixed(2)}</div>
+                                <div style="font-size: 0.75rem; color: #718096;">Revenue</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 1.3rem; font-weight: 600; color: #38a169;">${t.total_orders_with_discount || 0}</div>
+                                <div style="font-size: 0.75rem; color: #718096;">Orders</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 1.3rem; font-weight: 600; color: #e53e3e;">$${parseFloat(t.total_discount_given || 0).toFixed(2)}</div>
+                                <div style="font-size: 0.75rem; color: #718096;">Discounts</div>
+                            </div>
+                        </div>
+                    </div>
+                    <table style="font-size: 0.85rem;">
                         <thead>
-                            <tr>
-                                <th>Code</th>
-                                <th>Orders</th>
-                                <th>Total Sales</th>
-                                <th>Discounts Given</th>
-                            </tr>
+                            <tr><th>Code</th><th>Uses</th><th>Revenue</th><th>Discounts</th></tr>
                         </thead>
                         <tbody>
-                            ${report.map(r => `
+                            ${report.usage.map(r => `
                                 <tr>
                                     <td><strong>${r.code}</strong></td>
-                                    <td>${r.order_count}</td>
-                                    <td>$${r.total_sales.toFixed(2)}</td>
-                                    <td style="color: #e53e3e;">-$${r.total_discounted.toFixed(2)}</td>
+                                    <td>${r.times_used}</td>
+                                    <td>$${parseFloat(r.total_revenue || 0).toFixed(2)}</td>
+                                    <td style="color: #e53e3e;">-$${parseFloat(r.total_discount || 0).toFixed(2)}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -1805,48 +1960,34 @@ BC10,8.00</pre>
         }
 
         async function loadOrderSummary() {
+            const startDate = document.getElementById('orderStartDate').value;
+            const endDate = document.getElementById('orderEndDate').value;
+            
             try {
-                const orders = await api('/api/admin/orders');
+                const report = await api(`/api/admin/reports/orders?start_date=${startDate}&end_date=${endDate}`);
                 const container = document.getElementById('orderSummaryContent');
-                
-                const statusCounts = {};
-                const statusTotals = {};
-                orders.forEach(o => {
-                    statusCounts[o.status] = (statusCounts[o.status] || 0) + 1;
-                    statusTotals[o.status] = (statusTotals[o.status] || 0) + parseFloat(o.total || 0);
-                });
-                
-                const statuses = Object.keys(statusCounts).sort();
-                const totalOrders = orders.length;
-                const totalRevenue = orders.reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
                 
                 container.innerHTML = `
                     <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
                         <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; text-align: center;">
                             <div>
-                                <div style="font-size: 1.5rem; font-weight: 600; color: #2b6cb0;">${totalOrders}</div>
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #2b6cb0;">${report.total_orders || 0}</div>
                                 <div style="font-size: 0.8rem; color: #718096;">Total Orders</div>
                             </div>
                             <div>
-                                <div style="font-size: 1.5rem; font-weight: 600; color: #38a169;">$${totalRevenue.toFixed(2)}</div>
+                                <div style="font-size: 1.5rem; font-weight: 600; color: #38a169;">$${parseFloat(report.total_revenue || 0).toFixed(2)}</div>
                                 <div style="font-size: 0.8rem; color: #718096;">Total Revenue</div>
                             </div>
                         </div>
                     </div>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Status</th>
-                                <th>Count</th>
-                                <th>Total Value</th>
-                            </tr>
-                        </thead>
+                    <table style="font-size: 0.85rem;">
+                        <thead><tr><th>Status</th><th>Count</th><th>Value</th></tr></thead>
                         <tbody>
-                            ${statuses.map(status => `
+                            ${(report.by_status || []).map(s => `
                                 <tr>
-                                    <td><span class="status-badge status-${status}">${status}</span></td>
-                                    <td>${statusCounts[status]}</td>
-                                    <td>$${statusTotals[status].toFixed(2)}</td>
+                                    <td><span class="status-badge status-${s.status}">${s.status}</span></td>
+                                    <td>${s.count}</td>
+                                    <td>$${parseFloat(s.total || 0).toFixed(2)}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
