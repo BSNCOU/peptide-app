@@ -1544,6 +1544,7 @@ BC10,8.00</pre>
                                 <th>Email</th>
                                 <th>Phone</th>
                                 <th>Organization</th>
+                                <th>Credit</th>
                                 <th>Verified</th>
                                 <th>Admin</th>
                                 <th>Joined</th>
@@ -1551,27 +1552,30 @@ BC10,8.00</pre>
                             </tr>
                         </thead>
                         <tbody>
-                            ${state.users.map(u => `
+                            ${state.users.map(u => {
+                                const credit = parseFloat(u.referral_credit) || 0;
+                                return `
                                 <tr>
-                                    <td>${u.full_name}</td>
-                                    <td>${u.email}</td>
-                                    <td>${u.phone || '-'}</td>
-                                    <td>${u.organization || '-'}</td>
+                                    <td>${escapeHtml(u.full_name)}</td>
+                                    <td>${escapeHtml(u.email)}</td>
+                                    <td>${escapeHtml(u.phone) || '-'}</td>
+                                    <td>${escapeHtml(u.organization) || '-'}</td>
+                                    <td>${credit > 0 ? '<span style="color: #2b6cb0; font-weight: 600;">$' + credit.toFixed(2) + '</span>' : '<span style="color: #a0aec0;">$0.00</span>'}</td>
                                     <td>${u.email_verified ? '✅' : '❌'}</td>
                                     <td>${u.is_admin ? '👑 Yes' : 'No'}</td>
                                     <td>${new Date(u.created_at).toLocaleDateString()}</td>
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showUserDetailModal(${u.id})">View</button>
                                         <button class="btn btn-secondary btn-small" onclick="showEditUserModal(${u.id})">Edit</button>
-                                        ${!u.email_verified ? `<button class="btn btn-success btn-small" onclick="resendVerification(${u.id})">Resend</button>` : ''}
+                                        ${!u.email_verified ? '<button class="btn btn-success btn-small" onclick="resendVerification(' + u.id + ')">Resend</button>' : ''}
                                         <button class="btn btn-small ${u.is_admin ? 'btn-warning' : 'btn-secondary'}" 
                                             onclick="toggleAdmin(${u.id})">
                                             ${u.is_admin ? 'Remove Admin' : 'Make Admin'}
                                         </button>
-                                        ${!u.is_admin ? `<button class="btn btn-danger btn-small" onclick="deleteUser(${u.id})">Delete</button>` : ''}
+                                        ${!u.is_admin ? '<button class="btn btn-danger btn-small" onclick="deleteUser(' + u.id + ')">Delete</button>' : ''}
                                     </td>
                                 </tr>
-                            `).join('')}
+                            `}).join('')}
                         </tbody>
                     </table>
                 </div>
@@ -1605,32 +1609,42 @@ BC10,8.00</pre>
             const u = state.users.find(x => x.id === id);
             if (!u) return;
             
+            const credit = parseFloat(u.referral_credit) || 0;
+            
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
                     <div class="modal-content">
-                        <h3>Edit User: ${u.full_name}</h3>
+                        <h3>Edit User: ${escapeHtml(u.full_name)}</h3>
                         <form onsubmit="updateUser(event, ${id})">
                             <div class="form-group">
                                 <label>Full Name</label>
-                                <input type="text" id="editUserName" value="${u.full_name}" required>
+                                <input type="text" id="editUserName" value="${escapeHtml(u.full_name)}" required>
                             </div>
                             <div class="form-group">
                                 <label>Email</label>
-                                <input type="email" id="editUserEmail" value="${u.email}" required>
+                                <input type="email" id="editUserEmail" value="${escapeHtml(u.email)}" required>
                             </div>
                             <div class="form-group">
                                 <label>Phone</label>
-                                <input type="text" id="editUserPhone" value="${u.phone || ''}">
+                                <input type="text" id="editUserPhone" value="${escapeHtml(u.phone) || ''}">
                             </div>
                             <div class="form-group">
                                 <label>Organization</label>
-                                <input type="text" id="editUserOrg" value="${u.organization || ''}">
+                                <input type="text" id="editUserOrg" value="${escapeHtml(u.organization) || ''}">
                             </div>
                             <div class="form-group">
                                 <label>
                                     <input type="checkbox" id="editUserVerified" ${u.email_verified ? 'checked' : ''}>
                                     Email Verified
                                 </label>
+                            </div>
+                            <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                                <h4 style="margin-bottom: 10px; color: #2c5282;">💰 Referral Credit</h4>
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label>Credit Balance ($)</label>
+                                    <input type="number" id="editUserCredit" step="0.01" min="0" value="${credit.toFixed(2)}">
+                                    <small style="color: #718096;">Adjust manually if needed (e.g., to correct errors or give bonus credit)</small>
+                                </div>
                             </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -1645,14 +1659,15 @@ BC10,8.00</pre>
         async function updateUser(e, id) {
             e.preventDefault();
             try {
-                await api(`/api/admin/users/${id}`, {
+                await api('/api/admin/users/' + id, {
                     method: 'PUT',
                     body: JSON.stringify({
                         full_name: document.getElementById('editUserName').value,
                         email: document.getElementById('editUserEmail').value,
                         phone: document.getElementById('editUserPhone').value,
                         organization: document.getElementById('editUserOrg').value,
-                        email_verified: document.getElementById('editUserVerified').checked
+                        email_verified: document.getElementById('editUserVerified').checked,
+                        referral_credit: parseFloat(document.getElementById('editUserCredit').value) || 0
                     })
                 });
                 closeModal();

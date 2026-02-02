@@ -2107,7 +2107,7 @@ def admin_update_order_status(oid):
 def admin_get_users():
     try:
         conn = get_db()
-        result = conn.execute('SELECT id,full_name,email,phone,organization,country,is_admin,email_verified,created_at FROM users ORDER BY created_at DESC')
+        result = conn.execute('SELECT id,full_name,email,phone,organization,country,is_admin,email_verified,created_at,referral_credit FROM users ORDER BY created_at DESC')
         rows = result.fetchall()
         conn.close()
         
@@ -2210,14 +2210,22 @@ def admin_update_user(uid):
         else:
             user_dict = dict(user)
         
+        # Get the new credit value, defaulting to current value
+        new_credit = data.get('referral_credit')
+        if new_credit is not None:
+            new_credit = float(new_credit)
+        else:
+            new_credit = float(user_dict.get('referral_credit') or 0)
+        
         conn.execute('''UPDATE users SET 
-            full_name=?, email=?, phone=?, organization=?, email_verified=?, updated_at=CURRENT_TIMESTAMP 
+            full_name=?, email=?, phone=?, organization=?, email_verified=?, referral_credit=?, updated_at=CURRENT_TIMESTAMP 
             WHERE id=?''',
             (data.get('full_name', user_dict.get('full_name')),
              data.get('email', user_dict.get('email', '')).lower(),
              data.get('phone', user_dict.get('phone')),
              data.get('organization', user_dict.get('organization')),
              1 if data.get('email_verified') else 0,
+             new_credit,
              uid))
         conn.commit()
         conn.close()
