@@ -1024,6 +1024,7 @@ BC10,8.00</pre>
                 <div class="toolbar">
                     <button class="btn" onclick="showAddDiscountModal()">+ Add Discount Code</button>
                     <button class="btn btn-secondary" onclick="showDiscountReportModal()">📊 Date Range Report</button>
+                    <button class="btn btn-secondary" onclick="showReferralReportModal()">👥 Referral Report</button>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
@@ -1032,7 +1033,7 @@ BC10,8.00</pre>
                                 <th>Code</th>
                                 <th>Description</th>
                                 <th>Discount</th>
-                                <th>Min Order</th>
+                                <th>Referrer</th>
                                 <th>Usage</th>
                                 <th>Status</th>
                                 <th>Actions</th>
@@ -1043,18 +1044,19 @@ BC10,8.00</pre>
                                 <tr class="${!d.active ? 'inactive' : ''}">
                                     <td><strong>${d.code}</strong></td>
                                     <td>${d.description || '-'}</td>
-                                    <td>${d.discount_percent > 0 ? `${d.discount_percent}%` : `$${parseFloat(d.discount_amount || 0).toFixed(2)}`}</td>
-                                    <td>${d.min_order_amount > 0 ? `$${parseFloat(d.min_order_amount).toFixed(2)}` : '-'}</td>
-                                    <td>${d.times_used || 0}${d.usage_limit ? ` / ${d.usage_limit}` : ''}</td>
+                                    <td>${d.discount_percent > 0 ? d.discount_percent + '%' : '$' + parseFloat(d.discount_amount || 0).toFixed(2)}</td>
+                                    <td>${d.referrer_name ? '<span style="color: #2b6cb0;">' + d.referrer_name + '</span><br><small style="color: #718096;">' + (d.commission_percent || 20) + '% commission</small>' : '<span style="color: #a0aec0;">-</span>'}</td>
+                                    <td>${d.times_used || 0}${d.usage_limit ? ' / ' + d.usage_limit : ''}</td>
                                     <td>${d.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showEditDiscountModal(${d.id})">Edit</button>
+                                        ${d.referrer_user_id ? '<button class="btn btn-small" onclick="showReferrerReport(' + d.referrer_user_id + ')">📊</button>' : ''}
                                         ${d.active 
-                                            ? `<button class="btn btn-warning btn-small" onclick="deactivateDiscount(${d.id})">Deactivate</button>`
+                                            ? '<button class="btn btn-warning btn-small" onclick="deactivateDiscount(' + d.id + ')">Deactivate</button>'
                                             : ''
                                         }
                                         ${(d.times_used || 0) === 0
-                                            ? `<button class="btn btn-danger btn-small" onclick="permanentlyDeleteDiscount(${d.id})">Delete</button>`
+                                            ? '<button class="btn btn-danger btn-small" onclick="permanentlyDeleteDiscount(' + d.id + ')">Delete</button>'
                                             : ''
                                         }
                                     </td>
@@ -1193,7 +1195,13 @@ BC10,8.00</pre>
             }
         }
 
-        function showAddDiscountModal() {
+        async function showAddDiscountModal() {
+            // Load users for referrer dropdown
+            const users = await api('/api/admin/users');
+            const userOptions = users.filter(u => !u.is_admin).map(u => 
+                '<option value="' + u.id + '">' + u.full_name + ' (' + u.email + ')</option>'
+            ).join('');
+            
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
                     <div class="modal-content">
@@ -1229,6 +1237,23 @@ BC10,8.00</pre>
                                     <input type="number" id="discLimit">
                                 </div>
                             </div>
+                            <div style="background: #f0fff4; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                                <h4 style="margin-bottom: 10px; color: #276749;">👥 Referral Settings</h4>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>Assign to Referrer</label>
+                                        <select id="discReferrer">
+                                            <option value="">-- None (regular discount) --</option>
+                                            ${userOptions}
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Commission %</label>
+                                        <input type="number" id="discCommission" step="1" value="20" min="0" max="100">
+                                        <small style="color: #718096;">% of sale given to referrer</small>
+                                    </div>
+                                </div>
+                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Add Code</button>
@@ -1250,7 +1275,9 @@ BC10,8.00</pre>
                         discount_percent: parseFloat(document.getElementById('discPercent').value) || 0,
                         discount_amount: parseFloat(document.getElementById('discAmount').value) || 0,
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
-                        usage_limit: parseInt(document.getElementById('discLimit').value) || null
+                        usage_limit: parseInt(document.getElementById('discLimit').value) || null,
+                        referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
+                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
                     })
                 });
                 closeModal();
@@ -1261,9 +1288,15 @@ BC10,8.00</pre>
             }
         }
 
-        function showEditDiscountModal(id) {
+        async function showEditDiscountModal(id) {
             const d = state.discounts.find(x => x.id === id);
             if (!d) return;
+            
+            // Load users for referrer dropdown
+            const users = await api('/api/admin/users');
+            const userOptions = users.filter(u => !u.is_admin).map(u => 
+                '<option value="' + u.id + '"' + (d.referrer_user_id === u.id ? ' selected' : '') + '>' + u.full_name + ' (' + u.email + ')</option>'
+            ).join('');
             
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
@@ -1294,6 +1327,23 @@ BC10,8.00</pre>
                                     <input type="number" id="discLimit" value="${d.usage_limit || ''}">
                                 </div>
                             </div>
+                            <div style="background: #f0fff4; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                                <h4 style="margin-bottom: 10px; color: #276749;">👥 Referral Settings</h4>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>Assign to Referrer</label>
+                                        <select id="discReferrer">
+                                            <option value="">-- None (regular discount) --</option>
+                                            ${userOptions}
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Commission %</label>
+                                        <input type="number" id="discCommission" step="1" value="${d.commission_percent || 20}" min="0" max="100">
+                                        <small style="color: #718096;">% of sale given to referrer</small>
+                                    </div>
+                                </div>
+                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Save Changes</button>
@@ -1307,14 +1357,16 @@ BC10,8.00</pre>
         async function updateDiscount(e, id) {
             e.preventDefault();
             try {
-                await api(`/api/admin/discount-codes/${id}`, {
+                await api('/api/admin/discount-codes/' + id, {
                     method: 'PUT',
                     body: JSON.stringify({
                         description: document.getElementById('discDesc').value,
                         discount_percent: parseFloat(document.getElementById('discPercent').value) || 0,
                         discount_amount: parseFloat(document.getElementById('discAmount').value) || 0,
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
-                        usage_limit: parseInt(document.getElementById('discLimit').value) || null
+                        usage_limit: parseInt(document.getElementById('discLimit').value) || null,
+                        referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
+                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
                     })
                 });
                 closeModal();
@@ -1323,6 +1375,126 @@ BC10,8.00</pre>
             } catch (err) {
                 showAlert(err.message);
             }
+        }
+
+        async function showReferralReportModal() {
+            try {
+                const report = await api('/api/admin/reports/referrals');
+                
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 800px;">
+                            <h3>👥 Referral Program Summary</h3>
+                            ${report.referrers && report.referrers.length > 0 ? `
+                                <div style="max-height: 400px; overflow-y: auto; margin-top: 15px;">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>Referrer</th>
+                                                <th>Code</th>
+                                                <th>Referrals</th>
+                                                <th>Total Earned</th>
+                                                <th>Balance</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${report.referrers.map(r => `
+                                                <tr>
+                                                    <td><strong>${r.full_name}</strong><br><small style="color: #718096;">${r.email}</small></td>
+                                                    <td><code>${r.code}</code></td>
+                                                    <td>${r.referral_count || 0}</td>
+                                                    <td style="color: #38a169;">$${parseFloat(r.total_earned || 0).toFixed(2)}</td>
+                                                    <td style="color: #2b6cb0; font-weight: 600;">$${parseFloat(r.referral_credit || 0).toFixed(2)}</td>
+                                                    <td><button class="btn btn-small" onclick="closeModal(); showReferrerReport(${r.id})">View Details</button></td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ` : '<p style="color: #718096; text-align: center; padding: 20px;">No referrers set up yet. Assign a user to a discount code to enable referrals.</p>'}
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert('Error loading referral report: ' + err.message);
+            }
+        }
+
+        async function showReferrerReport(userId) {
+            const today = new Date().toISOString().split('T')[0];
+            const lastMonth = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+            
+            try {
+                const report = await api('/api/admin/reports/referrals?referrer_id=' + userId + '&start_date=' + lastMonth + '&end_date=' + today);
+                
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 800px;">
+                            <h3>📊 Referral Report: ${report.referrer.full_name}</h3>
+                            <p style="color: #718096;">${report.referrer.email} | Code: <code>${report.code || 'Not assigned'}</code></p>
+                            
+                            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0;">
+                                <div style="background: #f0fff4; padding: 15px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 1.5rem; font-weight: 600; color: #38a169;">$${report.totals.total_earned.toFixed(2)}</div>
+                                    <div style="font-size: 0.8rem; color: #276749;">Total Earned</div>
+                                </div>
+                                <div style="background: #fff5f5; padding: 15px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 1.5rem; font-weight: 600; color: #c53030;">$${report.totals.total_used.toFixed(2)}</div>
+                                    <div style="font-size: 0.8rem; color: #9b2c2c;">Total Used</div>
+                                </div>
+                                <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 1.5rem; font-weight: 600; color: #2b6cb0;">$${report.totals.current_balance.toFixed(2)}</div>
+                                    <div style="font-size: 0.8rem; color: #2c5282;">Current Balance</div>
+                                </div>
+                                <div style="background: #faf5ff; padding: 15px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 1.5rem; font-weight: 600; color: #805ad5;">${report.totals.referral_count}</div>
+                                    <div style="font-size: 0.8rem; color: #553c9a;">Referrals</div>
+                                </div>
+                            </div>
+                            
+                            ${report.transactions && report.transactions.length > 0 ? `
+                                <h4 style="margin-bottom: 10px;">Transaction History (Last 30 Days)</h4>
+                                <div style="max-height: 250px; overflow-y: auto;">
+                                    <table style="font-size: 0.9rem;">
+                                        <thead>
+                                            <tr><th>Date</th><th>Type</th><th>Order</th><th>Amount</th><th>Description</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            ${report.transactions.map(t => `
+                                                <tr>
+                                                    <td>${new Date(t.created_at).toLocaleDateString()}</td>
+                                                    <td>${t.type === 'earned' ? '<span style="color: #38a169;">Earned</span>' : '<span style="color: #e53e3e;">Used</span>'}</td>
+                                                    <td>${t.order_number || '-'}</td>
+                                                    <td style="color: ${t.amount >= 0 ? '#38a169' : '#e53e3e'}; font-weight: 500;">${t.amount >= 0 ? '+' : ''}$${parseFloat(t.amount).toFixed(2)}</td>
+                                                    <td style="color: #718096; font-size: 0.85rem;">${t.description || '-'}</td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ` : '<p style="color: #718096; text-align: center; padding: 20px;">No transactions in this period.</p>'}
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                                <button class="btn" onclick="copyReferrerReport(${userId}, '${report.referrer.full_name}', ${report.totals.current_balance})">📋 Copy Report for Referrer</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert('Error loading referrer report: ' + err.message);
+            }
+        }
+
+        function copyReferrerReport(userId, name, balance) {
+            const text = 'Hi ' + name + ',\\n\\nHere is your referral credit summary:\\n\\nCurrent Balance: $' + balance.toFixed(2) + '\\n\\nYou can use this credit on your next order. Just select "Apply Credit" at checkout.\\n\\nThank you for your referrals!';
+            navigator.clipboard.writeText(text.replace(/\\n/g, '\\n')).then(() => {
+                showAlert('Report copied to clipboard!', 'success');
+            });
         }
 
         // Users

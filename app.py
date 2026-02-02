@@ -410,6 +410,49 @@ def init_db():
     except Exception as e:
         print(f"Note: Active field fix: {e}")
     
+    # Create referral_transactions table
+    try:
+        c.execute(f'''CREATE TABLE IF NOT EXISTS referral_transactions (
+            id {auto_id},
+            user_id INTEGER NOT NULL,
+            order_id INTEGER,
+            type TEXT NOT NULL,
+            amount REAL NOT NULL,
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Referral transactions table: {e}")
+    
+    # Add referral columns to discount_codes and users
+    try:
+        if using_postgres:
+            c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS referrer_user_id INTEGER DEFAULT NULL")
+            c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS commission_percent REAL DEFAULT 20")
+            c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_credit REAL DEFAULT 0")
+            c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
+        else:
+            try:
+                c.execute("ALTER TABLE discount_codes ADD COLUMN referrer_user_id INTEGER DEFAULT NULL")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE discount_codes ADD COLUMN commission_percent REAL DEFAULT 20")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN referral_credit REAL DEFAULT 0")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE orders ADD COLUMN credit_applied REAL DEFAULT 0")
+            except:
+                pass
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Referral column migration: {e}")
+    
     # Create default admin if none exists
     if using_postgres:
         import psycopg2.extras
@@ -1107,11 +1150,46 @@ def logout():
 @login_required
 def get_me():
     conn = get_db()
-    user = conn.execute('SELECT id,full_name,email,phone,organization,country,is_admin,first_login_confirmed,email_verified FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    user = conn.execute('SELECT id,full_name,email,phone,organization,country,is_admin,first_login_confirmed,email_verified,referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
     conn.close()
     if not user:
         return jsonify({'error': 'User not found'}), 404
     return jsonify(dict(user))
+
+@app.route('/api/my-referrals', methods=['GET'])
+@login_required
+def get_my_referrals():
+    """Get user's referral transactions and stats"""
+    conn = get_db()
+    
+    # Get user's credit balance
+    user = conn.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    
+    # Get referral transactions
+    transactions = conn.execute('''
+        SELECT rt.*, o.order_number 
+        FROM referral_transactions rt 
+        LEFT JOIN orders o ON rt.order_id = o.id
+        WHERE rt.user_id = ?
+        ORDER BY rt.created_at DESC
+    ''', (session['user_id'],)).fetchall()
+    
+    # Get total earned and used
+    totals = conn.execute('''
+        SELECT 
+            COALESCE(SUM(CASE WHEN type = 'earned' THEN amount ELSE 0 END), 0) as total_earned,
+            COALESCE(SUM(CASE WHEN type = 'used' THEN ABS(amount) ELSE 0 END), 0) as total_used
+        FROM referral_transactions WHERE user_id = ?
+    ''', (session['user_id'],)).fetchone()
+    
+    conn.close()
+    
+    return jsonify({
+        'credit_balance': float(user['referral_credit'] or 0) if user else 0,
+        'total_earned': float(totals['total_earned'] or 0),
+        'total_used': float(totals['total_used'] or 0),
+        'transactions': [dict(t) for t in transactions]
+    })
 
 @app.route('/api/confirm-first-login', methods=['POST'])
 @login_required
@@ -1266,6 +1344,8 @@ def create_order():
     
     discount_amount = 0
     discount_code_id = None
+    referrer_user_id = None
+    commission_percent = 20
     
     if data.get('discount_code'):
         discount = c.execute('''SELECT * FROM discount_codes WHERE code=? AND active=1 
@@ -1275,22 +1355,51 @@ def create_order():
             discount_code_id = discount['id']
             discount_amount = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
             c.execute('UPDATE discount_codes SET times_used=times_used+1 WHERE id=?', (discount['id'],))
+            # Check if this is a referral code
+            if discount['referrer_user_id']:
+                referrer_user_id = discount['referrer_user_id']
+                commission_percent = discount['commission_percent'] or 20
     
     # Handle delivery method and shipping cost
     delivery_method = data.get('delivery_method', 'pickup')
     shipping_cost = 20.0 if delivery_method == 'ship' else 0.0
     
-    total = subtotal - discount_amount + shipping_cost
+    # Handle credit application
+    credit_applied = 0
+    if data.get('apply_credit'):
+        user = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
+        available_credit = float(user['referral_credit'] or 0) if user else 0
+        if available_credit > 0:
+            # Calculate how much credit can be applied (up to subtotal after discount + shipping)
+            max_credit = subtotal - discount_amount + shipping_cost
+            credit_applied = min(available_credit, max_credit)
+    
+    total = subtotal - discount_amount + shipping_cost - credit_applied
+    if total < 0:
+        total = 0
     order_number = gen_order_num()
     
-    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,delivery_method,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?)',
-              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, delivery_method, total, data.get('notes', ''), data.get('shipping_address', '')))
+    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,delivery_method,credit_applied,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', '')))
     order_id = c.lastrowid
     
     for item in order_items:
         c.execute('INSERT INTO order_items (order_id,product_id,quantity,unit_price,is_bulk_price) VALUES (?,?,?,?,?)',
                   (order_id, item['product_id'], item['quantity'], item['unit_price'], item['is_bulk']))
         c.execute('UPDATE products SET stock=stock-? WHERE id=?', (item['quantity'], item['product_id']))
+    
+    # Deduct credit if applied
+    if credit_applied > 0:
+        c.execute('UPDATE users SET referral_credit = referral_credit - ? WHERE id=?', (credit_applied, session['user_id']))
+        c.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
+                  (session['user_id'], order_id, 'used', -credit_applied, f'Applied to order {order_number}'))
+    
+    # Credit the referrer if this is a referral order (and not their own order)
+    if referrer_user_id and referrer_user_id != session['user_id']:
+        commission = subtotal * (commission_percent / 100)
+        c.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?', (commission, referrer_user_id))
+        c.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
+                  (referrer_user_id, order_id, 'earned', commission, f'Commission from order {order_number}'))
     
     c.execute('INSERT INTO acknowledgments (user_id,acknowledgment_type,ip_address,version_hash) VALUES (?,?,?,?)',
               (session['user_id'], 'checkout_attestation', request.remote_addr, get_ack_hash('checkout')))
@@ -1301,7 +1410,7 @@ def create_order():
     send_order_confirmation(order_id)
     check_low_stock()
     
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'shipping_cost': shipping_cost, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'shipping_cost': shipping_cost, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
 
 @app.route('/api/orders', methods=['GET'])
 @login_required
@@ -1738,11 +1847,93 @@ def admin_discounts_report():
         'end_date': end_date
     })
 
+@app.route('/api/admin/reports/referrals', methods=['GET'])
+@admin_required
+def admin_referrals_report():
+    """Get referral report for all referrers or a specific one"""
+    referrer_id = request.args.get('referrer_id')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    conn = get_db()
+    
+    # Build date filter
+    date_filter = "1=1"
+    if start_date and end_date:
+        date_filter = f"DATE(rt.created_at) >= '{start_date}' AND DATE(rt.created_at) <= '{end_date}'"
+    
+    if referrer_id:
+        # Get specific referrer's report
+        user = conn.execute('SELECT id, full_name, email, referral_credit FROM users WHERE id=?', (referrer_id,)).fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Get their transactions
+        transactions = conn.execute(f'''
+            SELECT rt.*, o.order_number, o.subtotal as order_subtotal
+            FROM referral_transactions rt 
+            LEFT JOIN orders o ON rt.order_id = o.id
+            WHERE rt.user_id = ? AND {date_filter}
+            ORDER BY rt.created_at DESC
+        ''', (referrer_id,)).fetchall()
+        
+        # Get totals
+        totals = conn.execute(f'''
+            SELECT 
+                COALESCE(SUM(CASE WHEN type = 'earned' THEN amount ELSE 0 END), 0) as total_earned,
+                COALESCE(SUM(CASE WHEN type = 'used' THEN ABS(amount) ELSE 0 END), 0) as total_used,
+                COUNT(CASE WHEN type = 'earned' THEN 1 END) as referral_count
+            FROM referral_transactions 
+            WHERE user_id = ? AND {date_filter}
+        ''', (referrer_id,)).fetchone()
+        
+        # Get their discount code
+        code = conn.execute('SELECT code FROM discount_codes WHERE referrer_user_id = ?', (referrer_id,)).fetchone()
+        
+        conn.close()
+        
+        return jsonify({
+            'referrer': dict(user),
+            'code': code['code'] if code else None,
+            'transactions': [dict(t) for t in transactions],
+            'totals': {
+                'total_earned': float(totals['total_earned'] or 0),
+                'total_used': float(totals['total_used'] or 0),
+                'current_balance': float(user['referral_credit'] or 0),
+                'referral_count': totals['referral_count'] or 0
+            },
+            'start_date': start_date,
+            'end_date': end_date
+        })
+    else:
+        # Get summary for all referrers
+        referrers = conn.execute('''
+            SELECT u.id, u.full_name, u.email, u.referral_credit,
+                   dc.code,
+                   (SELECT COALESCE(SUM(amount), 0) FROM referral_transactions WHERE user_id = u.id AND type = 'earned') as total_earned,
+                   (SELECT COUNT(*) FROM referral_transactions WHERE user_id = u.id AND type = 'earned') as referral_count
+            FROM users u
+            JOIN discount_codes dc ON dc.referrer_user_id = u.id
+            ORDER BY total_earned DESC
+        ''').fetchall()
+        
+        conn.close()
+        
+        return jsonify({
+            'referrers': [dict(r) for r in referrers]
+        })
+
 @app.route('/api/admin/discount-codes', methods=['GET'])
 @admin_required
 def admin_get_codes():
     conn = get_db()
-    codes = conn.execute('SELECT * FROM discount_codes ORDER BY created_at DESC').fetchall()
+    codes = conn.execute('''
+        SELECT dc.*, u.full_name as referrer_name, u.email as referrer_email
+        FROM discount_codes dc
+        LEFT JOIN users u ON dc.referrer_user_id = u.id
+        ORDER BY dc.created_at DESC
+    ''').fetchall()
     conn.close()
     return jsonify([dict(c) for c in codes])
 
@@ -1756,8 +1947,8 @@ def admin_add_code():
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at) VALUES (?,?,?,?,?,?,?)',
-                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at')))
+        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent) VALUES (?,?,?,?,?,?,?,?,?)',
+                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20)))
         conn.commit()
         cid = c.lastrowid
         conn.close()
@@ -1771,8 +1962,8 @@ def admin_add_code():
 def admin_update_code(cid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=? WHERE id=?',
-                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), cid))
+    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=? WHERE id=?',
+                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), cid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Code updated'})

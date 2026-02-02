@@ -668,7 +668,7 @@
             showCheckoutModal();
         }
 
-        function showCheckoutModal() {
+        async function showCheckoutModal() {
             const items = state.cart.map(item => {
                 const product = state.products.find(p => p.id === item.productId);
                 
@@ -696,6 +696,16 @@
                 } else {
                     discountAmount = state.discount.discount_amount;
                 }
+            }
+            
+            // Load user's credit balance
+            let userCredit = 0;
+            try {
+                const me = await api('/api/me');
+                userCredit = parseFloat(me.referral_credit) || 0;
+                state.userCredit = userCredit;
+            } catch (e) {
+                state.userCredit = 0;
             }
 
             document.getElementById('modalContainer').innerHTML = `
@@ -760,9 +770,25 @@
                                     <span>Shipping:</span>
                                     <span>$20.00</span>
                                 </div>
+                                <div id="creditLine" style="display: none; justify-content: space-between; margin-bottom: 5px; color: #805ad5;">
+                                    <span>Credit Applied:</span>
+                                    <span id="creditAppliedAmount">$0.00</span>
+                                </div>
                                 <div style="display: flex; justify-content: space-between; font-weight: 600; font-size: 1.1rem; border-top: 1px solid #e2e8f0; padding-top: 10px; margin-top: 10px;">
                                     <span>Total:</span>
                                     <span id="checkoutTotal">$${(subtotal - discountAmount).toFixed(2)}</span>
+                                </div>
+                            </div>
+                            <div id="creditSection" style="display: none; background: #faf5ff; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <strong style="color: #553c9a;">💰 Referral Credit Available</strong>
+                                        <div style="font-size: 1.2rem; color: #805ad5; font-weight: 600;" id="availableCreditDisplay">$0.00</div>
+                                    </div>
+                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                        <input type="checkbox" id="applyCredit" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})" style="width: 18px; height: 18px;">
+                                        <span>Apply Credit</span>
+                                    </label>
                                 </div>
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
@@ -773,12 +799,31 @@
                     </div>
                 </div>
             `;
+            
+            // Show credit section if user has credit
+            if (userCredit > 0) {
+                document.getElementById('creditSection').style.display = 'block';
+                document.getElementById('availableCreditDisplay').textContent = '$' + userCredit.toFixed(2);
+            }
         }
         
         function updateCheckoutTotal(subtotal, discountAmount) {
             const deliveryMethod = document.querySelector('input[name="deliveryMethod"]:checked').value;
             const shippingCost = deliveryMethod === 'ship' ? 20 : 0;
-            const total = subtotal - discountAmount + shippingCost;
+            
+            // Handle credit application
+            let creditApplied = 0;
+            const applyCreditCheckbox = document.getElementById('applyCredit');
+            if (applyCreditCheckbox && applyCreditCheckbox.checked && state.userCredit > 0) {
+                const maxCredit = subtotal - discountAmount + shippingCost;
+                creditApplied = Math.min(state.userCredit, maxCredit);
+                document.getElementById('creditLine').style.display = 'flex';
+                document.getElementById('creditAppliedAmount').textContent = '-$' + creditApplied.toFixed(2);
+            } else {
+                document.getElementById('creditLine').style.display = 'none';
+            }
+            
+            const total = Math.max(0, subtotal - discountAmount + shippingCost - creditApplied);
             
             document.getElementById('checkoutTotal').textContent = '$' + total.toFixed(2);
             document.getElementById('shippingLine').style.display = deliveryMethod === 'ship' ? 'flex' : 'none';
@@ -814,6 +859,10 @@
                 return;
             }
             
+            // Check if applying credit
+            const applyCreditCheckbox = document.getElementById('applyCredit');
+            const applyCredit = applyCreditCheckbox && applyCreditCheckbox.checked;
+            
             const items = state.cart.map(item => ({
                 product_id: item.productId,
                 quantity: item.qty
@@ -827,6 +876,7 @@
                         discount_code: state.discount?.code || null,
                         delivery_method: deliveryMethod,
                         shipping_address: deliveryMethod === 'ship' ? shippingAddress : 'Pickup',
+                        apply_credit: applyCredit,
                         final_attestation: true,
                         acknowledgments: {
                             research_only: ack1,
@@ -839,9 +889,15 @@
                 
                 state.cart = [];
                 state.discount = null;
+                state.userCredit = 0;
                 saveCart();
                 closeModal();
-                showAlert(`Order ${result.order_number} placed successfully!`, 'success');
+                
+                let message = 'Order ' + result.order_number + ' placed successfully!';
+                if (result.credit_applied > 0) {
+                    message += ' ($' + result.credit_applied.toFixed(2) + ' credit applied)';
+                }
+                showAlert(message, 'success');
                 showView('orders');
             } catch (err) {
                 showAlert(err.message);
