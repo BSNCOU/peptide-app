@@ -1602,6 +1602,74 @@ def admin_bulk_update_costs():
         'not_found': not_found
     })
 
+@app.route('/api/admin/extract-pdf', methods=['POST'])
+@admin_required
+def admin_extract_pdf():
+    """Extract tables from a PDF file"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+    
+    file = request.files['file']
+    if not file.filename.lower().endswith('.pdf'):
+        return jsonify({'error': 'File must be a PDF'}), 400
+    
+    try:
+        import pdfplumber
+    except ImportError:
+        return jsonify({'error': 'PDF extraction requires pdfplumber. Install with: pip install pdfplumber'}), 500
+    
+    try:
+        all_rows = []
+        columns = []
+        page_count = 0
+        
+        with pdfplumber.open(file) as pdf:
+            page_count = len(pdf.pages)
+            
+            for page in pdf.pages:
+                tables = page.extract_tables()
+                for table in tables:
+                    if not table:
+                        continue
+                    
+                    for i, row in enumerate(table):
+                        if not row:
+                            continue
+                        
+                        # Clean up cells
+                        clean_row = []
+                        for cell in row:
+                            if cell is None:
+                                clean_row.append('')
+                            else:
+                                # Clean up whitespace and newlines
+                                clean_row.append(str(cell).replace('\n', ' ').strip())
+                        
+                        # First table's first row becomes column headers
+                        if len(columns) == 0 and len(all_rows) == 0:
+                            columns = clean_row
+                        else:
+                            # Only add rows with same column count
+                            if len(clean_row) == len(columns):
+                                all_rows.append(clean_row)
+                            elif len(columns) == 0:
+                                # No headers yet, use this row's length
+                                columns = [f'Column {i+1}' for i in range(len(clean_row))]
+                                all_rows.append(clean_row)
+        
+        if len(all_rows) == 0:
+            return jsonify({'error': 'No tables found in PDF'}), 400
+        
+        return jsonify({
+            'columns': columns,
+            'rows': all_rows,
+            'pages': page_count
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] PDF extraction: {str(e)}")
+        return jsonify({'error': f'Failed to extract PDF: {str(e)}'}), 500
+
 @app.route('/api/admin/reports/financial', methods=['GET'])
 @admin_required
 def admin_financial_report():
