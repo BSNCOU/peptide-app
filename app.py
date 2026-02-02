@@ -1293,7 +1293,27 @@ def validate_discount():
         return jsonify({'error': f"Min order ${discount['min_order_amount']:.2f} required"}), 400
     
     amt = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
-    return jsonify({'valid': True, 'code': discount['code'], 'discount_id': discount['id'], 'discount_percent': discount['discount_percent'], 'discount_amount': round(amt, 2), 'message': f"{discount['discount_percent']}% off" if discount['discount_percent'] > 0 else f"${discount['discount_amount']:.2f} off"})
+    
+    # Check if user is the referrer for this code
+    is_own_code = discount['referrer_user_id'] == session.get('user_id')
+    commission_percent = discount['commission_percent'] or 20 if discount['referrer_user_id'] else 0
+    
+    # Calculate combined discount if it's their own code
+    combined_percent = discount['discount_percent'] + commission_percent if is_own_code else 0
+    combined_amount = subtotal * (combined_percent / 100) if combined_percent > 0 else 0
+    
+    return jsonify({
+        'valid': True, 
+        'code': discount['code'], 
+        'discount_id': discount['id'], 
+        'discount_percent': discount['discount_percent'], 
+        'discount_amount': round(amt, 2), 
+        'message': f"{discount['discount_percent']}% off" if discount['discount_percent'] > 0 else f"${discount['discount_amount']:.2f} off",
+        'is_own_code': is_own_code,
+        'commission_percent': commission_percent,
+        'combined_percent': combined_percent,
+        'combined_amount': round(combined_amount, 2)
+    })
 
 # ============================================
 # ROUTES - ORDERS
@@ -1346,6 +1366,8 @@ def create_order():
     discount_code_id = None
     referrer_user_id = None
     commission_percent = 20
+    is_own_code = False
+    referrer_choice = data.get('referrer_choice', 'split')  # 'combined' or 'split'
     
     if data.get('discount_code'):
         discount = c.execute('''SELECT * FROM discount_codes WHERE code=? AND active=1 
@@ -1353,12 +1375,22 @@ def create_order():
             AND (usage_limit IS NULL OR times_used < usage_limit)''', (data['discount_code'].upper(),)).fetchone()
         if discount and subtotal >= discount['min_order_amount']:
             discount_code_id = discount['id']
-            discount_amount = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
             c.execute('UPDATE discount_codes SET times_used=times_used+1 WHERE id=?', (discount['id'],))
-            # Check if this is a referral code
+            
+            # Check if this is a referral code and if it's their own code
             if discount['referrer_user_id']:
                 referrer_user_id = discount['referrer_user_id']
                 commission_percent = discount['commission_percent'] or 20
+                is_own_code = (referrer_user_id == session['user_id'])
+            
+            # Calculate discount based on whether it's their own code and their choice
+            if is_own_code and referrer_choice == 'combined':
+                # Give them full discount (discount + commission combined)
+                combined_percent = discount['discount_percent'] + commission_percent
+                discount_amount = subtotal * (combined_percent / 100)
+            else:
+                # Normal discount
+                discount_amount = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
     
     # Handle delivery method and shipping cost
     delivery_method = data.get('delivery_method', 'pickup')
@@ -1394,12 +1426,24 @@ def create_order():
         c.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
                   (session['user_id'], order_id, 'used', -credit_applied, f'Applied to order {order_number}'))
     
-    # Credit the referrer if this is a referral order (and not their own order)
-    if referrer_user_id and referrer_user_id != session['user_id']:
-        commission = subtotal * (commission_percent / 100)
-        c.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?', (commission, referrer_user_id))
-        c.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
-                  (referrer_user_id, order_id, 'earned', commission, f'Commission from order {order_number}'))
+    # Credit the referrer if this is a referral order
+    # - If it's someone else's order: credit the referrer
+    # - If it's their own order with 'split' choice: credit themselves
+    credit_earned = 0
+    if referrer_user_id:
+        if referrer_user_id != session['user_id']:
+            # Someone else used the code - credit the referrer
+            commission = subtotal * (commission_percent / 100)
+            c.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?', (commission, referrer_user_id))
+            c.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
+                      (referrer_user_id, order_id, 'earned', commission, f'Commission from order {order_number}'))
+        elif is_own_code and referrer_choice == 'split':
+            # They used their own code and chose to split - credit themselves
+            commission = subtotal * (commission_percent / 100)
+            credit_earned = commission
+            c.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?', (commission, session['user_id']))
+            c.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
+                      (session['user_id'], order_id, 'earned', commission, f'Self-referral credit from order {order_number}'))
     
     c.execute('INSERT INTO acknowledgments (user_id,acknowledgment_type,ip_address,version_hash) VALUES (?,?,?,?)',
               (session['user_id'], 'checkout_attestation', request.remote_addr, get_ack_hash('checkout')))
@@ -1410,7 +1454,7 @@ def create_order():
     send_order_confirmation(order_id)
     check_low_stock()
     
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'shipping_cost': shipping_cost, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
 
 @app.route('/api/orders', methods=['GET'])
 @login_required

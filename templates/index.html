@@ -132,7 +132,9 @@
             orders: [],
             currentView: 'products',
             selectedCategory: 'All',
-            discount: null
+            discount: null,
+            referrerChoice: null,
+            userCredit: 0
         };
 
         // API helpers
@@ -641,17 +643,119 @@
         async function applyDiscount() {
             const code = document.getElementById('discountCode').value.trim();
             if (!code) return;
+            
+            // Calculate subtotal for accurate discount preview
+            const subtotal = state.cart.reduce((sum, item) => {
+                const product = state.products.find(p => p.id === item.productId);
+                if (!product) return sum;
+                if (product.price_bulk && item.qty >= product.bulk_quantity) {
+                    return sum + (product.price_bulk / product.bulk_quantity) * item.qty;
+                }
+                return sum + product.price_single * item.qty;
+            }, 0);
+            
             try {
                 const result = await api('/api/validate-discount', {
                     method: 'POST',
-                    body: JSON.stringify({ code })
+                    body: JSON.stringify({ code, subtotal })
                 });
-                state.discount = result;
-                showAlert('Discount applied!', 'success');
-                renderCart();
+                
+                // Check if this is their own referral code
+                if (result.is_own_code && result.commission_percent > 0) {
+                    showReferrerChoiceModal(result, subtotal);
+                } else {
+                    state.discount = result;
+                    state.referrerChoice = null;
+                    showAlert('Discount applied!', 'success');
+                    renderCart();
+                }
             } catch (err) {
                 showAlert(err.message);
             }
+        }
+        
+        function showReferrerChoiceModal(discount, subtotal) {
+            const discountPercent = discount.discount_percent;
+            const commissionPercent = discount.commission_percent;
+            const combinedPercent = discountPercent + commissionPercent;
+            
+            const discountOnly = subtotal * (discountPercent / 100);
+            const creditAmount = subtotal * (commissionPercent / 100);
+            const combinedDiscount = subtotal * (combinedPercent / 100);
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 500px;">
+                        <h3>🎉 This is Your Referral Code!</h3>
+                        <p style="color: #718096; margin-bottom: 20px;">How would you like to use your ${combinedPercent}% benefit?</p>
+                        
+                        <div style="display: flex; flex-direction: column; gap: 15px;">
+                            <label style="display: block; padding: 20px; border: 2px solid #e2e8f0; border-radius: 8px; cursor: pointer; transition: all 0.2s;" 
+                                   onclick="this.style.borderColor='#4299e1'; this.style.background='#ebf8ff';"
+                                   onmouseenter="this.style.borderColor='#4299e1'" onmouseleave="if(!document.getElementById('choiceCombined').checked)this.style.borderColor='#e2e8f0'; this.style.background='white';">
+                                <input type="radio" name="referrerChoice" id="choiceCombined" value="combined" style="margin-right: 10px;" checked>
+                                <strong style="color: #2b6cb0; font-size: 1.1rem;">${combinedPercent}% Off This Order</strong>
+                                <div style="margin-top: 8px; color: #4a5568;">
+                                    Save <strong style="color: #38a169;">$${combinedDiscount.toFixed(2)}</strong> on this order
+                                </div>
+                            </label>
+                            
+                            <label style="display: block; padding: 20px; border: 2px solid #e2e8f0; border-radius: 8px; cursor: pointer; transition: all 0.2s;"
+                                   onclick="this.style.borderColor='#9f7aea'; this.style.background='#faf5ff';"
+                                   onmouseenter="this.style.borderColor='#9f7aea'" onmouseleave="if(!document.getElementById('choiceSplit').checked)this.style.borderColor='#e2e8f0'; this.style.background='white';">
+                                <input type="radio" name="referrerChoice" id="choiceSplit" value="split" style="margin-right: 10px;">
+                                <strong style="color: #805ad5; font-size: 1.1rem;">${discountPercent}% Off + ${commissionPercent}% Credit</strong>
+                                <div style="margin-top: 8px; color: #4a5568;">
+                                    Save <strong>$${discountOnly.toFixed(2)}</strong> now + get <strong style="color: #805ad5;">$${creditAmount.toFixed(2)}</strong> credit for future orders
+                                </div>
+                            </label>
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; margin-top: 25px;">
+                            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button type="button" class="btn btn-success" onclick="applyReferrerChoice('${discount.code}', ${discountPercent}, ${commissionPercent})">Apply</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function applyReferrerChoice(code, discountPercent, commissionPercent) {
+            const choice = document.querySelector('input[name="referrerChoice"]:checked').value;
+            
+            // Calculate the effective discount based on choice
+            const subtotal = state.cart.reduce((sum, item) => {
+                const product = state.products.find(p => p.id === item.productId);
+                if (!product) return sum;
+                if (product.price_bulk && item.qty >= product.bulk_quantity) {
+                    return sum + (product.price_bulk / product.bulk_quantity) * item.qty;
+                }
+                return sum + product.price_single * item.qty;
+            }, 0);
+            
+            let effectivePercent, effectiveAmount, message;
+            if (choice === 'combined') {
+                effectivePercent = discountPercent + commissionPercent;
+                effectiveAmount = subtotal * (effectivePercent / 100);
+                message = effectivePercent + '% off (combined)';
+            } else {
+                effectivePercent = discountPercent;
+                effectiveAmount = subtotal * (effectivePercent / 100);
+                message = discountPercent + '% off + ' + commissionPercent + '% credit';
+            }
+            
+            state.discount = {
+                code: code,
+                discount_percent: effectivePercent,
+                discount_amount: effectiveAmount,
+                message: message,
+                is_own_code: true
+            };
+            state.referrerChoice = choice;
+            
+            closeModal();
+            showAlert('Discount applied: ' + message, 'success');
+            renderCart();
         }
 
         function removeDiscount() {
@@ -874,6 +978,7 @@
                     body: JSON.stringify({
                         items,
                         discount_code: state.discount?.code || null,
+                        referrer_choice: state.referrerChoice || null,
                         delivery_method: deliveryMethod,
                         shipping_address: deliveryMethod === 'ship' ? shippingAddress : 'Pickup',
                         apply_credit: applyCredit,
@@ -889,6 +994,7 @@
                 
                 state.cart = [];
                 state.discount = null;
+                state.referrerChoice = null;
                 state.userCredit = 0;
                 saveCart();
                 closeModal();
@@ -896,6 +1002,9 @@
                 let message = 'Order ' + result.order_number + ' placed successfully!';
                 if (result.credit_applied > 0) {
                     message += ' ($' + result.credit_applied.toFixed(2) + ' credit applied)';
+                }
+                if (result.credit_earned > 0) {
+                    message += ' (+$' + result.credit_earned.toFixed(2) + ' credit earned!)';
                 }
                 showAlert(message, 'success');
                 showView('orders');
