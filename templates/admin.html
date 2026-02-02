@@ -122,8 +122,15 @@
             inventory: [],
             currentTab: 'products',
             orderStatusFilter: '',
-            showInactiveProducts: false
+            showInactiveProducts: false,
+            currentReferrerReport: null
         };
+        
+        // Global HTML escape helper
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
 
         async function api(endpoint, options = {}) {
             const headers = { 'Content-Type': 'application/json' };
@@ -1199,7 +1206,7 @@ BC10,8.00</pre>
             // Load users for referrer dropdown
             const users = await api('/api/admin/users');
             const userOptions = users.filter(u => !u.is_admin).map(u => 
-                '<option value="' + u.id + '">' + u.full_name + ' (' + u.email + ')</option>'
+                '<option value="' + u.id + '">' + escapeHtml(u.full_name) + ' (' + escapeHtml(u.email) + ')</option>'
             ).join('');
             
             document.getElementById('modalContainer').innerHTML = `
@@ -1294,33 +1301,36 @@ BC10,8.00</pre>
             
             // Load users for referrer dropdown
             const users = await api('/api/admin/users');
-            const userOptions = users.filter(u => !u.is_admin).map(u => 
-                '<option value="' + u.id + '"' + (d.referrer_user_id === u.id ? ' selected' : '') + '>' + u.full_name + ' (' + u.email + ')</option>'
-            ).join('');
+            const userOptions = users.filter(u => !u.is_admin).map(u => {
+                const selected = d.referrer_user_id === u.id ? ' selected' : '';
+                return '<option value="' + u.id + '"' + selected + '>' + escapeHtml(u.full_name) + ' (' + escapeHtml(u.email) + ')</option>';
+            }).join('');
+            
+            const descValue = escapeHtml(d.description || '');
             
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
                     <div class="modal-content">
-                        <h3>Edit Discount: ${d.code}</h3>
-                        <form onsubmit="updateDiscount(event, ${id})">
+                        <h3>Edit Discount: ${escapeHtml(d.code)}</h3>
+                        <form onsubmit="updateDiscount(event, ${id}, '${escapeHtml(d.code)}')">
                             <div class="form-group">
                                 <label>Description</label>
-                                <input type="text" id="discDesc" value="${d.description || ''}">
+                                <input type="text" id="discDesc" value="${descValue}">
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
                                     <label>Discount %</label>
-                                    <input type="number" id="discPercent" step="0.01" value="${d.discount_percent}">
+                                    <input type="number" id="discPercent" step="0.01" value="${d.discount_percent || 0}">
                                 </div>
                                 <div class="form-group">
                                     <label>Discount $</label>
-                                    <input type="number" id="discAmount" step="0.01" value="${d.discount_amount}">
+                                    <input type="number" id="discAmount" step="0.01" value="${d.discount_amount || 0}">
                                 </div>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
                                     <label>Min Order Amount</label>
-                                    <input type="number" id="discMinOrder" step="0.01" value="${d.min_order_amount}">
+                                    <input type="number" id="discMinOrder" step="0.01" value="${d.min_order_amount || 0}">
                                 </div>
                                 <div class="form-group">
                                     <label>Usage Limit</label>
@@ -1354,12 +1364,13 @@ BC10,8.00</pre>
             `;
         }
 
-        async function updateDiscount(e, id) {
+        async function updateDiscount(e, id, code) {
             e.preventDefault();
             try {
                 await api('/api/admin/discount-codes/' + id, {
                     method: 'PUT',
                     body: JSON.stringify({
+                        code: code,
                         description: document.getElementById('discDesc').value,
                         discount_percent: parseFloat(document.getElementById('discPercent').value) || 0,
                         discount_amount: parseFloat(document.getElementById('discAmount').value) || 0,
@@ -1401,8 +1412,8 @@ BC10,8.00</pre>
                                         <tbody>
                                             ${report.referrers.map(r => `
                                                 <tr>
-                                                    <td><strong>${r.full_name}</strong><br><small style="color: #718096;">${r.email}</small></td>
-                                                    <td><code>${r.code}</code></td>
+                                                    <td><strong>${escapeHtml(r.full_name)}</strong><br><small style="color: #718096;">${escapeHtml(r.email)}</small></td>
+                                                    <td><code>${escapeHtml(r.code)}</code></td>
                                                     <td>${r.referral_count || 0}</td>
                                                     <td style="color: #38a169;">$${parseFloat(r.total_earned || 0).toFixed(2)}</td>
                                                     <td style="color: #2b6cb0; font-weight: 600;">$${parseFloat(r.referral_credit || 0).toFixed(2)}</td>
@@ -1431,11 +1442,17 @@ BC10,8.00</pre>
             try {
                 const report = await api('/api/admin/reports/referrals?referrer_id=' + userId + '&start_date=' + lastMonth + '&end_date=' + today);
                 
+                // Store report data for copy function
+                state.currentReferrerReport = {
+                    name: report.referrer.full_name,
+                    balance: report.totals.current_balance
+                };
+                
                 document.getElementById('modalContainer').innerHTML = `
                     <div class="modal" onclick="if(event.target===this)closeModal()">
                         <div class="modal-content" style="max-width: 800px;">
-                            <h3>📊 Referral Report: ${report.referrer.full_name}</h3>
-                            <p style="color: #718096;">${report.referrer.email} | Code: <code>${report.code || 'Not assigned'}</code></p>
+                            <h3>📊 Referral Report: ${escapeHtml(report.referrer.full_name)}</h3>
+                            <p style="color: #718096;">${escapeHtml(report.referrer.email)} | Code: <code>${escapeHtml(report.code) || 'Not assigned'}</code></p>
                             
                             <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0;">
                                 <div style="background: #f0fff4; padding: 15px; border-radius: 8px; text-align: center;">
@@ -1468,9 +1485,9 @@ BC10,8.00</pre>
                                                 <tr>
                                                     <td>${new Date(t.created_at).toLocaleDateString()}</td>
                                                     <td>${t.type === 'earned' ? '<span style="color: #38a169;">Earned</span>' : '<span style="color: #e53e3e;">Used</span>'}</td>
-                                                    <td>${t.order_number || '-'}</td>
+                                                    <td>${escapeHtml(t.order_number) || '-'}</td>
                                                     <td style="color: ${t.amount >= 0 ? '#38a169' : '#e53e3e'}; font-weight: 500;">${t.amount >= 0 ? '+' : ''}$${parseFloat(t.amount).toFixed(2)}</td>
-                                                    <td style="color: #718096; font-size: 0.85rem;">${t.description || '-'}</td>
+                                                    <td style="color: #718096; font-size: 0.85rem;">${escapeHtml(t.description) || '-'}</td>
                                                 </tr>
                                             `).join('')}
                                         </tbody>
@@ -1480,7 +1497,7 @@ BC10,8.00</pre>
                             
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button class="btn btn-secondary" onclick="closeModal()">Close</button>
-                                <button class="btn" onclick="copyReferrerReport(${userId}, '${report.referrer.full_name}', ${report.totals.current_balance})">📋 Copy Report for Referrer</button>
+                                <button class="btn" onclick="copyReferrerReport()">📋 Copy Report for Referrer</button>
                             </div>
                         </div>
                     </div>
@@ -1490,9 +1507,11 @@ BC10,8.00</pre>
             }
         }
 
-        function copyReferrerReport(userId, name, balance) {
-            const text = 'Hi ' + name + ',\\n\\nHere is your referral credit summary:\\n\\nCurrent Balance: $' + balance.toFixed(2) + '\\n\\nYou can use this credit on your next order. Just select "Apply Credit" at checkout.\\n\\nThank you for your referrals!';
-            navigator.clipboard.writeText(text.replace(/\\n/g, '\\n')).then(() => {
+        function copyReferrerReport() {
+            const data = state.currentReferrerReport;
+            if (!data) return;
+            const text = 'Hi ' + data.name + ',\n\nHere is your referral credit summary:\n\nCurrent Balance: $' + data.balance.toFixed(2) + '\n\nYou can use this credit on your next order. Just select "Apply Credit" at checkout.\n\nThank you for your referrals!';
+            navigator.clipboard.writeText(text).then(() => {
                 showAlert('Report copied to clipboard!', 'success');
             });
         }
