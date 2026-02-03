@@ -1988,9 +1988,12 @@ BC10,8.00</pre>
             
             const content = document.getElementById('tabContent');
             content.innerHTML = `
-                <div style="margin-bottom: 15px;">
-                    <h3 style="color: #2d3748;">Open Orders (${openOrders.length})</h3>
-                    <p style="color: #718096; font-size: 0.9rem;">Orders that need to be fulfilled</p>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <div>
+                        <h3 style="color: #2d3748; margin: 0;">Open Orders (${openOrders.length})</h3>
+                        <p style="color: #718096; font-size: 0.9rem; margin: 5px 0 0 0;">Orders that need to be fulfilled</p>
+                    </div>
+                    ${openOrders.length > 0 ? '<button class="btn btn-secondary" onclick="printOpenOrders()">🖨️ Print Pick List</button>' : ''}
                 </div>
                 ${openOrders.length === 0 ? '<p style="text-align: center; color: #718096; padding: 40px;">🎉 No open orders! All caught up.</p>' : `
                     <div style="overflow-x: auto;">
@@ -2009,8 +2012,8 @@ BC10,8.00</pre>
                             <tbody>
                                 ${openOrders.map(o => `
                                     <tr>
-                                        <td><strong>${o.order_number}</strong></td>
-                                        <td>${o.full_name || o.customer_name || 'Unknown'}<br><small style="color:#718096;">${o.email || o.customer_email || ''}</small></td>
+                                        <td><strong>${escapeHtml(o.order_number)}</strong></td>
+                                        <td>${escapeHtml(o.full_name || o.customer_name || 'Unknown')}<br><small style="color:#718096;">${escapeHtml(o.email || o.customer_email || '')}</small></td>
                                         <td>${o.items ? o.items.length : 0} items</td>
                                         <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
                                         <td><span class="status-badge status-${o.status}">${o.status}</span></td>
@@ -2027,6 +2030,112 @@ BC10,8.00</pre>
                     </div>
                 `}
             `;
+        }
+        
+        function printOpenOrders() {
+            const openOrders = state.orders.filter(o => 
+                !['fulfilled', 'delivered', 'cancelled', 'refunded'].includes(o.status)
+            );
+            
+            let html = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Open Orders - Pick List</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; font-size: 12px; margin: 20px; }
+                        h1 { font-size: 18px; margin-bottom: 5px; }
+                        .date { color: #666; margin-bottom: 20px; }
+                        .order { border: 1px solid #333; margin-bottom: 20px; page-break-inside: avoid; }
+                        .order-header { background: #f0f0f0; padding: 10px; border-bottom: 1px solid #333; }
+                        .order-header h2 { margin: 0; font-size: 14px; }
+                        .customer { margin: 5px 0; }
+                        .items { padding: 10px; }
+                        .items table { width: 100%; border-collapse: collapse; }
+                        .items th, .items td { border: 1px solid #ccc; padding: 5px; text-align: left; }
+                        .items th { background: #f9f9f9; }
+                        .checkbox { width: 30px; text-align: center; }
+                        .qty { width: 50px; text-align: center; font-weight: bold; }
+                        .notes { background: #fffde7; padding: 8px; margin-top: 10px; border-left: 3px solid #ffc107; }
+                        .shipping { background: #e3f2fd; padding: 8px; margin-top: 10px; }
+                        @media print {
+                            .order { page-break-inside: avoid; }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <h1>🧪 The Peptide Wizard - Pick List</h1>
+                    <div class="date">Generated: ${new Date().toLocaleString()} | ${openOrders.length} orders</div>
+            `;
+            
+            openOrders.forEach(o => {
+                html += `
+                    <div class="order">
+                        <div class="order-header">
+                            <h2>Order: ${escapeHtml(o.order_number)} | ${o.status.toUpperCase()}</h2>
+                            <div class="customer">
+                                <strong>${escapeHtml(o.full_name || o.customer_name || 'Unknown')}</strong> | 
+                                ${escapeHtml(o.email || o.customer_email || '-')} | 
+                                ${escapeHtml(o.phone || o.customer_phone || '-')}
+                            </div>
+                            <div>Date: ${new Date(o.created_at).toLocaleString()} | Total: $${parseFloat(o.total || 0).toFixed(2)}</div>
+                        </div>
+                        <div class="items">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="checkbox">✓</th>
+                                        <th>SKU</th>
+                                        <th>Product</th>
+                                        <th class="qty">Qty</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                `;
+                
+                if (o.items && o.items.length > 0) {
+                    o.items.forEach(i => {
+                        html += `
+                            <tr>
+                                <td class="checkbox">☐</td>
+                                <td><strong>${escapeHtml(i.sku || '-')}</strong></td>
+                                <td>${escapeHtml(i.name || '-')}</td>
+                                <td class="qty">${i.quantity}</td>
+                            </tr>
+                        `;
+                    });
+                }
+                
+                html += `
+                                </tbody>
+                            </table>
+                `;
+                
+                if (o.notes) {
+                    html += `<div class="notes"><strong>Notes:</strong> ${escapeHtml(o.notes)}</div>`;
+                }
+                
+                if (o.delivery_method === 'ship' && o.shipping_address) {
+                    html += `<div class="shipping"><strong>📦 SHIP TO:</strong><br>${escapeHtml(o.shipping_address).replace(/\n/g, '<br>')}</div>`;
+                } else {
+                    html += `<div class="shipping"><strong>🏪 PICKUP</strong></div>`;
+                }
+                
+                html += `
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += `
+                </body>
+                </html>
+            `;
+            
+            const printWindow = window.open('', '_blank');
+            printWindow.document.write(html);
+            printWindow.document.close();
+            printWindow.print();
         }
 
         function showOpenOrderDetailModal(id) {

@@ -1294,9 +1294,15 @@ def validate_discount():
     
     amt = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
     
-    # Check if user is the referrer for this code
-    is_own_code = discount['referrer_user_id'] == session.get('user_id')
-    commission_percent = discount['commission_percent'] or 20 if discount['referrer_user_id'] else 0
+    # Check if user is the referrer for this code (handle type conversion)
+    referrer_id = discount['referrer_user_id']
+    current_user_id = session.get('user_id')
+    is_own_code = False
+    commission_percent = 0
+    
+    if referrer_id is not None and current_user_id is not None:
+        is_own_code = int(referrer_id) == int(current_user_id)
+        commission_percent = float(discount['commission_percent'] or 20)
     
     # Calculate combined discount if it's their own code
     combined_percent = discount['discount_percent'] + commission_percent if is_own_code else 0
