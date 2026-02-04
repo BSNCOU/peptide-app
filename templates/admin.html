@@ -499,9 +499,14 @@
                                 <h4 style="margin-bottom: 10px; color: ${isOnSale ? '#d97706' : '#276749'};">🏷️ Sale Settings ${isOnSale ? '(ACTIVE)' : ''}</h4>
                                 <div class="form-row">
                                     <div class="form-group">
-                                        <label>Sale Price</label>
+                                        <label>Sale Price (per bottle)</label>
                                         <input type="number" id="prodSalePrice" step="0.01" value="${p.sale_price || ''}" placeholder="Leave blank for no sale">
-                                        <small style="color: #718096;">Overrides single/bulk price when active</small>
+                                        <small style="color: #718096;">Price per unit when on sale</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Min Qty for Sale</label>
+                                        <input type="number" id="prodSaleMinQty" value="${p.sale_min_qty || 1}" min="1">
+                                        <small style="color: #718096;">Customer must buy this many to get sale price</small>
                                     </div>
                                 </div>
                                 <div class="form-row">
@@ -546,6 +551,7 @@
                         cost: parseFloat(document.getElementById('prodCost').value) || 0,
                         reorder_qty: parseInt(document.getElementById('prodReorderQty').value) || 0,
                         sale_price: parseFloat(document.getElementById('prodSalePrice').value) || null,
+                        sale_min_qty: parseInt(document.getElementById('prodSaleMinQty').value) || 1,
                         sale_start: document.getElementById('prodSaleStart').value || null,
                         sale_end: document.getElementById('prodSaleEnd').value || null
                     })
@@ -2136,6 +2142,7 @@ The Peptide Wizard Team"></textarea>
                             <th>Product</th>
                             <th>Regular Price</th>
                             <th>Sale Price</th>
+                            <th>Min Qty</th>
                             <th>Discount</th>
                             <th>Sale Ends</th>
                         </tr>
@@ -2144,12 +2151,14 @@ The Peptide Wizard Team"></textarea>
                         ${onSale.map(p => {
                             const discount = ((p.price_single - p.sale_price) / p.price_single * 100).toFixed(0);
                             const endDate = p.sale_end ? new Date(p.sale_end).toLocaleDateString() : 'No end date';
+                            const minQty = p.sale_min_qty || 1;
                             return `
                                 <tr>
                                     <td><code>${escapeHtml(p.sku)}</code></td>
                                     <td>${escapeHtml(p.name)}</td>
                                     <td style="text-decoration: line-through; color: #a0aec0;">$${p.price_single.toFixed(2)}</td>
                                     <td style="color: #e53e3e; font-weight: 600;">$${p.sale_price.toFixed(2)}</td>
+                                    <td>${minQty > 1 ? '<strong>' + minQty + '+</strong>' : 'Any'}</td>
                                     <td><span style="background: #fed7d7; color: #c53030; padding: 2px 8px; border-radius: 4px; font-weight: 600;">${discount}% OFF</span></td>
                                     <td>${endDate}</td>
                                 </tr>

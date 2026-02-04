@@ -472,22 +472,25 @@
                     </div>
                     <div class="grid grid-3">
                         ${filtered.map(p => {
-                            const isOnSale = p.is_on_sale && p.sale_price > 0;
-                            const displayPrice = isOnSale ? p.sale_price : p.price_single;
-                            const discountPercent = isOnSale ? Math.round((p.price_single - p.sale_price) / p.price_single * 100) : 0;
+                            const saleActive = p.sale_active && p.sale_price > 0;
+                            const saleMinQty = p.sale_min_qty || 1;
+                            const discountPercent = saleActive ? Math.round((p.price_single - p.sale_price) / p.price_single * 100) : 0;
                             
                             return `
-                            <div class="product-card" style="${isOnSale ? 'border: 2px solid #e53e3e; position: relative;' : ''}">
-                                ${isOnSale ? '<div style="position: absolute; top: -10px; right: -10px; background: #e53e3e; color: white; padding: 5px 10px; border-radius: 20px; font-weight: bold; font-size: 0.85rem;">SALE ' + discountPercent + '% OFF</div>' : ''}
+                            <div class="product-card" style="${saleActive ? 'border: 2px solid #e53e3e; position: relative;' : ''}">
+                                ${saleActive ? '<div style="position: absolute; top: -10px; right: -10px; background: #e53e3e; color: white; padding: 5px 10px; border-radius: 20px; font-weight: bold; font-size: 0.85rem;">' + discountPercent + '% OFF</div>' : ''}
                                 <h3>${p.name}</h3>
                                 <p class="product-sku">SKU: ${p.sku}</p>
                                 <div class="product-price">
-                                    ${isOnSale ? `
-                                        <span style="text-decoration: line-through; color: #a0aec0; font-size: 0.9rem;">$${p.price_single.toFixed(2)}</span>
-                                        <span style="color: #e53e3e; font-weight: bold; font-size: 1.2rem;"> $${p.sale_price.toFixed(2)}</span>
-                                    ` : `$${p.price_single.toFixed(2)}`}
-                                    ${!isOnSale && p.price_bulk ? `<span class="bulk">Bulk (${p.bulk_quantity}+): $${(p.price_bulk / p.bulk_quantity).toFixed(2)} each</span>` : ''}
+                                    $${p.price_single.toFixed(2)}
+                                    ${!saleActive && p.price_bulk ? `<span class="bulk">Bulk (${p.bulk_quantity}+): $${(p.price_bulk / p.bulk_quantity).toFixed(2)} each</span>` : ''}
                                 </div>
+                                ${saleActive ? `
+                                    <div style="background: #fed7d7; padding: 8px; border-radius: 6px; margin: 8px 0;">
+                                        <strong style="color: #c53030;">🏷️ SALE: ${saleMinQty > 1 ? 'Buy ' + saleMinQty + '+ for ' : ''}$${p.sale_price.toFixed(2)}/ea</strong>
+                                        ${saleMinQty > 1 ? '<div style="font-size: 0.8rem; color: #742a2a;">Min ' + saleMinQty + ' to qualify</div>' : ''}
+                                    </div>
+                                ` : ''}
                                 <p class="product-stock ${p.stock < 10 ? 'low' : 'ok'}">
                                     ${p.stock > 0 ? `${p.stock} in stock` : 'Out of stock'}
                                 </p>
@@ -554,10 +557,12 @@
                 // Check if on sale first, then bulk, then single
                 let subtotal;
                 let priceDisplay;
-                let isOnSale = product.is_on_sale && product.sale_price > 0;
+                let saleMinQty = product.sale_min_qty || 1;
+                let isOnSale = product.sale_active && product.sale_price > 0 && item.qty >= saleMinQty;
+                let needsMoreForSale = product.sale_active && product.sale_price > 0 && item.qty < saleMinQty;
                 
                 if (isOnSale) {
-                    // Sale price takes priority
+                    // Sale price - customer meets minimum qty
                     priceDisplay = product.sale_price;
                     subtotal = product.sale_price * item.qty;
                 } else if (product.price_bulk && item.qty >= product.bulk_quantity) {
@@ -570,7 +575,7 @@
                     priceDisplay = product.price_single;
                 }
                 
-                return { ...item, product, price: priceDisplay, subtotal, isOnSale };
+                return { ...item, product, price: priceDisplay, subtotal, isOnSale, needsMoreForSale, saleMinQty };
             }).filter(Boolean);
 
             const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
@@ -590,10 +595,11 @@
                     ${items.length === 0 ? '<p style="text-align: center; color: #718096;">Your cart is empty</p>' : `
                         <div>
                             ${items.map(item => `
-                                <div class="cart-item" style="${item.isOnSale ? 'border-left: 3px solid #e53e3e;' : ''}">
+                                <div class="cart-item" style="${item.isOnSale ? 'border-left: 3px solid #e53e3e;' : item.needsMoreForSale ? 'border-left: 3px solid #f6ad55;' : ''}">
                                     <div class="cart-item-info">
-                                        <h4>${item.product.name} ${item.isOnSale ? '<span style="background: #e53e3e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; margin-left: 5px;">SALE</span>' : ''}</h4>
+                                        <h4>${item.product.name} ${item.isOnSale ? '<span style="background: #e53e3e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; margin-left: 5px;">SALE PRICE!</span>' : ''}</h4>
                                         <p>$${item.price.toFixed(2)} x ${item.qty} = $${item.subtotal.toFixed(2)}</p>
+                                        ${item.needsMoreForSale ? '<p style="color: #dd6b20; font-size: 0.85rem;">💡 Add ' + (item.saleMinQty - item.qty) + ' more for sale price ($' + item.product.sale_price.toFixed(2) + '/ea)</p>' : ''}
                                     </div>
                                     <div class="qty-control">
                                         <button onclick="changeCartItem(${item.productId}, -1)">−</button>
@@ -667,7 +673,8 @@
                 if (!product) return null;
                 
                 let price;
-                if (product.is_on_sale && product.sale_price > 0) {
+                let saleMinQty = product.sale_min_qty || 1;
+                if (product.sale_active && product.sale_price > 0 && item.qty >= saleMinQty) {
                     price = product.sale_price;
                 } else if (product.price_bulk && item.qty >= product.bulk_quantity) {
                     price = product.price_bulk / product.bulk_quantity;
@@ -811,10 +818,11 @@
             const items = state.cart.map(item => {
                 const product = state.products.find(p => p.id === item.productId);
                 
-                // Check if on sale first, then bulk, then single
+                // Check if on sale (with min qty), then bulk, then single
                 let subtotal;
                 let priceDisplay;
-                let isOnSale = product.is_on_sale && product.sale_price > 0;
+                let saleMinQty = product.sale_min_qty || 1;
+                let isOnSale = product.sale_active && product.sale_price > 0 && item.qty >= saleMinQty;
                 
                 if (isOnSale) {
                     priceDisplay = product.sale_price;

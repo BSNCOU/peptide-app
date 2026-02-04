@@ -416,6 +416,7 @@ def init_db():
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_price REAL DEFAULT NULL")
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_start TIMESTAMP DEFAULT NULL")
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_end TIMESTAMP DEFAULT NULL")
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_min_qty INTEGER DEFAULT 1")
         else:
             try:
                 c.execute("ALTER TABLE products ADD COLUMN sale_price REAL DEFAULT NULL")
@@ -427,6 +428,10 @@ def init_db():
                 pass
             try:
                 c.execute("ALTER TABLE products ADD COLUMN sale_end TIMESTAMP DEFAULT NULL")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN sale_min_qty INTEGER DEFAULT 1")
             except:
                 pass
         conn.commit()
@@ -1293,16 +1298,16 @@ def reset_password():
 def get_products():
     conn = get_db()
     products = conn.execute('''SELECT id,sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,
-        sale_price,sale_start,sale_end FROM products WHERE active=1 ORDER BY sort_order,name''').fetchall()
+        sale_price,sale_start,sale_end,sale_min_qty FROM products WHERE active=1 ORDER BY sort_order,name''').fetchall()
     conn.close()
     
-    # Process products to add is_on_sale flag
+    # Process products to add sale_active flag (within date range)
     result = []
     now = datetime.now()
     for p in products:
         prod = dict(p)
-        # Check if product is on sale
-        is_on_sale = False
+        # Check if product sale is active (within date range)
+        sale_active = False
         if prod.get('sale_price') and prod['sale_price'] > 0:
             sale_start = prod.get('sale_start')
             sale_end = prod.get('sale_end')
@@ -1322,10 +1327,12 @@ def get_products():
             # Check if within sale period
             start_ok = sale_start is None or now >= sale_start
             end_ok = sale_end is None or now <= sale_end
-            is_on_sale = start_ok and end_ok
+            sale_active = start_ok and end_ok
         
-        prod['is_on_sale'] = is_on_sale
-        prod['effective_price'] = prod['sale_price'] if is_on_sale else prod['price_single']
+        prod['sale_active'] = sale_active  # Sale is within date range
+        prod['sale_min_qty'] = prod.get('sale_min_qty') or 1
+        prod['is_on_sale'] = sale_active  # For backward compatibility (frontend checks qty)
+        prod['effective_price'] = prod['sale_price'] if sale_active else prod['price_single']
         result.append(prod)
     
     return jsonify(result)
@@ -1375,30 +1382,33 @@ def validate_discount():
         for item in cart_items:
             product = conn.execute('SELECT * FROM products WHERE id=?', (item.get('product_id'),)).fetchone()
             if product:
-                # Check if on sale
+                qty = item.get('quantity', 1)
+                
+                # Check if on sale AND meets minimum quantity
                 is_on_sale = False
                 if product['sale_price'] and product['sale_price'] > 0:
-                    sale_start = product['sale_start']
-                    sale_end = product['sale_end']
-                    if sale_start and isinstance(sale_start, str):
-                        try:
-                            sale_start = datetime.fromisoformat(sale_start.replace('Z', '+00:00').replace('+00:00', ''))
-                        except:
-                            sale_start = None
-                    if sale_end and isinstance(sale_end, str):
-                        try:
-                            sale_end = datetime.fromisoformat(sale_end.replace('Z', '+00:00').replace('+00:00', ''))
-                        except:
-                            sale_end = None
-                    start_ok = sale_start is None or now >= sale_start
-                    end_ok = sale_end is None or now <= sale_end
-                    is_on_sale = start_ok and end_ok
+                    sale_min_qty = product['sale_min_qty'] or 1
+                    if qty >= sale_min_qty:
+                        sale_start = product['sale_start']
+                        sale_end = product['sale_end']
+                        if sale_start and isinstance(sale_start, str):
+                            try:
+                                sale_start = datetime.fromisoformat(sale_start.replace('Z', '+00:00').replace('+00:00', ''))
+                            except:
+                                sale_start = None
+                        if sale_end and isinstance(sale_end, str):
+                            try:
+                                sale_end = datetime.fromisoformat(sale_end.replace('Z', '+00:00').replace('+00:00', ''))
+                            except:
+                                sale_end = None
+                        start_ok = sale_start is None or now >= sale_start
+                        end_ok = sale_end is None or now <= sale_end
+                        is_on_sale = start_ok and end_ok
                 
                 if is_on_sale:
                     has_sale_items = True
                 else:
                     # Add non-sale item value to discountable subtotal
-                    qty = item.get('quantity', 1)
                     if product['price_bulk'] and qty >= product['bulk_quantity']:
                         price = product['price_bulk'] / product['bulk_quantity']
                     else:
@@ -1485,32 +1495,35 @@ def create_order():
             conn.close()
             return jsonify({'error': f"Insufficient stock for {product['name']}"}), 400
         
-        # Check if product is on sale
+        qty = item['quantity']
+        
+        # Check if product is on sale AND meets minimum quantity
         is_on_sale = False
         if product['sale_price'] and product['sale_price'] > 0:
-            sale_start = product['sale_start']
-            sale_end = product['sale_end']
-            
-            # Parse dates if they're strings
-            if sale_start and isinstance(sale_start, str):
-                try:
-                    sale_start = datetime.fromisoformat(sale_start.replace('Z', '+00:00').replace('+00:00', ''))
-                except:
-                    sale_start = None
-            if sale_end and isinstance(sale_end, str):
-                try:
-                    sale_end = datetime.fromisoformat(sale_end.replace('Z', '+00:00').replace('+00:00', ''))
-                except:
-                    sale_end = None
-            
-            start_ok = sale_start is None or now >= sale_start
-            end_ok = sale_end is None or now <= sale_end
-            is_on_sale = start_ok and end_ok
+            sale_min_qty = product['sale_min_qty'] or 1
+            if qty >= sale_min_qty:
+                sale_start = product['sale_start']
+                sale_end = product['sale_end']
+                
+                # Parse dates if they're strings
+                if sale_start and isinstance(sale_start, str):
+                    try:
+                        sale_start = datetime.fromisoformat(sale_start.replace('Z', '+00:00').replace('+00:00', ''))
+                    except:
+                        sale_start = None
+                if sale_end and isinstance(sale_end, str):
+                    try:
+                        sale_end = datetime.fromisoformat(sale_end.replace('Z', '+00:00').replace('+00:00', ''))
+                    except:
+                        sale_end = None
+                
+                start_ok = sale_start is None or now >= sale_start
+                end_ok = sale_end is None or now <= sale_end
+                is_on_sale = start_ok and end_ok
         
         # Calculate pricing - check sale first, then bulk, then single
-        qty = item['quantity']
         if is_on_sale:
-            # Sale price takes priority
+            # Sale price takes priority (already verified qty >= sale_min_qty)
             price_per_item = product['sale_price']
             item_subtotal = price_per_item * qty
             use_bulk = False
@@ -1740,13 +1753,17 @@ def admin_update_product(pid):
     if sale_end == '':
         sale_end = None
     
+    sale_min_qty = data.get('sale_min_qty')
+    if sale_min_qty == '' or sale_min_qty is None:
+        sale_min_qty = 1
+    
     conn.execute('''UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,
-        stock=?,category=?,active=?,sort_order=?,cost=?,reorder_qty=?,sale_price=?,sale_start=?,sale_end=?,
+        stock=?,category=?,active=?,sort_order=?,cost=?,reorder_qty=?,sale_price=?,sale_start=?,sale_end=?,sale_min_qty=?,
         updated_at=CURRENT_TIMESTAMP WHERE id=?''',
                  (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), 
                   data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 
                   1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0), 
-                  data.get('reorder_qty',4), sale_price, sale_start, sale_end, pid))
+                  data.get('reorder_qty',4), sale_price, sale_start, sale_end, int(sale_min_qty), pid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Product updated'})
