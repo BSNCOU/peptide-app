@@ -471,13 +471,22 @@
                         `).join('')}
                     </div>
                     <div class="grid grid-3">
-                        ${filtered.map(p => `
-                            <div class="product-card">
+                        ${filtered.map(p => {
+                            const isOnSale = p.is_on_sale && p.sale_price > 0;
+                            const displayPrice = isOnSale ? p.sale_price : p.price_single;
+                            const discountPercent = isOnSale ? Math.round((p.price_single - p.sale_price) / p.price_single * 100) : 0;
+                            
+                            return `
+                            <div class="product-card" style="${isOnSale ? 'border: 2px solid #e53e3e; position: relative;' : ''}">
+                                ${isOnSale ? '<div style="position: absolute; top: -10px; right: -10px; background: #e53e3e; color: white; padding: 5px 10px; border-radius: 20px; font-weight: bold; font-size: 0.85rem;">SALE ' + discountPercent + '% OFF</div>' : ''}
                                 <h3>${p.name}</h3>
                                 <p class="product-sku">SKU: ${p.sku}</p>
                                 <div class="product-price">
-                                    $${p.price_single.toFixed(2)}
-                                    ${p.price_bulk ? `<span class="bulk">Bulk (${p.bulk_quantity}+): $${(p.price_bulk / p.bulk_quantity).toFixed(2)} each</span>` : ''}
+                                    ${isOnSale ? `
+                                        <span style="text-decoration: line-through; color: #a0aec0; font-size: 0.9rem;">$${p.price_single.toFixed(2)}</span>
+                                        <span style="color: #e53e3e; font-weight: bold; font-size: 1.2rem;"> $${p.sale_price.toFixed(2)}</span>
+                                    ` : `$${p.price_single.toFixed(2)}`}
+                                    ${!isOnSale && p.price_bulk ? `<span class="bulk">Bulk (${p.bulk_quantity}+): $${(p.price_bulk / p.bulk_quantity).toFixed(2)} each</span>` : ''}
                                 </div>
                                 <p class="product-stock ${p.stock < 10 ? 'low' : 'ok'}">
                                     ${p.stock > 0 ? `${p.stock} in stock` : 'Out of stock'}
@@ -491,7 +500,7 @@
                                     Add to Cart
                                 </button>
                             </div>
-                        `).join('')}
+                        `}).join('')}
                     </div>
                 </div>
             `;
@@ -542,10 +551,16 @@
                 const product = state.products.find(p => p.id === item.productId);
                 if (!product) return null;
                 
-                // Calculate price: bulk_price is the total for bulk_quantity items
+                // Check if on sale first, then bulk, then single
                 let subtotal;
                 let priceDisplay;
-                if (product.price_bulk && item.qty >= product.bulk_quantity) {
+                let isOnSale = product.is_on_sale && product.sale_price > 0;
+                
+                if (isOnSale) {
+                    // Sale price takes priority
+                    priceDisplay = product.sale_price;
+                    subtotal = product.sale_price * item.qty;
+                } else if (product.price_bulk && item.qty >= product.bulk_quantity) {
                     // Bulk pricing: price_bulk is total for bulk_quantity items
                     const pricePerItem = product.price_bulk / product.bulk_quantity;
                     subtotal = pricePerItem * item.qty;
@@ -555,7 +570,7 @@
                     priceDisplay = product.price_single;
                 }
                 
-                return { ...item, product, price: priceDisplay, subtotal };
+                return { ...item, product, price: priceDisplay, subtotal, isOnSale };
             }).filter(Boolean);
 
             const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
@@ -575,9 +590,9 @@
                     ${items.length === 0 ? '<p style="text-align: center; color: #718096;">Your cart is empty</p>' : `
                         <div>
                             ${items.map(item => `
-                                <div class="cart-item">
+                                <div class="cart-item" style="${item.isOnSale ? 'border-left: 3px solid #e53e3e;' : ''}">
                                     <div class="cart-item-info">
-                                        <h4>${item.product.name}</h4>
+                                        <h4>${item.product.name} ${item.isOnSale ? '<span style="background: #e53e3e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; margin-left: 5px;">SALE</span>' : ''}</h4>
                                         <p>$${item.price.toFixed(2)} x ${item.qty} = $${item.subtotal.toFixed(2)}</p>
                                     </div>
                                     <div class="qty-control">
@@ -602,9 +617,10 @@
                             </div>
                             ${discountAmount > 0 ? `
                                 <div class="cart-summary-row" style="color: #38a169;">
-                                    <span>Discount (${state.discount.code})</span>
+                                    <span>Discount (${state.discount.code})${state.discount.has_sale_items ? '*' : ''}</span>
                                     <span>-$${discountAmount.toFixed(2)}</span>
                                 </div>
+                                ${state.discount.has_sale_items ? '<div style="font-size: 0.8rem; color: #718096; text-align: right;">*Applies to non-sale items only</div>' : ''}
                             ` : ''}
                             <div class="cart-summary-row total">
                                 <span>Total</span>
@@ -644,29 +660,48 @@
             const code = document.getElementById('discountCode').value.trim();
             if (!code) return;
             
-            // Calculate subtotal for accurate discount preview
-            const subtotal = state.cart.reduce((sum, item) => {
+            // Calculate subtotal and prepare cart items for validation
+            let subtotal = 0;
+            const cart_items = state.cart.map(item => {
                 const product = state.products.find(p => p.id === item.productId);
-                if (!product) return sum;
-                if (product.price_bulk && item.qty >= product.bulk_quantity) {
-                    return sum + (product.price_bulk / product.bulk_quantity) * item.qty;
+                if (!product) return null;
+                
+                let price;
+                if (product.is_on_sale && product.sale_price > 0) {
+                    price = product.sale_price;
+                } else if (product.price_bulk && item.qty >= product.bulk_quantity) {
+                    price = product.price_bulk / product.bulk_quantity;
+                } else {
+                    price = product.price_single;
                 }
-                return sum + product.price_single * item.qty;
-            }, 0);
+                subtotal += price * item.qty;
+                
+                return { product_id: item.productId, quantity: item.qty };
+            }).filter(Boolean);
             
             try {
                 const result = await api('/api/validate-discount', {
                     method: 'POST',
-                    body: JSON.stringify({ code, subtotal })
+                    body: JSON.stringify({ code, subtotal, cart_items })
                 });
+                
+                // Show warning if cart has sale items
+                if (result.has_sale_items && result.discount_amount === 0) {
+                    showAlert('All items in your cart are on sale - discount codes cannot be combined with sale prices.');
+                    return;
+                }
                 
                 // Check if this is their own referral code
                 if (result.is_own_code && result.commission_percent > 0) {
-                    showReferrerChoiceModal(result, subtotal);
+                    showReferrerChoiceModal(result, result.non_sale_subtotal || subtotal);
                 } else {
                     state.discount = result;
                     state.referrerChoice = null;
-                    showAlert('Discount applied!', 'success');
+                    let msg = 'Discount applied!';
+                    if (result.has_sale_items) {
+                        msg += ' (Note: Discount applies to non-sale items only)';
+                    }
+                    showAlert(msg, 'success');
                     renderCart();
                 }
             } catch (err) {
@@ -674,14 +709,14 @@
             }
         }
         
-        function showReferrerChoiceModal(discount, subtotal) {
+        function showReferrerChoiceModal(discount, nonSaleSubtotal) {
             const discountPercent = discount.discount_percent;
             const commissionPercent = discount.commission_percent;
             const combinedPercent = discountPercent + commissionPercent;
             
-            const discountOnly = subtotal * (discountPercent / 100);
-            const creditAmount = subtotal * (commissionPercent / 100);
-            const combinedDiscount = subtotal * (combinedPercent / 100);
+            const discountOnly = nonSaleSubtotal * (discountPercent / 100);
+            const creditAmount = nonSaleSubtotal * (commissionPercent / 100);
+            const combinedDiscount = nonSaleSubtotal * (combinedPercent / 100);
             
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
@@ -776,10 +811,15 @@
             const items = state.cart.map(item => {
                 const product = state.products.find(p => p.id === item.productId);
                 
-                // Calculate price: bulk_price is the total for bulk_quantity items
+                // Check if on sale first, then bulk, then single
                 let subtotal;
                 let priceDisplay;
-                if (product.price_bulk && item.qty >= product.bulk_quantity) {
+                let isOnSale = product.is_on_sale && product.sale_price > 0;
+                
+                if (isOnSale) {
+                    priceDisplay = product.sale_price;
+                    subtotal = product.sale_price * item.qty;
+                } else if (product.price_bulk && item.qty >= product.bulk_quantity) {
                     const pricePerItem = product.price_bulk / product.bulk_quantity;
                     subtotal = pricePerItem * item.qty;
                     priceDisplay = pricePerItem;
@@ -788,7 +828,7 @@
                     priceDisplay = product.price_single;
                 }
                 
-                return { ...item, product, price: priceDisplay, subtotal };
+                return { ...item, product, price: priceDisplay, subtotal, isOnSale };
             });
             const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
             

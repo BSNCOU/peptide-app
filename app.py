@@ -410,6 +410,43 @@ def init_db():
     except Exception as e:
         print(f"Note: Active field fix: {e}")
     
+    # Add sale price columns to products
+    try:
+        if using_postgres:
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_price REAL DEFAULT NULL")
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_start TIMESTAMP DEFAULT NULL")
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_end TIMESTAMP DEFAULT NULL")
+        else:
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN sale_price REAL DEFAULT NULL")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN sale_start TIMESTAMP DEFAULT NULL")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN sale_end TIMESTAMP DEFAULT NULL")
+            except:
+                pass
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Sale columns migration: {e}")
+    
+    # Create email_blasts table for tracking sent emails
+    try:
+        c.execute(f'''CREATE TABLE IF NOT EXISTS email_blasts (
+            id {auto_id},
+            subject TEXT NOT NULL,
+            body TEXT NOT NULL,
+            recipients_count INTEGER DEFAULT 0,
+            sent_by INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Email blasts table: {e}")
+    
     # Create referral_transactions table
     try:
         c.execute(f'''CREATE TABLE IF NOT EXISTS referral_transactions (
@@ -1255,9 +1292,43 @@ def reset_password():
 @login_required
 def get_products():
     conn = get_db()
-    products = conn.execute('SELECT id,sku,name,description,price_single,price_bulk,bulk_quantity,stock,category FROM products WHERE active=1 ORDER BY sort_order,name').fetchall()
+    products = conn.execute('''SELECT id,sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,
+        sale_price,sale_start,sale_end FROM products WHERE active=1 ORDER BY sort_order,name''').fetchall()
     conn.close()
-    return jsonify([dict(p) for p in products])
+    
+    # Process products to add is_on_sale flag
+    result = []
+    now = datetime.now()
+    for p in products:
+        prod = dict(p)
+        # Check if product is on sale
+        is_on_sale = False
+        if prod.get('sale_price') and prod['sale_price'] > 0:
+            sale_start = prod.get('sale_start')
+            sale_end = prod.get('sale_end')
+            
+            # Parse dates if they're strings
+            if sale_start and isinstance(sale_start, str):
+                try:
+                    sale_start = datetime.fromisoformat(sale_start.replace('Z', '+00:00').replace('+00:00', ''))
+                except:
+                    sale_start = None
+            if sale_end and isinstance(sale_end, str):
+                try:
+                    sale_end = datetime.fromisoformat(sale_end.replace('Z', '+00:00').replace('+00:00', ''))
+                except:
+                    sale_end = None
+            
+            # Check if within sale period
+            start_ok = sale_start is None or now >= sale_start
+            end_ok = sale_end is None or now <= sale_end
+            is_on_sale = start_ok and end_ok
+        
+        prod['is_on_sale'] = is_on_sale
+        prod['effective_price'] = prod['sale_price'] if is_on_sale else prod['price_single']
+        result.append(prod)
+    
+    return jsonify(result)
 
 @app.route('/api/categories', methods=['GET'])
 @login_required
@@ -1285,14 +1356,62 @@ def validate_discount():
     discount = conn.execute('''SELECT * FROM discount_codes WHERE code=? AND active=1 
         AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
         AND (usage_limit IS NULL OR times_used < usage_limit)''', (code,)).fetchone()
-    conn.close()
     
     if not discount:
+        conn.close()
         return jsonify({'error': 'Invalid or expired code'}), 400
     if subtotal < discount['min_order_amount']:
+        conn.close()
         return jsonify({'error': f"Min order ${discount['min_order_amount']:.2f} required"}), 400
     
-    amt = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
+    # Check if cart has sale items - discount only applies to non-sale items
+    cart_items = data.get('cart_items', [])
+    has_sale_items = False
+    non_sale_subtotal = subtotal  # Default to full subtotal if no cart info
+    
+    if cart_items:
+        non_sale_subtotal = 0
+        now = datetime.now()
+        for item in cart_items:
+            product = conn.execute('SELECT * FROM products WHERE id=?', (item.get('product_id'),)).fetchone()
+            if product:
+                # Check if on sale
+                is_on_sale = False
+                if product['sale_price'] and product['sale_price'] > 0:
+                    sale_start = product['sale_start']
+                    sale_end = product['sale_end']
+                    if sale_start and isinstance(sale_start, str):
+                        try:
+                            sale_start = datetime.fromisoformat(sale_start.replace('Z', '+00:00').replace('+00:00', ''))
+                        except:
+                            sale_start = None
+                    if sale_end and isinstance(sale_end, str):
+                        try:
+                            sale_end = datetime.fromisoformat(sale_end.replace('Z', '+00:00').replace('+00:00', ''))
+                        except:
+                            sale_end = None
+                    start_ok = sale_start is None or now >= sale_start
+                    end_ok = sale_end is None or now <= sale_end
+                    is_on_sale = start_ok and end_ok
+                
+                if is_on_sale:
+                    has_sale_items = True
+                else:
+                    # Add non-sale item value to discountable subtotal
+                    qty = item.get('quantity', 1)
+                    if product['price_bulk'] and qty >= product['bulk_quantity']:
+                        price = product['price_bulk'] / product['bulk_quantity']
+                    else:
+                        price = product['price_single']
+                    non_sale_subtotal += price * qty
+    
+    conn.close()
+    
+    # Calculate discount on non-sale items only
+    if discount['discount_percent'] > 0:
+        amt = non_sale_subtotal * (discount['discount_percent'] / 100)
+    else:
+        amt = min(discount['discount_amount'], non_sale_subtotal)  # Don't exceed non-sale subtotal
     
     # Check if user is the referrer for this code (handle type conversion)
     referrer_id = discount['referrer_user_id']
@@ -1306,7 +1425,17 @@ def validate_discount():
     
     # Calculate combined discount if it's their own code
     combined_percent = discount['discount_percent'] + commission_percent if is_own_code else 0
-    combined_amount = subtotal * (combined_percent / 100) if combined_percent > 0 else 0
+    combined_amount = non_sale_subtotal * (combined_percent / 100) if combined_percent > 0 else 0
+    
+    # Build message
+    if has_sale_items and non_sale_subtotal < subtotal:
+        if non_sale_subtotal > 0:
+            message = f"{discount['discount_percent']}% off (applies to non-sale items only)" if discount['discount_percent'] > 0 else f"${amt:.2f} off (non-sale items)"
+        else:
+            message = "All items are on sale - code not applicable"
+            amt = 0
+    else:
+        message = f"{discount['discount_percent']}% off" if discount['discount_percent'] > 0 else f"${discount['discount_amount']:.2f} off"
     
     return jsonify({
         'valid': True, 
@@ -1314,11 +1443,13 @@ def validate_discount():
         'discount_id': discount['id'], 
         'discount_percent': discount['discount_percent'], 
         'discount_amount': round(amt, 2), 
-        'message': f"{discount['discount_percent']}% off" if discount['discount_percent'] > 0 else f"${discount['discount_amount']:.2f} off",
+        'message': message,
         'is_own_code': is_own_code,
         'commission_percent': commission_percent,
         'combined_percent': combined_percent,
-        'combined_amount': round(combined_amount, 2)
+        'combined_amount': round(combined_amount, 2),
+        'has_sale_items': has_sale_items,
+        'non_sale_subtotal': round(non_sale_subtotal, 2)
     })
 
 # ============================================
@@ -1343,6 +1474,7 @@ def create_order():
     
     subtotal = 0
     order_items = []
+    now = datetime.now()
     
     for item in items:
         product = c.execute('SELECT * FROM products WHERE id=? AND active=1', (item['product_id'],)).fetchone()
@@ -1353,9 +1485,36 @@ def create_order():
             conn.close()
             return jsonify({'error': f"Insufficient stock for {product['name']}"}), 400
         
-        # Calculate pricing - bulk_price is total for bulk_quantity items
+        # Check if product is on sale
+        is_on_sale = False
+        if product['sale_price'] and product['sale_price'] > 0:
+            sale_start = product['sale_start']
+            sale_end = product['sale_end']
+            
+            # Parse dates if they're strings
+            if sale_start and isinstance(sale_start, str):
+                try:
+                    sale_start = datetime.fromisoformat(sale_start.replace('Z', '+00:00').replace('+00:00', ''))
+                except:
+                    sale_start = None
+            if sale_end and isinstance(sale_end, str):
+                try:
+                    sale_end = datetime.fromisoformat(sale_end.replace('Z', '+00:00').replace('+00:00', ''))
+                except:
+                    sale_end = None
+            
+            start_ok = sale_start is None or now >= sale_start
+            end_ok = sale_end is None or now <= sale_end
+            is_on_sale = start_ok and end_ok
+        
+        # Calculate pricing - check sale first, then bulk, then single
         qty = item['quantity']
-        if product['price_bulk'] and qty >= product['bulk_quantity']:
+        if is_on_sale:
+            # Sale price takes priority
+            price_per_item = product['sale_price']
+            item_subtotal = price_per_item * qty
+            use_bulk = False
+        elif product['price_bulk'] and qty >= product['bulk_quantity']:
             # Bulk pricing: price_bulk is total for bulk_quantity items
             price_per_item = product['price_bulk'] / product['bulk_quantity']
             item_subtotal = price_per_item * qty
@@ -1567,8 +1726,27 @@ def admin_add_product():
 def admin_update_product(pid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,stock=?,category=?,active=?,sort_order=?,cost=?,reorder_qty=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                 (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0), data.get('reorder_qty',4), pid))
+    
+    # Handle sale dates - convert empty strings to None
+    sale_price = data.get('sale_price')
+    if sale_price == '' or sale_price == 0:
+        sale_price = None
+    
+    sale_start = data.get('sale_start')
+    if sale_start == '':
+        sale_start = None
+    
+    sale_end = data.get('sale_end')
+    if sale_end == '':
+        sale_end = None
+    
+    conn.execute('''UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,
+        stock=?,category=?,active=?,sort_order=?,cost=?,reorder_qty=?,sale_price=?,sale_start=?,sale_end=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+                 (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), 
+                  data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 
+                  1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0), 
+                  data.get('reorder_qty',4), sale_price, sale_start, sale_end, pid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Product updated'})
@@ -1719,6 +1897,106 @@ def admin_extract_pdf():
     except Exception as e:
         print(f"[ERROR] PDF extraction: {str(e)}")
         return jsonify({'error': f'Failed to extract PDF: {str(e)}'}), 500
+
+# ============================================
+# EMAIL BLAST
+# ============================================
+
+@app.route('/api/admin/email-blast/preview', methods=['POST'])
+@admin_required
+def admin_email_blast_preview():
+    """Get list of users for email blast selection"""
+    conn = get_db()
+    users = conn.execute('SELECT id, full_name, email FROM users WHERE email_verified=1 AND is_admin=0 ORDER BY full_name').fetchall()
+    conn.close()
+    return jsonify({
+        'recipient_count': len(users),
+        'users': [dict(u) for u in users]
+    })
+
+@app.route('/api/admin/email-blast/send', methods=['POST'])
+@admin_required
+def admin_email_blast_send():
+    """Send email blast to selected users"""
+    data = request.json
+    subject = data.get('subject', '').strip()
+    body = data.get('body', '').strip()
+    user_ids = data.get('user_ids', [])  # Empty = all users
+    
+    if not subject or not body:
+        return jsonify({'error': 'Subject and body are required'}), 400
+    
+    conn = get_db()
+    
+    # Get users - either selected ones or all verified non-admin users
+    if user_ids and len(user_ids) > 0:
+        placeholders = ','.join(['?' for _ in user_ids])
+        users = conn.execute(f'SELECT id, email, full_name FROM users WHERE id IN ({placeholders}) AND email_verified=1', user_ids).fetchall()
+    else:
+        users = conn.execute('SELECT id, email, full_name FROM users WHERE email_verified=1 AND is_admin=0').fetchall()
+    
+    if not users:
+        conn.close()
+        return jsonify({'error': 'No users to send to'}), 400
+    
+    # Log the email blast
+    c = conn.cursor()
+    c.execute('INSERT INTO email_blasts (subject, body, recipients_count, sent_by) VALUES (?,?,?,?)',
+              (subject, body, len(users), session.get('user_id')))
+    blast_id = c.lastrowid
+    conn.commit()
+    
+    # Send emails
+    sent = 0
+    failed = 0
+    
+    for user in users:
+        try:
+            # Personalize the email
+            personalized_body = body.replace('{{name}}', user['full_name'] or 'Valued Customer')
+            personalized_body = personalized_body.replace('{{email}}', user['email'])
+            
+            # Build HTML email
+            html_body = f'''
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center;">
+                    <h1 style="color: white; margin: 0;">🧪 The Peptide Wizard</h1>
+                </div>
+                <div style="padding: 30px; background: #f7fafc;">
+                    {personalized_body.replace(chr(10), '<br>')}
+                </div>
+                <div style="padding: 20px; text-align: center; color: #718096; font-size: 12px;">
+                    <p>The Peptide Wizard - Research Peptides</p>
+                    <p><a href="{os.environ.get('APP_URL', 'https://thepeptidewizard.com')}" style="color: #667eea;">Visit our store</a></p>
+                </div>
+            </div>
+            '''
+            
+            send_email(user['email'], subject, html_body)
+            sent += 1
+        except Exception as e:
+            print(f"[ERROR] Failed to send to {user['email']}: {e}")
+            failed += 1
+    
+    conn.close()
+    
+    return jsonify({
+        'message': f'Email blast sent',
+        'sent': sent,
+        'failed': failed,
+        'blast_id': blast_id
+    })
+
+@app.route('/api/admin/email-blast/history', methods=['GET'])
+@admin_required
+def admin_email_blast_history():
+    """Get history of sent email blasts"""
+    conn = get_db()
+    blasts = conn.execute('''SELECT eb.*, u.full_name as sent_by_name 
+        FROM email_blasts eb LEFT JOIN users u ON eb.sent_by = u.id 
+        ORDER BY eb.created_at DESC LIMIT 50''').fetchall()
+    conn.close()
+    return jsonify([dict(b) for b in blasts])
 
 @app.route('/api/admin/reports/financial', methods=['GET'])
 @admin_required

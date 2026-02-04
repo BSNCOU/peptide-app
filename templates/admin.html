@@ -102,6 +102,7 @@
                 <button onclick="showTab('discounts')">Discount Codes</button>
                 <button onclick="showTab('reports')">Reports</button>
                 <button onclick="showTab('users')">Users</button>
+                <button onclick="showTab('email')">📧 Email</button>
                 <button onclick="showTab('notifications')">Notifications</button>
             </div>
             <div id="tabContent"></div>
@@ -214,7 +215,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','discounts','reports','users','notifications'];
+            const tabList = ['products','inventory','orders','openOrders','discounts','reports','users','email','notifications'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -225,6 +226,7 @@
                 case 'discounts': loadDiscounts(); break;
                 case 'reports': renderReports(); break;
                 case 'users': loadUsers(); break;
+                case 'email': loadEmail(); break;
                 case 'notifications': loadNotifications(); break;
             }
         }
@@ -286,11 +288,28 @@
                                 const minUnits = reorderQty * 10;
                                 const needsReorder = reorderQty > 0 && p.stock < minUnits;
                                 const isActive = p.active === 1 || p.active === true || p.active === null || p.active === undefined;
+                                
+                                // Check if on sale
+                                const now = new Date();
+                                let isOnSale = false;
+                                if (p.sale_price && p.sale_price > 0) {
+                                    const saleStart = p.sale_start ? new Date(p.sale_start) : null;
+                                    const saleEnd = p.sale_end ? new Date(p.sale_end) : null;
+                                    const startOk = !saleStart || now >= saleStart;
+                                    const endOk = !saleEnd || now <= saleEnd;
+                                    isOnSale = startOk && endOk;
+                                }
+                                
                                 return `
-                                <tr class="${!isActive ? 'inactive' : ''}" style="${!isActive ? 'background: #fff5f5;' : ''}">
-                                    <td>${p.sku}</td>
-                                    <td>${p.name}</td>
-                                    <td>$${p.price_single.toFixed(2)}${p.price_bulk ? ` / $${p.price_bulk.toFixed(2)}` : ''}</td>
+                                <tr class="${!isActive ? 'inactive' : ''}" style="${!isActive ? 'background: #fff5f5;' : isOnSale ? 'background: #fffaf0;' : ''}">
+                                    <td>${escapeHtml(p.sku)} ${isOnSale ? '<span style="background:#e53e3e;color:white;padding:2px 5px;border-radius:3px;font-size:0.7rem;">SALE</span>' : ''}</td>
+                                    <td>${escapeHtml(p.name)}</td>
+                                    <td>
+                                        ${isOnSale 
+                                            ? '<span style="text-decoration:line-through;color:#a0aec0;">$' + p.price_single.toFixed(2) + '</span> <strong style="color:#e53e3e;">$' + p.sale_price.toFixed(2) + '</strong>'
+                                            : '$' + p.price_single.toFixed(2) + (p.price_bulk ? ' / $' + p.price_bulk.toFixed(2) : '')
+                                        }
+                                    </td>
                                     <td>${p.cost > 0 ? '$' + p.cost.toFixed(2) : '<span style="color:#a0aec0">-</span>'}</td>
                                     <td><span class="${marginClass}">${margin}${margin !== '-' ? '%' : ''}</span></td>
                                     <td class="${p.stock < 10 ? 'low-stock' : ''}">${p.stock}</td>
@@ -299,8 +318,8 @@
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showEditProductModal(${p.id})">Edit</button>
                                         ${isActive 
-                                            ? `<button class="btn btn-danger btn-small" onclick="deleteProduct(${p.id})">Deactivate</button>`
-                                            : `<button class="btn btn-success btn-small" onclick="restoreProduct(${p.id})">Restore</button>`
+                                            ? '<button class="btn btn-danger btn-small" onclick="deleteProduct(' + p.id + ')">Deactivate</button>'
+                                            : '<button class="btn btn-success btn-small" onclick="restoreProduct(' + p.id + ')">Restore</button>'
                                         }
                                     </td>
                                 </tr>
@@ -415,24 +434,29 @@
             const margin = p.cost > 0 ? ((p.price_single - p.cost) / p.price_single * 100).toFixed(1) : 'N/A';
             const reorderQty = p.reorder_qty !== null && p.reorder_qty !== undefined ? p.reorder_qty : 4;
             
+            // Format dates for input fields
+            const saleStart = p.sale_start ? p.sale_start.split('T')[0] : '';
+            const saleEnd = p.sale_end ? p.sale_end.split('T')[0] : '';
+            const isOnSale = p.sale_price && p.sale_price > 0;
+            
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
-                    <div class="modal-content">
-                        <h3>Edit Product: ${p.name}</h3>
+                    <div class="modal-content" style="max-width: 600px;">
+                        <h3>Edit Product: ${escapeHtml(p.name)}</h3>
                         <form onsubmit="updateProduct(event, ${id})">
                             <div class="form-row">
                                 <div class="form-group">
                                     <label>SKU</label>
-                                    <input type="text" id="prodSku" value="${p.sku}" readonly style="background: #f7fafc;">
+                                    <input type="text" id="prodSku" value="${escapeHtml(p.sku)}" readonly style="background: #f7fafc;">
                                 </div>
                                 <div class="form-group">
                                     <label>Name *</label>
-                                    <input type="text" id="prodName" value="${p.name}" required>
+                                    <input type="text" id="prodName" value="${escapeHtml(p.name)}" required>
                                 </div>
                             </div>
                             <div class="form-group">
                                 <label>Description</label>
-                                <textarea id="prodDesc" rows="2">${p.description || ''}</textarea>
+                                <textarea id="prodDesc" rows="2">${escapeHtml(p.description || '')}</textarea>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
@@ -467,9 +491,34 @@
                             <div class="form-row">
                                 <div class="form-group">
                                     <label>Category</label>
-                                    <input type="text" id="prodCategory" value="${p.category || ''}">
+                                    <input type="text" id="prodCategory" value="${escapeHtml(p.category || '')}">
                                 </div>
                             </div>
+                            
+                            <div style="background: ${isOnSale ? '#fef3c7' : '#f0fff4'}; padding: 15px; border-radius: 8px; margin-top: 15px; border: 2px solid ${isOnSale ? '#f59e0b' : '#c6f6d5'};">
+                                <h4 style="margin-bottom: 10px; color: ${isOnSale ? '#d97706' : '#276749'};">🏷️ Sale Settings ${isOnSale ? '(ACTIVE)' : ''}</h4>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>Sale Price</label>
+                                        <input type="number" id="prodSalePrice" step="0.01" value="${p.sale_price || ''}" placeholder="Leave blank for no sale">
+                                        <small style="color: #718096;">Overrides single/bulk price when active</small>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>Sale Starts</label>
+                                        <input type="date" id="prodSaleStart" value="${saleStart}">
+                                        <small style="color: #718096;">Leave blank for immediate</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Sale Ends</label>
+                                        <input type="date" id="prodSaleEnd" value="${saleEnd}">
+                                        <small style="color: #718096;">Leave blank for no end date</small>
+                                    </div>
+                                </div>
+                                ${isOnSale ? '<p style="color: #d97706; font-weight: 600; margin-top: 10px;">⚠️ This product is currently on sale!</p>' : ''}
+                            </div>
+                            
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Save Changes</button>
@@ -483,7 +532,7 @@
         async function updateProduct(e, id) {
             e.preventDefault();
             try {
-                await api(`/api/admin/products/${id}`, {
+                await api('/api/admin/products/' + id, {
                     method: 'PUT',
                     body: JSON.stringify({
                         sku: document.getElementById('prodSku').value,
@@ -495,7 +544,10 @@
                         category: document.getElementById('prodCategory').value,
                         stock: parseInt(document.getElementById('prodStock').value),
                         cost: parseFloat(document.getElementById('prodCost').value) || 0,
-                        reorder_qty: parseInt(document.getElementById('prodReorderQty').value) || 0
+                        reorder_qty: parseInt(document.getElementById('prodReorderQty').value) || 0,
+                        sale_price: parseFloat(document.getElementById('prodSalePrice').value) || null,
+                        sale_start: document.getElementById('prodSaleStart').value || null,
+                        sale_end: document.getElementById('prodSaleEnd').value || null
                     })
                 });
                 closeModal();
@@ -1928,6 +1980,321 @@ BC10,8.00</pre>
             } catch (err) {
                 showAlert(err.message);
             }
+        }
+
+        // Email Blast
+        let emailHistory = [];
+        let emailUsers = [];
+        let selectedUserIds = new Set();
+        
+        async function loadEmail() {
+            try {
+                // Load products if not already loaded (needed for sale products display)
+                if (!state.products || state.products.length === 0) {
+                    state.products = await api('/api/admin/products');
+                }
+                const preview = await api('/api/admin/email-blast/preview', { method: 'POST', body: '{}' });
+                emailUsers = preview.users || [];
+                selectedUserIds = new Set(emailUsers.map(u => u.id)); // Select all by default
+                emailHistory = await api('/api/admin/email-blast/history');
+                renderEmail();
+            } catch (e) {
+                showAlert('Failed to load email info');
+                renderEmail();
+            }
+        }
+        
+        function renderEmail() {
+            const content = document.getElementById('tabContent');
+            const selectedCount = selectedUserIds.size;
+            
+            content.innerHTML = `
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div class="card">
+                        <h3 style="margin-bottom: 15px;">📧 Send Email Blast</h3>
+                        
+                        <div class="form-group">
+                            <label>Subject Line *</label>
+                            <input type="text" id="emailSubject" placeholder="e.g., 🎉 Special Sale - 20% Off All Peptides!">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Email Body *</label>
+                            <textarea id="emailBody" rows="8" placeholder="Write your email here...
+
+Use {{name}} to personalize with customer's name.
+
+Example:
+Hi {{name}},
+
+We're excited to announce our biggest sale of the year!
+
+Use code SAVE20 at checkout for 20% off your entire order.
+
+Shop now at thepeptidewizard.com
+
+Best regards,
+The Peptide Wizard Team"></textarea>
+                        </div>
+                        
+                        <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                            <h4 style="color: #2b6cb0; margin-bottom: 10px;">💡 Tips</h4>
+                            <ul style="color: #4a5568; font-size: 0.9rem; margin: 0; padding-left: 20px;">
+                                <li>Use <code>{{name}}</code> to insert customer's name</li>
+                                <li>Keep subject lines short and attention-grabbing</li>
+                                <li>Include a clear call-to-action</li>
+                            </ul>
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-secondary" onclick="previewEmailBlast()">👁️ Preview</button>
+                            <button class="btn btn-success" onclick="sendEmailBlast()" ${selectedCount === 0 ? 'disabled' : ''}>
+                                📤 Send to ${selectedCount} Customer${selectedCount !== 1 ? 's' : ''}
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <div class="card" style="margin-bottom: 20px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                <h3 style="margin: 0;">👥 Select Recipients</h3>
+                                <div style="display: flex; gap: 10px;">
+                                    <button class="btn btn-small btn-secondary" onclick="selectAllEmailUsers()">Select All</button>
+                                    <button class="btn btn-small btn-secondary" onclick="deselectAllEmailUsers()">Deselect All</button>
+                                </div>
+                            </div>
+                            <p style="color: #718096; margin-bottom: 10px;">${selectedCount} of ${emailUsers.length} customers selected</p>
+                            
+                            ${emailUsers.length === 0 ? 
+                                '<p style="color: #718096; text-align: center; padding: 20px;">No verified customers yet.</p>' : `
+                                <div style="max-height: 250px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px;">
+                                    ${emailUsers.map(u => `
+                                        <label style="display: flex; align-items: center; padding: 10px 15px; border-bottom: 1px solid #e2e8f0; cursor: pointer; ${selectedUserIds.has(u.id) ? 'background: #ebf8ff;' : ''}" 
+                                               onmouseover="this.style.background='#f7fafc'" 
+                                               onmouseout="this.style.background='${selectedUserIds.has(u.id) ? '#ebf8ff' : 'white'}'">
+                                            <input type="checkbox" ${selectedUserIds.has(u.id) ? 'checked' : ''} 
+                                                   onchange="toggleEmailUser(${u.id})" style="margin-right: 10px;">
+                                            <div>
+                                                <strong>${escapeHtml(u.full_name || 'Unknown')}</strong>
+                                                <div style="font-size: 0.85rem; color: #718096;">${escapeHtml(u.email)}</div>
+                                            </div>
+                                        </label>
+                                    `).join('')}
+                                </div>
+                            `}
+                        </div>
+                        
+                        <div class="card">
+                            <h3 style="margin-bottom: 15px;">📜 Email History</h3>
+                            ${emailHistory.length === 0 ? 
+                                '<p style="color: #718096; text-align: center; padding: 20px;">No emails sent yet.</p>' : `
+                                <div style="max-height: 200px; overflow-y: auto;">
+                                    ${emailHistory.map(e => `
+                                        <div style="border-bottom: 1px solid #e2e8f0; padding: 10px 0;">
+                                            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                                                <strong style="font-size: 0.9rem;">${escapeHtml(e.subject)}</strong>
+                                                <small style="color: #718096;">${new Date(e.created_at).toLocaleDateString()}</small>
+                                            </div>
+                                            <div style="font-size: 0.8rem; color: #4a5568;">
+                                                Sent to <strong>${e.recipients_count}</strong> recipients
+                                            </div>
+                                            <button class="btn btn-small btn-secondary" style="margin-top: 5px; font-size: 0.75rem;" onclick="viewEmailBlast(${e.id})">View</button>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card" style="margin-top: 20px;">
+                    <h3 style="margin-bottom: 15px;">🏷️ Products On Sale</h3>
+                    <p style="color: #718096; margin-bottom: 15px;">Quick view of products currently on sale - great for including in your email!</p>
+                    ${renderSaleProducts()}
+                </div>
+            `;
+        }
+        
+        function renderSaleProducts() {
+            const now = new Date();
+            const onSale = state.products.filter(p => {
+                if (!p.sale_price || p.sale_price <= 0) return false;
+                if (p.sale_start && new Date(p.sale_start) > now) return false;
+                if (p.sale_end && new Date(p.sale_end) < now) return false;
+                return true;
+            });
+            
+            if (onSale.length === 0) {
+                return '<p style="color: #718096; text-align: center;">No products currently on sale. Edit a product to set up a sale.</p>';
+            }
+            
+            return `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>SKU</th>
+                            <th>Product</th>
+                            <th>Regular Price</th>
+                            <th>Sale Price</th>
+                            <th>Discount</th>
+                            <th>Sale Ends</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${onSale.map(p => {
+                            const discount = ((p.price_single - p.sale_price) / p.price_single * 100).toFixed(0);
+                            const endDate = p.sale_end ? new Date(p.sale_end).toLocaleDateString() : 'No end date';
+                            return `
+                                <tr>
+                                    <td><code>${escapeHtml(p.sku)}</code></td>
+                                    <td>${escapeHtml(p.name)}</td>
+                                    <td style="text-decoration: line-through; color: #a0aec0;">$${p.price_single.toFixed(2)}</td>
+                                    <td style="color: #e53e3e; font-weight: 600;">$${p.sale_price.toFixed(2)}</td>
+                                    <td><span style="background: #fed7d7; color: #c53030; padding: 2px 8px; border-radius: 4px; font-weight: 600;">${discount}% OFF</span></td>
+                                    <td>${endDate}</td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+        
+        function previewEmailBlast() {
+            const subject = document.getElementById('emailSubject').value.trim();
+            const body = document.getElementById('emailBody').value.trim();
+            
+            if (!subject || !body) {
+                showAlert('Please enter subject and body');
+                return;
+            }
+            
+            const previewBody = body.replace(/\{\{name\}\}/g, 'John Smith');
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 600px;">
+                        <h3>📧 Email Preview</h3>
+                        <div style="background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px; margin-top: 15px;">
+                            <div style="background: #667eea; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+                                <h2 style="margin: 0;">🧪 The Peptide Wizard</h2>
+                            </div>
+                            <div style="padding: 20px;">
+                                <p style="font-weight: 600; color: #2d3748; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+                                    Subject: ${escapeHtml(subject)}
+                                </p>
+                                <div style="white-space: pre-wrap; color: #4a5568; line-height: 1.6;">${escapeHtml(previewBody)}</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function toggleEmailUser(userId) {
+            if (selectedUserIds.has(userId)) {
+                selectedUserIds.delete(userId);
+            } else {
+                selectedUserIds.add(userId);
+            }
+            renderEmail();
+        }
+        
+        function selectAllEmailUsers() {
+            selectedUserIds = new Set(emailUsers.map(u => u.id));
+            renderEmail();
+        }
+        
+        function deselectAllEmailUsers() {
+            selectedUserIds.clear();
+            renderEmail();
+        }
+        
+        async function sendEmailBlast() {
+            const subject = document.getElementById('emailSubject').value.trim();
+            const body = document.getElementById('emailBody').value.trim();
+            
+            if (!subject || !body) {
+                showAlert('Please enter subject and body');
+                return;
+            }
+            
+            if (selectedUserIds.size === 0) {
+                showAlert('Please select at least one recipient');
+                return;
+            }
+            
+            const recipientCount = selectedUserIds.size;
+            const isAll = recipientCount === emailUsers.length;
+            const confirmMsg = isAll 
+                ? `Send this email to ALL ${recipientCount} customers?` 
+                : `Send this email to ${recipientCount} selected customer${recipientCount !== 1 ? 's' : ''}?`;
+            
+            if (!confirm(confirmMsg + ' This cannot be undone.')) {
+                return;
+            }
+            
+            try {
+                const result = await api('/api/admin/email-blast/send', {
+                    method: 'POST',
+                    body: JSON.stringify({ 
+                        subject, 
+                        body, 
+                        user_ids: Array.from(selectedUserIds)
+                    })
+                });
+                
+                showAlert('Email sent to ' + result.sent + ' customer' + (result.sent !== 1 ? 's' : '') + '!' + (result.failed > 0 ? ' (' + result.failed + ' failed)' : ''), 'success');
+                document.getElementById('emailSubject').value = '';
+                document.getElementById('emailBody').value = '';
+                loadEmail();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+        
+        function viewEmailBlast(id) {
+            const e = emailHistory.find(x => x.id === id);
+            if (!e) return;
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 600px;">
+                        <h3>📧 Sent Email</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">
+                            Sent on ${new Date(e.created_at).toLocaleString()} to ${e.recipients_count} recipients
+                        </p>
+                        <div style="background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+                            <div style="background: #667eea; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+                                <h2 style="margin: 0;">🧪 The Peptide Wizard</h2>
+                            </div>
+                            <div style="padding: 20px;">
+                                <p style="font-weight: 600; color: #2d3748; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+                                    Subject: ${escapeHtml(e.subject)}
+                                </p>
+                                <div style="white-space: pre-wrap; color: #4a5568; line-height: 1.6;">${escapeHtml(e.body)}</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            <button class="btn" onclick="reuseEmailBlast(${id})">📝 Use as Template</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function reuseEmailBlast(id) {
+            const e = emailHistory.find(x => x.id === id);
+            if (!e) return;
+            
+            document.getElementById('emailSubject').value = e.subject;
+            document.getElementById('emailBody').value = e.body;
+            closeModal();
+            showAlert('Template loaded - edit and send!', 'success');
         }
 
         // Notifications
