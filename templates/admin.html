@@ -71,6 +71,22 @@
         .notification-item:last-child { border-bottom: none; }
         .notification-item .meta { font-size: 0.85rem; color: #718096; margin-top: 5px; }
         .bulk-actions { background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        /* Returns styles */
+        .return-card-admin { background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 15px; }
+        .return-card-admin.pending { border-left: 4px solid #ed8936; }
+        .return-card-admin.approved { border-left: 4px solid #48bb78; }
+        .return-card-admin.denied { border-left: 4px solid #e53e3e; }
+        .return-card-admin.refund_pending { border-left: 4px solid #4299e1; }
+        .return-card-admin.refunded { border-left: 4px solid #48bb78; }
+        .return-card-admin.replacement_pending { border-left: 4px solid #9f7aea; }
+        .return-status-admin { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 500; }
+        .return-status-admin.pending { background: #fefcbf; color: #975a16; }
+        .return-status-admin.approved { background: #c6f6d5; color: #276749; }
+        .return-status-admin.denied { background: #fed7d7; color: #c53030; }
+        .return-status-admin.refund_pending { background: #bee3f8; color: #2b6cb0; }
+        .return-status-admin.refunded { background: #c6f6d5; color: #276749; }
+        .return-status-admin.replacement_pending { background: #e9d8fd; color: #6b46c1; }
+        .process-form { background: #f7fafc; border-radius: 8px; padding: 20px; margin-top: 15px; }
         @media (max-width: 768px) {
             table { font-size: 0.85rem; }
             th, td { padding: 8px; }
@@ -99,6 +115,7 @@
                 <button onclick="showTab('inventory')">Inventory</button>
                 <button onclick="showTab('orders')">All Orders</button>
                 <button onclick="showTab('openOrders')">Open Orders</button>
+                <button onclick="showTab('returns')">🔄 Returns</button>
                 <button onclick="showTab('discounts')">Discount Codes</button>
                 <button onclick="showTab('reports')">Reports</button>
                 <button onclick="showTab('users')">Users</button>
@@ -124,7 +141,9 @@
             currentTab: 'products',
             orderStatusFilter: '',
             showInactiveProducts: false,
-            currentReferrerReport: null
+            currentReferrerReport: null,
+            returns: [],
+            returnsFilter: ''
         };
         
         // Global HTML escape helper
@@ -215,7 +234,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','discounts','reports','users','email','notifications'];
+            const tabList = ['products','inventory','orders','openOrders','returns','discounts','reports','users','email','notifications'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -223,6 +242,7 @@
                 case 'inventory': loadInventory(); break;
                 case 'orders': loadOrders(); break;
                 case 'openOrders': loadOpenOrders(); break;
+                case 'returns': loadReturns(); break;
                 case 'discounts': loadDiscounts(); break;
                 case 'reports': renderReports(); break;
                 case 'users': loadUsers(); break;
@@ -1838,6 +1858,8 @@ BC10,8.00</pre>
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showUserDetailModal(${u.id})">View</button>
                                         <button class="btn btn-secondary btn-small" onclick="showEditUserModal(${u.id})">Edit</button>
+                                        <button class="btn btn-success btn-small" onclick="showAddCreditModal(${u.id}, '${escapeHtml(u.full_name).replace(/'/g, "\\'")}', ${credit})">💰 Credit</button>
+                                        <button class="btn btn-warning btn-small" onclick="showResetPasswordModal(${u.id}, '${escapeHtml(u.full_name).replace(/'/g, "\\'")}', '${escapeHtml(u.email).replace(/'/g, "\\'")}')">🔐 Reset PW</button>
                                         ${!u.email_verified ? '<button class="btn btn-success btn-small" onclick="resendVerification(' + u.id + ')">Resend</button>' : ''}
                                         <button class="btn btn-small ${u.is_admin ? 'btn-warning' : 'btn-secondary'}" 
                                             onclick="toggleAdmin(${u.id})">
@@ -2945,6 +2967,375 @@ The Peptide Wizard Team"></textarea>
                 document.getElementById('orderSummaryContent').innerHTML = `<p style="color: #e53e3e;">Error: ${err.message}</p>`;
             }
         }
+
+        // ============================================
+        // RETURNS MANAGEMENT
+        // ============================================
+
+        async function loadReturns() {
+            try {
+                const filter = state.returnsFilter || '';
+                const returns = await api('/api/admin/returns' + (filter ? '?status=' + filter : ''));
+                state.returns = returns;
+                renderReturns();
+            } catch (err) {
+                showAlert('Error loading returns: ' + err.message, 'error');
+            }
+        }
+
+        function renderReturns() {
+            const returns = state.returns || [];
+            
+            const reasonLabels = {
+                'damaged_shipping': 'Damaged in Shipping',
+                'wrong_item': 'Wrong Item Sent',
+                'quality_issue': 'Quality Issue',
+                'other': 'Other'
+            };
+            
+            const statusLabels = {
+                'pending': 'Pending Review',
+                'approved': 'Approved',
+                'denied': 'Denied',
+                'refund_pending': 'Refund Pending',
+                'refunded': 'Refunded',
+                'replacement_pending': 'Replacement Pending'
+            };
+            
+            const pendingCount = returns.filter(r => r.status === 'pending').length;
+            
+            document.getElementById('tabContent').innerHTML = `
+                <div class="toolbar">
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <h3 style="margin: 0;">Returns & Credit Requests</h3>
+                        ${pendingCount > 0 ? '<span class="status-badge status-pending">' + pendingCount + ' pending</span>' : ''}
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <select onchange="state.returnsFilter=this.value; loadReturns();" style="padding: 8px; border-radius: 6px; border: 2px solid #e2e8f0;">
+                            <option value="">All Status</option>
+                            <option value="pending" ${state.returnsFilter === 'pending' ? 'selected' : ''}>Pending</option>
+                            <option value="approved" ${state.returnsFilter === 'approved' ? 'selected' : ''}>Approved</option>
+                            <option value="denied" ${state.returnsFilter === 'denied' ? 'selected' : ''}>Denied</option>
+                            <option value="refund_pending" ${state.returnsFilter === 'refund_pending' ? 'selected' : ''}>Refund Pending</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="loadReturns()">↻ Refresh</button>
+                    </div>
+                </div>
+                
+                ${returns.length === 0 ? `
+                    <div style="text-align: center; padding: 40px; color: #718096;">
+                        <div style="font-size: 3rem; margin-bottom: 10px;">📦</div>
+                        <p>No return requests ${state.returnsFilter ? 'with this status' : 'yet'}</p>
+                    </div>
+                ` : ''}
+                
+                <div id="returnsList">
+                    ${returns.map(ret => `
+                        <div class="return-card-admin ${ret.status}">
+                            <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 15px;">
+                                <div>
+                                    <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 5px;">
+                                        Return #${ret.id} - Order ${escapeHtml(ret.order_number)}
+                                    </div>
+                                    <div style="color: #718096; font-size: 0.9rem;">
+                                        ${escapeHtml(ret.full_name)} (${escapeHtml(ret.email)})<br>
+                                        Submitted: ${new Date(ret.created_at).toLocaleString()}
+                                    </div>
+                                </div>
+                                <div style="text-align: right;">
+                                    <span class="return-status-admin ${ret.status}">${statusLabels[ret.status] || ret.status}</span>
+                                    <div style="margin-top: 5px; color: #718096; font-size: 0.85rem;">
+                                        Order Total: $${parseFloat(ret.order_total || 0).toFixed(2)}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div style="margin: 15px 0; padding: 15px; background: #f7fafc; border-radius: 6px;">
+                                <div style="font-weight: 500; margin-bottom: 8px;">
+                                    Reason: ${reasonLabels[ret.reason] || ret.reason}
+                                </div>
+                                ${ret.reason_details ? `
+                                    <div style="color: #4a5568; font-size: 0.9rem;">
+                                        "${escapeHtml(ret.reason_details)}"
+                                    </div>
+                                ` : ''}
+                            </div>
+                            
+                            <div style="margin-bottom: 15px;">
+                                <strong>Items Requested:</strong>
+                                <table style="width: 100%; margin-top: 10px; font-size: 0.9rem;">
+                                    <thead>
+                                        <tr><th>Product</th><th>SKU</th><th>Qty</th><th>Unit Price</th><th>Subtotal</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        ${(ret.items || []).map(item => `
+                                            <tr>
+                                                <td>${escapeHtml(item.name)}</td>
+                                                <td>${escapeHtml(item.sku)}</td>
+                                                <td>${item.quantity}</td>
+                                                <td>$${parseFloat(item.price_single || 0).toFixed(2)}</td>
+                                                <td>$${(item.quantity * (item.price_single || 0)).toFixed(2)}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                                <div style="text-align: right; margin-top: 10px; font-weight: 500;">
+                                    Suggested Credit: $${parseFloat(ret.suggested_amount || 0).toFixed(2)}
+                                </div>
+                            </div>
+                            
+                            ${ret.status === 'pending' ? `
+                                <div class="process-form" id="processForm_${ret.id}">
+                                    <h4 style="margin-bottom: 15px;">Process This Return</h4>
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label>Resolution Type</label>
+                                            <select id="resolution_${ret.id}" onchange="toggleCreditAmount(${ret.id}, this.value)">
+                                                <option value="">-- Select --</option>
+                                                <option value="store_credit">Issue Store Credit</option>
+                                                <option value="partial_credit">Partial Credit</option>
+                                                <option value="full_refund">Full Refund (External)</option>
+                                                <option value="replacement">Send Replacement</option>
+                                                <option value="denied">Deny Request</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group" id="amountGroup_${ret.id}" style="display: none;">
+                                            <label>Credit Amount</label>
+                                            <input type="number" id="amount_${ret.id}" step="0.01" value="${ret.suggested_amount || 0}">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Admin Notes</label>
+                                        <textarea id="notes_${ret.id}" rows="2" placeholder="Internal notes or message to customer..."></textarea>
+                                    </div>
+                                    <div style="display: flex; gap: 10px;">
+                                        <button class="btn" onclick="processReturn(${ret.id})">Process Return</button>
+                                    </div>
+                                </div>
+                            ` : `
+                                <div style="padding: 15px; background: #f7fafc; border-radius: 6px;">
+                                    <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                                        <div>
+                                            <strong>Resolution:</strong> ${ret.resolution_type || 'N/A'}
+                                            ${ret.resolution_amount > 0 ? ' - $' + parseFloat(ret.resolution_amount).toFixed(2) : ''}
+                                        </div>
+                                        ${ret.processed_at ? `
+                                            <div style="color: #718096; font-size: 0.85rem;">
+                                                Processed: ${new Date(ret.processed_at).toLocaleString()}
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                    ${ret.admin_notes ? `
+                                        <div style="margin-top: 10px; color: #4a5568; font-size: 0.9rem;">
+                                            <strong>Notes:</strong> ${escapeHtml(ret.admin_notes)}
+                                        </div>
+                                    ` : ''}
+                                    ${ret.status === 'refund_pending' ? `
+                                        <div style="margin-top: 15px;">
+                                            <button class="btn btn-success btn-small" onclick="completeRefund(${ret.id})">
+                                                ✓ Mark Refund Complete
+                                            </button>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                            `}
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        function toggleCreditAmount(returnId, resolutionType) {
+            const amountGroup = document.getElementById('amountGroup_' + returnId);
+            if (resolutionType === 'store_credit' || resolutionType === 'partial_credit') {
+                amountGroup.style.display = 'block';
+            } else {
+                amountGroup.style.display = 'none';
+            }
+        }
+
+        async function processReturn(returnId) {
+            const resolution = document.getElementById('resolution_' + returnId).value;
+            const amount = document.getElementById('amount_' + returnId).value;
+            const notes = document.getElementById('notes_' + returnId).value;
+            
+            if (!resolution) {
+                showAlert('Please select a resolution type', 'error');
+                return;
+            }
+            
+            if ((resolution === 'store_credit' || resolution === 'partial_credit') && (!amount || amount <= 0)) {
+                showAlert('Please enter a credit amount', 'error');
+                return;
+            }
+            
+            if (resolution === 'denied') {
+                if (!confirm('Are you sure you want to deny this return request?')) {
+                    return;
+                }
+            }
+            
+            try {
+                await api('/api/admin/returns/' + returnId + '/process', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        resolution_type: resolution,
+                        resolution_amount: parseFloat(amount) || 0,
+                        admin_notes: notes
+                    })
+                });
+                
+                showAlert('Return processed successfully!', 'success');
+                loadReturns();
+                
+            } catch (err) {
+                showAlert('Error: ' + err.message, 'error');
+            }
+        }
+
+        async function completeRefund(returnId) {
+            const notes = prompt('Enter any notes about the refund (optional):');
+            
+            try {
+                await api('/api/admin/returns/' + returnId + '/complete-refund', {
+                    method: 'POST',
+                    body: JSON.stringify({ notes: notes || '' })
+                });
+                
+                showAlert('Refund marked as complete', 'success');
+                loadReturns();
+                
+            } catch (err) {
+                showAlert('Error: ' + err.message, 'error');
+            }
+        }
+
+        function showAddCreditModal(userId, userName, currentCredit) {
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 400px;">
+                        <h3>💰 Add/Remove Credit</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">
+                            ${escapeHtml(userName)}<br>
+                            Current balance: $${parseFloat(currentCredit || 0).toFixed(2)}
+                        </p>
+                        
+                        <div class="form-group">
+                            <label>Amount (use negative to remove)</label>
+                            <input type="number" id="creditAmount" step="0.01" placeholder="e.g. 25.00 or -10.00">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Reason</label>
+                            <input type="text" id="creditReason" placeholder="e.g. Return credit, Goodwill gesture...">
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button class="btn" onclick="submitAddCredit(${userId})">Apply Credit</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitAddCredit(userId) {
+            const amount = parseFloat(document.getElementById('creditAmount').value);
+            const reason = document.getElementById('creditReason').value;
+            
+            if (!amount || amount === 0) {
+                showAlert('Please enter a non-zero amount', 'error');
+                return;
+            }
+            
+            if (!reason.trim()) {
+                showAlert('Please enter a reason', 'error');
+                return;
+            }
+            
+            try {
+                const result = await api('/api/admin/users/' + userId + '/add-credit', {
+                    method: 'POST',
+                    body: JSON.stringify({ amount, reason })
+                });
+                
+                showAlert('Credit updated! New balance: $' + parseFloat(result.new_balance).toFixed(2), 'success');
+                closeModal();
+                loadUsers();
+                
+            } catch (err) {
+                showAlert('Error: ' + err.message, 'error');
+            }
+        }
+
+        function showResetPasswordModal(userId, userName, userEmail) {
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 450px;">
+                        <h3>🔐 Reset Password</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">
+                            ${escapeHtml(userName)} (${escapeHtml(userEmail)})
+                        </p>
+                        
+                        <div style="display: flex; flex-direction: column; gap: 15px;">
+                            <button class="btn" onclick="sendPasswordResetEmail(${userId})">
+                                📧 Send Password Reset Email
+                            </button>
+                            
+                            <div style="text-align: center; color: #718096;">— or —</div>
+                            
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label>Set Temporary Password</label>
+                                <input type="text" id="tempPassword" placeholder="Enter temporary password (min 6 chars)">
+                            </div>
+                            <button class="btn btn-warning" onclick="setTempPassword(${userId})">
+                                Set Temporary Password
+                            </button>
+                        </div>
+                        
+                        <div style="margin-top: 20px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function sendPasswordResetEmail(userId) {
+            try {
+                const result = await api('/api/admin/users/' + userId + '/reset-password', {
+                    method: 'POST',
+                    body: JSON.stringify({ action: 'send_email' })
+                });
+                showAlert(result.message, 'success');
+                closeModal();
+            } catch (err) {
+                showAlert('Error: ' + err.message, 'error');
+            }
+        }
+
+        async function setTempPassword(userId) {
+            const tempPassword = document.getElementById('tempPassword').value;
+            if (!tempPassword || tempPassword.length < 6) {
+                showAlert('Password must be at least 6 characters', 'error');
+                return;
+            }
+            
+            try {
+                const result = await api('/api/admin/users/' + userId + '/reset-password', {
+                    method: 'POST',
+                    body: JSON.stringify({ action: 'set_temp', temp_password: tempPassword })
+                });
+                showAlert(result.message + ' Password: ' + tempPassword, 'success');
+                closeModal();
+            } catch (err) {
+                showAlert('Error: ' + err.message, 'error');
+            }
+        }
+
+        // ============================================
+        // END RETURNS MANAGEMENT
+        // ============================================
 
         async function logout() {
             try {

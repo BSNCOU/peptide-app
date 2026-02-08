@@ -97,6 +97,26 @@
             .header-right { justify-content: center; }
             .cart-item { flex-direction: column; text-align: center; gap: 10px; }
         }
+        /* Returns styles */
+        .return-card { background: #f7fafc; border-radius: 8px; padding: 15px; margin-bottom: 10px; border-left: 4px solid #e2e8f0; }
+        .return-card.pending { border-left-color: #ed8936; }
+        .return-card.approved { border-left-color: #48bb78; }
+        .return-card.denied { border-left-color: #e53e3e; }
+        .return-card.refund_pending { border-left-color: #4299e1; }
+        .return-card.refunded { border-left-color: #48bb78; }
+        .return-card.replacement_pending { border-left-color: #9f7aea; }
+        .return-status { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 500; }
+        .return-status.pending { background: #fefcbf; color: #975a16; }
+        .return-status.approved { background: #c6f6d5; color: #276749; }
+        .return-status.denied { background: #fed7d7; color: #c53030; }
+        .return-status.refund_pending { background: #bee3f8; color: #2b6cb0; }
+        .return-status.refunded { background: #c6f6d5; color: #276749; }
+        .return-status.replacement_pending { background: #e9d8fd; color: #6b46c1; }
+        .return-item-check { display: flex; align-items: center; gap: 10px; padding: 10px; border-bottom: 1px solid #e2e8f0; }
+        .return-item-check:last-child { border-bottom: none; }
+        .return-item-check input[type="checkbox"] { width: 18px; height: 18px; }
+        .return-item-check .item-info { flex: 1; }
+        .return-item-check .qty-input { width: 60px; padding: 5px; border: 1px solid #e2e8f0; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -134,7 +154,9 @@
             selectedCategory: 'All',
             discount: null,
             referrerChoice: null,
-            userCredit: 0
+            userCredit: 0,
+            eligibleOrders: [],
+            myReturns: []
         };
 
         // API helpers
@@ -219,6 +241,7 @@
                     <button onclick="showView('products')" class="${state.currentView === 'products' ? 'active' : ''}">Products</button>
                     <button onclick="showView('cart')" class="${state.currentView === 'cart' ? 'active' : ''}">Cart${cartCount > 0 ? `<span class="cart-badge">${cartCount}</span>` : ''}</button>
                     <button onclick="showView('orders')" class="${state.currentView === 'orders' ? 'active' : ''}">My Orders</button>
+                    <button onclick="showView('returns')" class="${state.currentView === 'returns' ? 'active' : ''}">Returns</button>
                     ${state.user.is_admin ? '<button onclick="window.location.href=\'/admin\'">Admin</button>' : ''}
                     <button onclick="logout()">Logout</button>
                 `;
@@ -252,6 +275,7 @@
                 case 'products': renderProducts(); break;
                 case 'cart': renderCart(); break;
                 case 'orders': renderOrders(); break;
+                case 'returns': renderReturns(); break;
             }
         }
 
@@ -1203,6 +1227,273 @@
                 showAlert(err.message);
             }
         }
+
+        // ============================================
+        // RETURNS SECTION
+        // ============================================
+        
+        async function renderReturns() {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card">
+                    <h2>🔄 Returns & Store Credit</h2>
+                    
+                    <!-- Credit Balance -->
+                    <div id="creditBalanceSection" style="background: linear-gradient(135deg, #48bb78 0%, #38a169 100%); color: white; padding: 20px; border-radius: 12px; margin-bottom: 25px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                            <div>
+                                <div style="font-size: 0.9rem; opacity: 0.9;">Your Store Credit Balance</div>
+                                <div id="creditBalance" style="font-size: 2rem; font-weight: 700;">$0.00</div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 0.85rem; opacity: 0.9;">Credit is automatically applied at checkout</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Submit New Return Request -->
+                    <div style="margin-bottom: 30px;">
+                        <h3 style="margin-bottom: 15px; font-size: 1.1rem;">Submit a Return Request</h3>
+                        <p style="color: #718096; margin-bottom: 15px; font-size: 0.9rem;">
+                            If you received damaged, wrong, or defective items, submit a request below. 
+                            We'll review it and issue store credit, a replacement, or refund as appropriate.
+                        </p>
+                        
+                        <div class="form-group">
+                            <label>Select Order</label>
+                            <select id="returnOrderSelect" onchange="loadOrderItemsForReturn()">
+                                <option value="">-- Select an order --</option>
+                            </select>
+                        </div>
+                        
+                        <div id="returnOrderItems" class="hidden">
+                            <div class="form-group">
+                                <label>Select Items to Return</label>
+                                <div id="returnItemsList" style="border: 2px solid #e2e8f0; border-radius: 8px; padding: 15px; max-height: 300px; overflow-y: auto;"></div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Reason for Return</label>
+                                <select id="returnReason" required>
+                                    <option value="">-- Select reason --</option>
+                                    <option value="damaged_shipping">Damaged in Shipping</option>
+                                    <option value="wrong_item">Wrong Item Sent</option>
+                                    <option value="quality_issue">Quality Issue</option>
+                                    <option value="other">Other</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Additional Details</label>
+                                <textarea id="returnDetails" rows="3" placeholder="Please describe the issue in detail..."></textarea>
+                            </div>
+                            
+                            <button class="btn" onclick="submitReturnRequest()">Submit Return Request</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Existing Return Requests -->
+                    <div>
+                        <h3 style="margin-bottom: 15px; font-size: 1.1rem;">Your Return Requests</h3>
+                        <div id="myReturnsList"><p style="color: #718096;">Loading...</p></div>
+                    </div>
+                </div>
+            `;
+            
+            await Promise.all([
+                loadCreditBalance(),
+                loadEligibleOrders(),
+                loadMyReturns()
+            ]);
+        }
+
+        async function loadCreditBalance() {
+            try {
+                const data = await api('/api/user/referral-info');
+                document.getElementById('creditBalance').textContent = '$' + (data.credit_balance || 0).toFixed(2);
+            } catch (err) {
+                console.error('Error loading credit balance:', err);
+            }
+        }
+
+        async function loadEligibleOrders() {
+            try {
+                const orders = await api('/api/returns/eligible-orders');
+                state.eligibleOrders = orders;
+                
+                const select = document.getElementById('returnOrderSelect');
+                select.innerHTML = '<option value="">-- Select an order --</option>';
+                
+                orders.forEach(order => {
+                    if (order.existing_returns === 0) {
+                        const date = new Date(order.created_at).toLocaleDateString();
+                        select.innerHTML += `<option value="${order.id}">
+                            ${escapeHtml(order.order_number)} - $${parseFloat(order.total).toFixed(2)} (${date})
+                        </option>`;
+                    }
+                });
+            } catch (err) {
+                console.error('Error loading eligible orders:', err);
+            }
+        }
+
+        function loadOrderItemsForReturn() {
+            const orderId = document.getElementById('returnOrderSelect').value;
+            const itemsSection = document.getElementById('returnOrderItems');
+            const itemsList = document.getElementById('returnItemsList');
+            
+            if (!orderId) {
+                itemsSection.classList.add('hidden');
+                return;
+            }
+            
+            const order = state.eligibleOrders.find(o => o.id == orderId);
+            if (!order || !order.items) {
+                itemsSection.classList.add('hidden');
+                return;
+            }
+            
+            itemsList.innerHTML = order.items.map(item => `
+                <div class="return-item-check">
+                    <input type="checkbox" id="returnItem_${item.order_item_id}" 
+                           data-order-item-id="${item.order_item_id}"
+                           data-product-id="${item.product_id}"
+                           data-max-qty="${item.quantity}">
+                    <div class="item-info">
+                        <strong>${escapeHtml(item.name)}</strong> (${escapeHtml(item.sku)})<br>
+                        <span style="color: #718096; font-size: 0.85rem;">
+                            Qty: ${item.quantity} × $${parseFloat(item.unit_price).toFixed(2)}
+                        </span>
+                    </div>
+                    <input type="number" class="qty-input" id="returnQty_${item.order_item_id}" 
+                           value="${item.quantity}" min="1" max="${item.quantity}">
+                </div>
+            `).join('');
+            
+            itemsSection.classList.remove('hidden');
+        }
+
+        async function submitReturnRequest() {
+            const orderId = document.getElementById('returnOrderSelect').value;
+            const reason = document.getElementById('returnReason').value;
+            const details = document.getElementById('returnDetails').value;
+            
+            if (!orderId) {
+                showAlert('Please select an order');
+                return;
+            }
+            
+            if (!reason) {
+                showAlert('Please select a reason for return');
+                return;
+            }
+            
+            const items = [];
+            const checkboxes = document.querySelectorAll('#returnItemsList input[type="checkbox"]:checked');
+            
+            if (checkboxes.length === 0) {
+                showAlert('Please select at least one item to return');
+                return;
+            }
+            
+            checkboxes.forEach(cb => {
+                const orderItemId = cb.dataset.orderItemId;
+                const productId = cb.dataset.productId;
+                const maxQty = parseInt(cb.dataset.maxQty);
+                const qty = parseInt(document.getElementById('returnQty_' + orderItemId).value) || maxQty;
+                
+                items.push({
+                    order_item_id: parseInt(orderItemId),
+                    product_id: parseInt(productId),
+                    quantity: Math.min(qty, maxQty)
+                });
+            });
+            
+            try {
+                const result = await api('/api/returns/submit', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        order_id: parseInt(orderId),
+                        reason: reason,
+                        reason_details: details,
+                        items: items
+                    })
+                });
+                
+                showAlert('Return request submitted for order ' + result.order_number + '. We\\'ll review it shortly.', 'success');
+                
+                document.getElementById('returnOrderSelect').value = '';
+                document.getElementById('returnOrderItems').classList.add('hidden');
+                document.getElementById('returnReason').value = '';
+                document.getElementById('returnDetails').value = '';
+                
+                await Promise.all([loadEligibleOrders(), loadMyReturns()]);
+                
+            } catch (err) {
+                showAlert(err.message || 'Error submitting return request');
+            }
+        }
+
+        async function loadMyReturns() {
+            try {
+                const returns = await api('/api/returns/my-requests');
+                state.myReturns = returns;
+                
+                const container = document.getElementById('myReturnsList');
+                
+                if (returns.length === 0) {
+                    container.innerHTML = '<p style="color: #718096;">No return requests yet.</p>';
+                    return;
+                }
+                
+                const statusLabels = {
+                    'pending': 'Pending Review',
+                    'approved': 'Approved - Credit Issued',
+                    'denied': 'Denied',
+                    'refund_pending': 'Refund Processing',
+                    'refunded': 'Refunded',
+                    'replacement_pending': 'Replacement Processing'
+                };
+                
+                const reasonLabels = {
+                    'damaged_shipping': 'Damaged in Shipping',
+                    'wrong_item': 'Wrong Item Sent',
+                    'quality_issue': 'Quality Issue',
+                    'other': 'Other'
+                };
+                
+                container.innerHTML = returns.map(ret => `
+                    <div class="return-card ${ret.status}">
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
+                            <div>
+                                <strong>Order: ${escapeHtml(ret.order_number)}</strong><br>
+                                <span style="color: #718096; font-size: 0.85rem;">
+                                    ${new Date(ret.created_at).toLocaleDateString()} - ${reasonLabels[ret.reason] || ret.reason}
+                                </span>
+                            </div>
+                            <span class="return-status ${ret.status}">${statusLabels[ret.status] || ret.status}</span>
+                        </div>
+                        ${ret.resolution_amount > 0 ? `
+                            <div style="background: #c6f6d5; color: #276749; padding: 8px 12px; border-radius: 6px; font-size: 0.9rem;">
+                                ✓ Credit issued: $${parseFloat(ret.resolution_amount).toFixed(2)}
+                            </div>
+                        ` : ''}
+                        ${ret.admin_notes && ret.status !== 'pending' ? `
+                            <div style="margin-top: 10px; font-size: 0.85rem; color: #4a5568;">
+                                <strong>Note:</strong> ${escapeHtml(ret.admin_notes)}
+                            </div>
+                        ` : ''}
+                    </div>
+                `).join('');
+                
+            } catch (err) {
+                console.error('Error loading returns:', err);
+                document.getElementById('myReturnsList').innerHTML = '<p style="color: #e53e3e;">Error loading returns</p>';
+            }
+        }
+
+        // ============================================
+        // END RETURNS SECTION
+        // ============================================
 
         // URL hash routing for password reset
         function handleHash() {

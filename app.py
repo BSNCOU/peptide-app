@@ -223,6 +223,35 @@ def get_db():
     """Get database connection with automatic ? to %s conversion for PostgreSQL"""
     return get_wrapped_db()
 
+def init_returns_table(c, using_postgres, auto_id):
+    """Initialize returns and return_items tables"""
+    c.execute(f'''CREATE TABLE IF NOT EXISTS returns (
+        id {auto_id},
+        order_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        reason_details TEXT,
+        resolution_type TEXT,
+        resolution_amount REAL DEFAULT 0,
+        replacement_order_id INTEGER,
+        status TEXT DEFAULT 'pending',
+        admin_notes TEXT,
+        processed_by INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        processed_at TIMESTAMP
+    )''')
+    
+    c.execute(f'''CREATE TABLE IF NOT EXISTS return_items (
+        id {auto_id},
+        return_id INTEGER NOT NULL,
+        order_item_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        reason TEXT
+    )''')
+    
+    print("✓ Returns tables initialized")
+
 def init_db():
     using_postgres = is_postgres()
     conn = get_raw_db()
@@ -494,6 +523,13 @@ def init_db():
         conn.commit()
     except Exception as e:
         print(f"Note: Referral column migration: {e}")
+    
+    # Initialize returns tables
+    try:
+        init_returns_table(c, using_postgres, auto_id)
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Returns tables: {e}")
     
     # Create default admin if none exists
     if using_postgres:
@@ -812,7 +848,7 @@ def send_order_confirmation(order_id):
         log_notification(order['user_id'], order_id, 'order_confirmation', 'sms', order['phone'], 'sent' if ok else 'failed', None if ok else msg)
 
 def send_password_reset(email, token):
-    url = f"{CONFIG['APP_URL']}/#/reset-password/{token}"
+    url = f"{CONFIG['APP_URL']}/#reset={token}"
     html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px;">
     <h2>Password Reset Request</h2>
     <p>Click below to reset your password:</p>
@@ -2705,6 +2741,574 @@ def admin_reports_discounts():
     ''').fetchall()
     conn.close()
     return jsonify([dict(r) for r in report])
+
+# ============================================
+# RETURNS & CREDIT SYSTEM
+# ============================================
+
+@app.route('/api/returns/eligible-orders', methods=['GET'])
+def get_eligible_orders():
+    """Get customer's orders eligible for returns (last 90 days, fulfilled/delivered)"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Please log in'}), 401
+    
+    conn = get_db()
+    
+    # Get orders from last 90 days that are fulfilled or delivered
+    if is_postgres():
+        orders = conn.execute('''
+            SELECT o.id, o.order_number, o.total, o.status, o.created_at,
+                   (SELECT COUNT(*) FROM returns r WHERE r.order_id = o.id AND r.status != 'denied') as existing_returns
+            FROM orders o 
+            WHERE o.user_id = %s 
+              AND o.status IN ('fulfilled', 'delivered', 'shipped')
+              AND o.created_at > NOW() - INTERVAL '90 days'
+            ORDER BY o.created_at DESC
+        ''', (session['user_id'],)).fetchall()
+    else:
+        orders = conn.execute('''
+            SELECT o.id, o.order_number, o.total, o.status, o.created_at,
+                   (SELECT COUNT(*) FROM returns r WHERE r.order_id = o.id AND r.status != 'denied') as existing_returns
+            FROM orders o 
+            WHERE o.user_id = ? 
+              AND o.status IN ('fulfilled', 'delivered', 'shipped')
+              AND o.created_at > datetime('now', '-90 days')
+            ORDER BY o.created_at DESC
+        ''', (session['user_id'],)).fetchall()
+    
+    result = []
+    for order in orders:
+        order_dict = dict(order) if hasattr(order, 'keys') else {
+            'id': order[0], 'order_number': order[1], 'total': order[2],
+            'status': order[3], 'created_at': str(order[4]), 'existing_returns': order[5]
+        }
+        
+        # Get order items
+        items = conn.execute('''
+            SELECT oi.id as order_item_id, oi.product_id, oi.quantity, oi.unit_price,
+                   p.name, p.sku
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = ?
+        '''.replace('?', '%s') if is_postgres() else '''
+            SELECT oi.id as order_item_id, oi.product_id, oi.quantity, oi.unit_price,
+                   p.name, p.sku
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = ?
+        ''', (order_dict['id'],)).fetchall()
+        
+        order_dict['items'] = [dict(i) if hasattr(i, 'keys') else {
+            'order_item_id': i[0], 'product_id': i[1], 'quantity': i[2],
+            'unit_price': i[3], 'name': i[4], 'sku': i[5]
+        } for i in items]
+        
+        result.append(order_dict)
+    
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/returns/submit', methods=['POST'])
+def submit_return_request():
+    """Customer submits a return/credit request"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Please log in'}), 401
+    
+    data = request.json
+    order_id = data.get('order_id')
+    reason = data.get('reason')
+    reason_details = data.get('reason_details', '')
+    items = data.get('items', [])
+    
+    if not order_id or not reason:
+        return jsonify({'error': 'Order and reason are required'}), 400
+    
+    if not items:
+        return jsonify({'error': 'Please select at least one item'}), 400
+    
+    conn = get_db()
+    
+    # Verify order belongs to user and is eligible
+    order = conn.execute('''
+        SELECT id, order_number, user_id, status FROM orders 
+        WHERE id = ? AND user_id = ? AND status IN ('fulfilled', 'delivered', 'shipped')
+    '''.replace('?', '%s') if is_postgres() else '''
+        SELECT id, order_number, user_id, status FROM orders 
+        WHERE id = ? AND user_id = ? AND status IN ('fulfilled', 'delivered', 'shipped')
+    ''', (order_id, session['user_id'])).fetchone()
+    
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found or not eligible for return'}), 404
+    
+    # Check for existing pending return on this order
+    existing = conn.execute('''
+        SELECT id FROM returns WHERE order_id = ? AND status = 'pending'
+    '''.replace('?', '%s') if is_postgres() else '''
+        SELECT id FROM returns WHERE order_id = ? AND status = 'pending'
+    ''', (order_id,)).fetchone()
+    
+    if existing:
+        conn.close()
+        return jsonify({'error': 'A return request is already pending for this order'}), 400
+    
+    # Create return request
+    result = conn.execute('''
+        INSERT INTO returns (order_id, user_id, reason, reason_details, status)
+        VALUES (?, ?, ?, ?, 'pending')
+    '''.replace('?', '%s') if is_postgres() else '''
+        INSERT INTO returns (order_id, user_id, reason, reason_details, status)
+        VALUES (?, ?, ?, ?, 'pending')
+    ''', (order_id, session['user_id'], reason, reason_details))
+    
+    return_id = result.lastrowid
+    
+    # Add return items
+    for item in items:
+        conn.execute('''
+            INSERT INTO return_items (return_id, order_item_id, product_id, quantity, reason)
+            VALUES (?, ?, ?, ?, ?)
+        '''.replace('?', '%s') if is_postgres() else '''
+            INSERT INTO return_items (return_id, order_item_id, product_id, quantity, reason)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (return_id, item['order_item_id'], item['product_id'], item['quantity'], item.get('reason', '')))
+    
+    conn.commit()
+    
+    order_number = order['order_number'] if hasattr(order, 'keys') else order[1]
+    
+    conn.close()
+    
+    return jsonify({
+        'message': 'Return request submitted successfully',
+        'return_id': return_id,
+        'order_number': order_number
+    }), 201
+
+
+@app.route('/api/returns/my-requests', methods=['GET'])
+def get_my_returns():
+    """Get customer's return requests"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Please log in'}), 401
+    
+    conn = get_db()
+    returns = conn.execute('''
+        SELECT r.*, o.order_number 
+        FROM returns r
+        JOIN orders o ON r.order_id = o.id
+        WHERE r.user_id = ?
+        ORDER BY r.created_at DESC
+    '''.replace('?', '%s') if is_postgres() else '''
+        SELECT r.*, o.order_number 
+        FROM returns r
+        JOIN orders o ON r.order_id = o.id
+        WHERE r.user_id = ?
+        ORDER BY r.created_at DESC
+    ''', (session['user_id'],)).fetchall()
+    
+    result = []
+    for ret in returns:
+        ret_dict = dict(ret) if hasattr(ret, 'keys') else ret
+        
+        # Get return items
+        items = conn.execute('''
+            SELECT ri.*, p.name, p.sku
+            FROM return_items ri
+            JOIN products p ON ri.product_id = p.id
+            WHERE ri.return_id = ?
+        '''.replace('?', '%s') if is_postgres() else '''
+            SELECT ri.*, p.name, p.sku
+            FROM return_items ri
+            JOIN products p ON ri.product_id = p.id
+            WHERE ri.return_id = ?
+        ''', (ret_dict['id'],)).fetchall()
+        
+        ret_dict['items'] = [dict(i) if hasattr(i, 'keys') else i for i in items]
+        result.append(ret_dict)
+    
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/admin/returns', methods=['GET'])
+@admin_required
+def admin_get_returns():
+    """Get all return requests for admin"""
+    conn = get_db()
+    
+    status_filter = request.args.get('status', '')
+    
+    query = '''
+        SELECT r.*, o.order_number, o.total as order_total, 
+               u.full_name, u.email
+        FROM returns r
+        JOIN orders o ON r.order_id = o.id
+        JOIN users u ON r.user_id = u.id
+    '''
+    
+    params = ()
+    if status_filter:
+        query += " WHERE r.status = ?"
+        params = (status_filter,)
+    
+    query += ' ORDER BY r.created_at DESC'
+    
+    if is_postgres():
+        query = query.replace('?', '%s')
+    
+    returns = conn.execute(query, params).fetchall() if params else conn.execute(query).fetchall()
+    
+    result = []
+    for ret in returns:
+        ret_dict = dict(ret) if hasattr(ret, 'keys') else ret
+        
+        # Get return items with product details
+        items = conn.execute('''
+            SELECT ri.*, p.name, p.sku, p.price_single
+            FROM return_items ri
+            JOIN products p ON ri.product_id = p.id
+            WHERE ri.return_id = ?
+        '''.replace('?', '%s') if is_postgres() else '''
+            SELECT ri.*, p.name, p.sku, p.price_single
+            FROM return_items ri
+            JOIN products p ON ri.product_id = p.id
+            WHERE ri.return_id = ?
+        ''', (ret_dict['id'],)).fetchall()
+        
+        ret_dict['items'] = [dict(i) if hasattr(i, 'keys') else i for i in items]
+        
+        # Calculate suggested credit amount
+        suggested_amount = 0
+        for i in items:
+            if hasattr(i, 'keys'):
+                suggested_amount += i['quantity'] * (i['price_single'] or 0)
+            else:
+                suggested_amount += i[4] * (i[-1] or 0)
+        ret_dict['suggested_amount'] = round(suggested_amount, 2)
+        
+        result.append(ret_dict)
+    
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/admin/returns/<int:return_id>', methods=['GET'])
+@admin_required
+def admin_get_return_detail(return_id):
+    """Get detailed info for a single return"""
+    conn = get_db()
+    
+    ret = conn.execute('''
+        SELECT r.*, o.order_number, o.total as order_total, o.subtotal,
+               o.discount_amount, o.credit_applied, o.shipping_cost,
+               u.full_name, u.email, u.phone, u.referral_credit
+        FROM returns r
+        JOIN orders o ON r.order_id = o.id
+        JOIN users u ON r.user_id = u.id
+        WHERE r.id = ?
+    '''.replace('?', '%s') if is_postgres() else '''
+        SELECT r.*, o.order_number, o.total as order_total, o.subtotal,
+               o.discount_amount, o.credit_applied, o.shipping_cost,
+               u.full_name, u.email, u.phone, u.referral_credit
+        FROM returns r
+        JOIN orders o ON r.order_id = o.id
+        JOIN users u ON r.user_id = u.id
+        WHERE r.id = ?
+    ''', (return_id,)).fetchone()
+    
+    if not ret:
+        conn.close()
+        return jsonify({'error': 'Return not found'}), 404
+    
+    ret_dict = dict(ret) if hasattr(ret, 'keys') else ret
+    
+    # Get return items
+    items = conn.execute('''
+        SELECT ri.*, p.name, p.sku, p.price_single, oi.unit_price as paid_price
+        FROM return_items ri
+        JOIN products p ON ri.product_id = p.id
+        JOIN order_items oi ON ri.order_item_id = oi.id
+        WHERE ri.return_id = ?
+    '''.replace('?', '%s') if is_postgres() else '''
+        SELECT ri.*, p.name, p.sku, p.price_single, oi.unit_price as paid_price
+        FROM return_items ri
+        JOIN products p ON ri.product_id = p.id
+        JOIN order_items oi ON ri.order_item_id = oi.id
+        WHERE ri.return_id = ?
+    ''', (return_id,)).fetchall()
+    
+    ret_dict['items'] = [dict(i) if hasattr(i, 'keys') else i for i in items]
+    
+    # Get all items from original order for context
+    order_items = conn.execute('''
+        SELECT oi.*, p.name, p.sku
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        WHERE oi.order_id = ?
+    '''.replace('?', '%s') if is_postgres() else '''
+        SELECT oi.*, p.name, p.sku
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        WHERE oi.order_id = ?
+    ''', (ret_dict['order_id'],)).fetchall()
+    
+    ret_dict['original_order_items'] = [dict(i) if hasattr(i, 'keys') else i for i in order_items]
+    
+    conn.close()
+    return jsonify(ret_dict)
+
+
+@app.route('/api/admin/returns/<int:return_id>/process', methods=['POST'])
+@admin_required
+def admin_process_return(return_id):
+    """Process a return request - issue credit, refund, replacement, or deny"""
+    data = request.json
+    resolution_type = data.get('resolution_type')
+    resolution_amount = float(data.get('resolution_amount', 0))
+    admin_notes = data.get('admin_notes', '')
+    
+    if not resolution_type:
+        return jsonify({'error': 'Resolution type is required'}), 400
+    
+    if resolution_type in ['store_credit', 'partial_credit'] and resolution_amount <= 0:
+        return jsonify({'error': 'Credit amount must be greater than 0'}), 400
+    
+    conn = get_db()
+    
+    # Get return request
+    ret = conn.execute('SELECT * FROM returns WHERE id = ?'.replace('?', '%s') if is_postgres() else 'SELECT * FROM returns WHERE id = ?', (return_id,)).fetchone()
+    if not ret:
+        conn.close()
+        return jsonify({'error': 'Return not found'}), 404
+    
+    ret_dict = dict(ret) if hasattr(ret, 'keys') else ret
+    
+    if ret_dict['status'] != 'pending':
+        conn.close()
+        return jsonify({'error': 'Return has already been processed'}), 400
+    
+    user_id = ret_dict['user_id']
+    order_id = ret_dict['order_id']
+    
+    # Get order number for transaction description
+    order = conn.execute('SELECT order_number FROM orders WHERE id = ?'.replace('?', '%s') if is_postgres() else 'SELECT order_number FROM orders WHERE id = ?', (order_id,)).fetchone()
+    order_number = order['order_number'] if hasattr(order, 'keys') else order[0]
+    
+    new_status = 'approved'
+    
+    if resolution_type == 'denied':
+        new_status = 'denied'
+    elif resolution_type in ['store_credit', 'partial_credit']:
+        # Add credit to user account
+        conn.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id = ?'.replace('?', '%s') if is_postgres() else 'UPDATE users SET referral_credit = referral_credit + ? WHERE id = ?', 
+                  (resolution_amount, user_id))
+        
+        # Log the transaction
+        description = f'Return credit for order {order_number}: {admin_notes}' if admin_notes else f'Return credit for order {order_number}'
+        conn.execute('''
+            INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
+            VALUES (?, ?, ?, ?, ?)
+        '''.replace('?', '%s') if is_postgres() else '''
+            INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, order_id, 'credit', resolution_amount, description))
+        
+    elif resolution_type == 'full_refund':
+        new_status = 'refund_pending'
+        
+    elif resolution_type == 'replacement':
+        new_status = 'replacement_pending'
+    
+    # Update return record
+    conn.execute('''
+        UPDATE returns 
+        SET status = ?, resolution_type = ?, resolution_amount = ?, 
+            admin_notes = ?, processed_by = ?, processed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    '''.replace('?', '%s') if is_postgres() else '''
+        UPDATE returns 
+        SET status = ?, resolution_type = ?, resolution_amount = ?, 
+            admin_notes = ?, processed_by = ?, processed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    ''', (new_status, resolution_type, resolution_amount, admin_notes, session['user_id'], return_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        'message': 'Return processed successfully',
+        'status': new_status,
+        'resolution_type': resolution_type,
+        'resolution_amount': resolution_amount
+    })
+
+
+@app.route('/api/admin/returns/<int:return_id>/complete-refund', methods=['POST'])
+@admin_required
+def admin_complete_refund(return_id):
+    """Mark an external refund as completed"""
+    data = request.json
+    
+    conn = get_db()
+    ret = conn.execute('SELECT * FROM returns WHERE id = ?'.replace('?', '%s') if is_postgres() else 'SELECT * FROM returns WHERE id = ?', (return_id,)).fetchone()
+    
+    if not ret:
+        conn.close()
+        return jsonify({'error': 'Return not found'}), 404
+    
+    ret_dict = dict(ret) if hasattr(ret, 'keys') else ret
+    
+    if ret_dict['status'] != 'refund_pending':
+        conn.close()
+        return jsonify({'error': 'Return is not pending refund'}), 400
+    
+    notes = data.get('notes', '')
+    existing_notes = ret_dict.get('admin_notes', '') or ''
+    new_notes = f"{existing_notes}\n[REFUND COMPLETED] {notes}".strip()
+    
+    conn.execute('''
+        UPDATE returns SET status = 'refunded', admin_notes = ? WHERE id = ?
+    '''.replace('?', '%s') if is_postgres() else '''
+        UPDATE returns SET status = 'refunded', admin_notes = ? WHERE id = ?
+    ''', (new_notes, return_id))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'Refund marked as completed'})
+
+
+@app.route('/api/admin/users/<int:uid>/add-credit', methods=['POST'])
+@admin_required
+def admin_add_credit(uid):
+    """Manually add credit to a user's account"""
+    data = request.json
+    amount = float(data.get('amount', 0))
+    reason = data.get('reason', 'Manual adjustment')
+    
+    if amount == 0:
+        return jsonify({'error': 'Amount cannot be zero'}), 400
+    
+    conn = get_db()
+    
+    user = conn.execute('SELECT id, full_name, referral_credit FROM users WHERE id = ?'.replace('?', '%s') if is_postgres() else 'SELECT id, full_name, referral_credit FROM users WHERE id = ?', (uid,)).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    
+    # Update credit
+    conn.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id = ?'.replace('?', '%s') if is_postgres() else 'UPDATE users SET referral_credit = referral_credit + ? WHERE id = ?', (amount, uid))
+    
+    # Log transaction
+    conn.execute('''
+        INSERT INTO referral_transactions (user_id, type, amount, description)
+        VALUES (?, ?, ?, ?)
+    '''.replace('?', '%s') if is_postgres() else '''
+        INSERT INTO referral_transactions (user_id, type, amount, description)
+        VALUES (?, ?, ?, ?)
+    ''', (uid, 'adjustment', amount, reason))
+    
+    conn.commit()
+    
+    # Get new balance
+    new_balance = conn.execute('SELECT referral_credit FROM users WHERE id = ?'.replace('?', '%s') if is_postgres() else 'SELECT referral_credit FROM users WHERE id = ?', (uid,)).fetchone()
+    new_balance = new_balance['referral_credit'] if hasattr(new_balance, 'keys') else new_balance[0]
+    
+    conn.close()
+    
+    return jsonify({
+        'message': f'Credit {"added" if amount > 0 else "removed"} successfully',
+        'amount': amount,
+        'new_balance': new_balance
+    })
+
+
+@app.route('/api/admin/returns/stats', methods=['GET'])
+@admin_required
+def admin_returns_stats():
+    """Get returns statistics for dashboard"""
+    conn = get_db()
+    
+    stats = {}
+    
+    # Pending returns count
+    pending = conn.execute('SELECT COUNT(*) as count FROM returns WHERE status = ?'.replace('?', '%s') if is_postgres() else 'SELECT COUNT(*) as count FROM returns WHERE status = ?', ('pending',)).fetchone()
+    stats['pending'] = pending['count'] if hasattr(pending, 'keys') else pending[0]
+    
+    # This month's returns
+    if is_postgres():
+        month_returns = conn.execute('''
+            SELECT COUNT(*) as count, COALESCE(SUM(resolution_amount), 0) as total_credited
+            FROM returns 
+            WHERE created_at >= date_trunc('month', CURRENT_DATE)
+              AND status NOT IN ('pending', 'denied')
+        ''').fetchone()
+    else:
+        month_returns = conn.execute('''
+            SELECT COUNT(*) as count, COALESCE(SUM(resolution_amount), 0) as total_credited
+            FROM returns 
+            WHERE created_at >= date('now', 'start of month')
+              AND status NOT IN ('pending', 'denied')
+        ''').fetchone()
+    
+    stats['month_count'] = month_returns['count'] if hasattr(month_returns, 'keys') else month_returns[0]
+    stats['month_credited'] = month_returns['total_credited'] if hasattr(month_returns, 'keys') else month_returns[1]
+    
+    # By reason
+    by_reason = conn.execute('''
+        SELECT reason, COUNT(*) as count 
+        FROM returns 
+        GROUP BY reason
+    ''').fetchall()
+    stats['by_reason'] = [dict(r) if hasattr(r, 'keys') else {'reason': r[0], 'count': r[1]} for r in by_reason]
+    
+    conn.close()
+    return jsonify(stats)
+
+
+@app.route('/api/admin/users/<int:uid>/reset-password', methods=['POST'])
+@admin_required
+def admin_reset_user_password(uid):
+    """Admin can send password reset email to user or set temporary password"""
+    data = request.json
+    action = data.get('action', 'send_email')  # send_email or set_temp
+    
+    conn = get_db()
+    user = conn.execute('SELECT id, email, full_name FROM users WHERE id = ?'.replace('?', '%s') if is_postgres() else 'SELECT id, email, full_name FROM users WHERE id = ?', (uid,)).fetchone()
+    
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    
+    user_dict = dict(user) if hasattr(user, 'keys') else {'id': user[0], 'email': user[1], 'full_name': user[2]}
+    
+    if action == 'send_email':
+        # Generate reset token and send email
+        token = secrets.token_urlsafe(32)
+        expires = datetime.now() + timedelta(hours=24)
+        conn.execute('UPDATE users SET reset_token=?, reset_token_expires=? WHERE id=?'.replace('?', '%s') if is_postgres() else 'UPDATE users SET reset_token=?, reset_token_expires=? WHERE id=?', 
+                     (token, expires, uid))
+        conn.commit()
+        conn.close()
+        send_password_reset(user_dict['email'], token)
+        return jsonify({'message': f'Password reset email sent to {user_dict["email"]}'})
+    
+    elif action == 'set_temp':
+        # Set a temporary password
+        temp_password = data.get('temp_password')
+        if not temp_password or len(temp_password) < 6:
+            conn.close()
+            return jsonify({'error': 'Temporary password must be at least 6 characters'}), 400
+        
+        conn.execute('UPDATE users SET password_hash=?, reset_token=NULL, reset_token_expires=NULL WHERE id=?'.replace('?', '%s') if is_postgres() else 'UPDATE users SET password_hash=?, reset_token=NULL, reset_token_expires=NULL WHERE id=?',
+                     (generate_password_hash(temp_password), uid))
+        conn.commit()
+        conn.close()
+        return jsonify({'message': f'Temporary password set for {user_dict["full_name"]}. Please share it securely.'})
+    
+    conn.close()
+    return jsonify({'error': 'Invalid action'}), 400
 
 # ============================================
 # MAIN
