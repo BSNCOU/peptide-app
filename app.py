@@ -2555,7 +2555,7 @@ def admin_update_order_status(oid):
 @app.route('/api/admin/orders/<int:oid>/edit', methods=['PUT'])
 @admin_required
 def admin_edit_order(oid):
-    """Admin can edit order - add discount code, adjust discount amount, shipping, etc."""
+    """Admin can edit order - adjust quantities, add discount code, adjust discount amount, shipping, etc."""
     data = request.json
     
     conn = get_db()
@@ -2568,14 +2568,68 @@ def admin_edit_order(oid):
         return jsonify({'error': 'Order not found'}), 404
     
     order_dict = dict(order)
-    subtotal = float(order_dict['subtotal'] or 0)
+    old_subtotal = float(order_dict['subtotal'] or 0)
     
     # Track what changed for notes
     changes = []
     
+    # Handle item quantity changes
+    new_subtotal = old_subtotal
+    if 'items' in data and data['items']:
+        new_subtotal = 0
+        
+        for item_update in data['items']:
+            item_id = item_update.get('id')
+            new_qty = int(item_update.get('quantity', 0))
+            
+            # Get current item
+            current_item = c.execute('''
+                SELECT oi.*, p.name, p.stock 
+                FROM order_items oi 
+                JOIN products p ON oi.product_id = p.id 
+                WHERE oi.id = ? AND oi.order_id = ?
+            ''', (item_id, oid)).fetchone()
+            
+            if not current_item:
+                continue
+            
+            item_dict = dict(current_item)
+            old_qty = item_dict['quantity']
+            unit_price = float(item_dict['unit_price'])
+            product_id = item_dict['product_id']
+            product_name = item_dict['name']
+            
+            if new_qty != old_qty:
+                qty_diff = old_qty - new_qty  # positive = returning stock, negative = taking more
+                
+                if new_qty == 0:
+                    # Remove item entirely
+                    c.execute('DELETE FROM order_items WHERE id = ?', (item_id,))
+                    c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (old_qty, product_id))
+                    changes.append(f"Removed {product_name} (was {old_qty})")
+                else:
+                    # Update quantity
+                    c.execute('UPDATE order_items SET quantity = ? WHERE id = ?', (new_qty, item_id))
+                    c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (qty_diff, product_id))
+                    changes.append(f"{product_name}: {old_qty} → {new_qty}")
+                
+                new_subtotal += unit_price * new_qty
+            else:
+                new_subtotal += unit_price * old_qty
+        
+        if abs(new_subtotal - old_subtotal) > 0.01:
+            changes.append(f"Subtotal: ${old_subtotal:.2f} → ${new_subtotal:.2f}")
+    
     # Handle discount code application
     new_discount_code_id = order_dict.get('discount_code_id')
     new_discount_amount = float(order_dict.get('discount_amount') or 0)
+    discount_percent = 0
+    
+    # Check if there's an existing discount code to get its percentage
+    if new_discount_code_id:
+        existing_discount = c.execute('SELECT * FROM discount_codes WHERE id = ?', (new_discount_code_id,)).fetchone()
+        if existing_discount:
+            discount_percent = dict(existing_discount).get('discount_percent') or 0
     
     if 'discount_code' in data and data['discount_code']:
         # Look up the discount code
@@ -2585,10 +2639,11 @@ def admin_edit_order(oid):
         if discount:
             discount_dict = dict(discount)
             new_discount_code_id = discount_dict['id']
+            discount_percent = discount_dict.get('discount_percent') or 0
             
-            # Calculate discount
-            if discount_dict['discount_percent'] and discount_dict['discount_percent'] > 0:
-                new_discount_amount = subtotal * (discount_dict['discount_percent'] / 100)
+            # Calculate discount based on new subtotal
+            if discount_percent > 0:
+                new_discount_amount = new_subtotal * (discount_percent / 100)
             else:
                 new_discount_amount = float(discount_dict['discount_amount'] or 0)
             
@@ -2602,27 +2657,34 @@ def admin_edit_order(oid):
     # Handle manual discount amount override
     elif 'manual_discount' in data:
         manual = float(data['manual_discount'] or 0)
-        if manual != new_discount_amount:
-            changes.append(f"Discount adjusted from ${new_discount_amount:.2f} to ${manual:.2f}")
+        if abs(manual - new_discount_amount) > 0.01:
+            changes.append(f"Discount: ${new_discount_amount:.2f} → ${manual:.2f}")
             new_discount_amount = manual
+    
+    # If subtotal changed and there's a percentage discount, recalculate it
+    elif discount_percent > 0 and abs(new_subtotal - old_subtotal) > 0.01:
+        old_discount = new_discount_amount
+        new_discount_amount = new_subtotal * (discount_percent / 100)
+        if abs(new_discount_amount - old_discount) > 0.01:
+            changes.append(f"Discount recalculated: ${old_discount:.2f} → ${new_discount_amount:.2f}")
     
     # Handle shipping cost adjustment
     new_shipping = float(order_dict.get('shipping_cost') or 0)
     if 'shipping_cost' in data:
         new_ship = float(data['shipping_cost'] or 0)
-        if new_ship != new_shipping:
-            changes.append(f"Shipping adjusted from ${new_shipping:.2f} to ${new_ship:.2f}")
+        if abs(new_ship - new_shipping) > 0.01:
+            changes.append(f"Shipping: ${new_shipping:.2f} → ${new_ship:.2f}")
             new_shipping = new_ship
     
     # Calculate new total
     credit_applied = float(order_dict.get('credit_applied') or 0)
-    new_total = subtotal - new_discount_amount + new_shipping - credit_applied
+    new_total = new_subtotal - new_discount_amount + new_shipping - credit_applied
     if new_total < 0:
         new_total = 0
     
     old_total = float(order_dict.get('total') or 0)
-    if abs(new_total - old_total) > 0.01:
-        changes.append(f"Total changed from ${old_total:.2f} to ${new_total:.2f}")
+    if abs(new_total - old_total) > 0.01 and f"Subtotal:" not in str(changes):
+        changes.append(f"Total: ${old_total:.2f} → ${new_total:.2f}")
     
     # Build admin notes
     admin_notes = order_dict.get('admin_notes') or ''
@@ -2637,6 +2699,7 @@ def admin_edit_order(oid):
     
     # Update the order
     c.execute('''UPDATE orders SET 
+        subtotal = ?,
         discount_code_id = ?,
         discount_amount = ?,
         shipping_cost = ?,
@@ -2644,7 +2707,7 @@ def admin_edit_order(oid):
         admin_notes = ?,
         updated_at = CURRENT_TIMESTAMP
         WHERE id = ?''', 
-        (new_discount_code_id, new_discount_amount, new_shipping, new_total, admin_notes, oid))
+        (new_subtotal, new_discount_code_id, new_discount_amount, new_shipping, new_total, admin_notes, oid))
     
     conn.commit()
     conn.close()

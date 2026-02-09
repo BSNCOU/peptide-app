@@ -2607,53 +2607,93 @@ The Peptide Wizard Team"></textarea>
             const o = state.orders.find(x => x.id === id);
             if (!o) return;
             
+            const itemsHtml = o.items && o.items.length > 0 ? o.items.map(i => `
+                <div class="edit-item-row" style="display: flex; align-items: center; gap: 10px; padding: 10px; border-bottom: 1px solid #e2e8f0;">
+                    <div style="flex: 1;">
+                        <strong>${escapeHtml(i.name || 'Unknown')}</strong>
+                        <div style="font-size: 0.85rem; color: #718096;">${escapeHtml(i.sku || '')} @ $${parseFloat(i.unit_price || 0).toFixed(2)} each</div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                        <label style="font-size: 0.85rem; color: #718096;">Qty:</label>
+                        <input type="number" class="edit-item-qty" data-item-id="${i.id}" data-unit-price="${i.unit_price || 0}" 
+                               value="${i.quantity}" min="0" style="width: 60px; padding: 5px; border: 1px solid #e2e8f0; border-radius: 4px;"
+                               onchange="recalculateEditSubtotal()">
+                    </div>
+                    <div style="width: 80px; text-align: right; font-weight: 500;" id="itemSubtotal_${i.id}">
+                        $${(i.quantity * parseFloat(i.unit_price || 0)).toFixed(2)}
+                    </div>
+                </div>
+            `).join('') : '<p style="color: #718096;">No items</p>';
+            
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
-                    <div class="modal-content" style="max-width: 500px;">
+                    <div class="modal-content" style="max-width: 600px;">
                         <h3>✏️ Edit Order ${escapeHtml(o.order_number)}</h3>
                         <p style="color: #718096; margin-bottom: 20px;">Customer: ${escapeHtml(o.full_name || 'Unknown')}</p>
                         
-                        <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                            <p><strong>Current Order:</strong></p>
-                            <p>Subtotal: $${parseFloat(o.subtotal || 0).toFixed(2)}</p>
-                            ${o.discount_code ? `<p>Discount Code: ${escapeHtml(o.discount_code)}</p>` : ''}
-                            <p>Discount Amount: $${parseFloat(o.discount_amount || 0).toFixed(2)}</p>
-                            <p>Shipping: $${parseFloat(o.shipping_cost || 0).toFixed(2)}</p>
-                            ${parseFloat(o.credit_applied || 0) > 0 ? `<p>Credit Applied: $${parseFloat(o.credit_applied).toFixed(2)}</p>` : ''}
-                            <p style="font-weight: 600;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
+                        <div style="margin-bottom: 20px;">
+                            <h4 style="margin-bottom: 10px;">Order Items</h4>
+                            <p style="font-size: 0.85rem; color: #718096; margin-bottom: 10px;">Set quantity to 0 to remove an item. Stock will be adjusted automatically.</p>
+                            <div style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                                ${itemsHtml}
+                            </div>
+                            <div style="text-align: right; padding: 10px; background: #f7fafc; border-radius: 0 0 8px 8px;">
+                                <span style="color: #718096;">New Subtotal:</span> 
+                                <strong id="editNewSubtotal">$${parseFloat(o.subtotal || 0).toFixed(2)}</strong>
+                            </div>
                         </div>
                         
                         <form onsubmit="submitOrderEdit(event, ${o.id})">
-                            <div class="form-group">
-                                <label>Apply Discount Code</label>
-                                <input type="text" id="editDiscountCode" placeholder="Enter code (e.g. SAVE10)" style="text-transform: uppercase;">
-                                <small style="color: #718096;">Leave blank to keep current or use manual discount below</small>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                                <div class="form-group" style="margin-bottom: 10px;">
+                                    <label>Apply Discount Code</label>
+                                    <input type="text" id="editDiscountCode" placeholder="e.g. SAVE10" style="text-transform: uppercase;">
+                                </div>
+                                
+                                <div class="form-group" style="margin-bottom: 10px;">
+                                    <label>OR Manual Discount ($)</label>
+                                    <input type="number" id="editManualDiscount" step="0.01" min="0" value="${parseFloat(o.discount_amount || 0).toFixed(2)}">
+                                </div>
                             </div>
                             
-                            <div class="form-group">
-                                <label>OR Manual Discount Amount ($)</label>
-                                <input type="number" id="editManualDiscount" step="0.01" min="0" value="${parseFloat(o.discount_amount || 0).toFixed(2)}">
-                                <small style="color: #718096;">Only used if no discount code entered above</small>
-                            </div>
-                            
-                            <div class="form-group">
+                            <div class="form-group" style="margin-bottom: 10px;">
                                 <label>Shipping Cost ($)</label>
-                                <input type="number" id="editShippingCost" step="0.01" min="0" value="${parseFloat(o.shipping_cost || 0).toFixed(2)}">
+                                <input type="number" id="editShippingCost" step="0.01" min="0" value="${parseFloat(o.shipping_cost || 0).toFixed(2)}" style="width: 120px;">
                             </div>
                             
                             <div class="form-group">
-                                <label>Reason for Edit</label>
-                                <input type="text" id="editNote" placeholder="e.g. Customer forgot discount code" required>
+                                <label>Reason for Edit <span style="color: #e53e3e;">*</span></label>
+                                <input type="text" id="editNote" placeholder="e.g. Customer requested quantity change" required>
                             </div>
                             
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
-                                <button type="button" class="btn btn-secondary" onclick="showOpenOrderDetailModal(${o.id})">Cancel</button>
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn btn-success">💾 Save Changes</button>
                             </div>
                         </form>
                     </div>
                 </div>
             `;
+        }
+
+        function recalculateEditSubtotal() {
+            let newSubtotal = 0;
+            document.querySelectorAll('.edit-item-qty').forEach(input => {
+                const qty = parseInt(input.value) || 0;
+                const unitPrice = parseFloat(input.dataset.unitPrice) || 0;
+                const itemId = input.dataset.itemId;
+                const itemTotal = qty * unitPrice;
+                newSubtotal += itemTotal;
+                
+                const subtotalEl = document.getElementById('itemSubtotal_' + itemId);
+                if (subtotalEl) {
+                    subtotalEl.textContent = '$' + itemTotal.toFixed(2);
+                    subtotalEl.style.color = qty === 0 ? '#e53e3e' : 'inherit';
+                    subtotalEl.style.textDecoration = qty === 0 ? 'line-through' : 'none';
+                }
+            });
+            
+            document.getElementById('editNewSubtotal').textContent = '$' + newSubtotal.toFixed(2);
         }
 
         async function submitOrderEdit(e, orderId) {
@@ -2664,9 +2704,19 @@ The Peptide Wizard Team"></textarea>
             const shippingCost = document.getElementById('editShippingCost').value;
             const editNote = document.getElementById('editNote').value.trim();
             
+            // Gather item quantities
+            const items = [];
+            document.querySelectorAll('.edit-item-qty').forEach(input => {
+                items.push({
+                    id: parseInt(input.dataset.itemId),
+                    quantity: parseInt(input.value) || 0
+                });
+            });
+            
             const payload = {
                 edit_note: editNote,
-                shipping_cost: parseFloat(shippingCost) || 0
+                shipping_cost: parseFloat(shippingCost) || 0,
+                items: items
             };
             
             // If discount code entered, use that; otherwise use manual discount
