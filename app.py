@@ -2723,25 +2723,6 @@ def admin_get_notifications():
     conn.close()
     return jsonify([dict(n) for n in notifs])
 
-@app.route('/api/admin/reports/discounts', methods=['GET'])
-@admin_required
-def admin_reports_discounts():
-    conn = get_db()
-    report = conn.execute('''
-        SELECT 
-            dc.code,
-            COUNT(o.id) as order_count,
-            COALESCE(SUM(o.total), 0) as total_sales,
-            COALESCE(SUM(o.discount_amount), 0) as total_discounted
-        FROM discount_codes dc
-        LEFT JOIN orders o ON o.discount_code_id = dc.id
-        GROUP BY dc.id, dc.code
-        HAVING COUNT(o.id) > 0
-        ORDER BY total_sales DESC
-    ''').fetchall()
-    conn.close()
-    return jsonify([dict(r) for r in report])
-
 # ============================================
 # RETURNS & CREDIT SYSTEM
 # ============================================
