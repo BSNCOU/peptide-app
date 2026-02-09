@@ -241,6 +241,7 @@
                     <button onclick="showView('products')" class="${state.currentView === 'products' ? 'active' : ''}">Products</button>
                     <button onclick="showView('cart')" class="${state.currentView === 'cart' ? 'active' : ''}">Cart${cartCount > 0 ? `<span class="cart-badge">${cartCount}</span>` : ''}</button>
                     <button onclick="showView('orders')" class="${state.currentView === 'orders' ? 'active' : ''}">My Orders</button>
+                    <button onclick="showView('credit')" class="${state.currentView === 'credit' ? 'active' : ''}">💰 My Credit</button>
                     <button onclick="showView('returns')" class="${state.currentView === 'returns' ? 'active' : ''}">Returns</button>
                     ${state.user.is_admin ? '<button onclick="window.location.href=\'/admin\'">Admin</button>' : ''}
                     <button onclick="logout()">Logout</button>
@@ -275,6 +276,7 @@
                 case 'products': renderProducts(); break;
                 case 'cart': renderCart(); break;
                 case 'orders': renderOrders(); break;
+                case 'credit': renderMyCredit(); break;
                 case 'returns': renderReturns(); break;
             }
         }
@@ -1225,6 +1227,120 @@
                 closeModal();
             } catch (err) {
                 showAlert(err.message);
+            }
+        }
+
+        // ============================================
+        // MY CREDIT SECTION
+        // ============================================
+        
+        async function renderMyCredit() {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="card">
+                    <h2>💰 My Credit & Earnings</h2>
+                    
+                    <!-- Credit Balance -->
+                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 25px; border-radius: 12px; margin-bottom: 25px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                            <div>
+                                <div style="font-size: 0.9rem; opacity: 0.9;">Available Store Credit</div>
+                                <div id="myCreditBalance" style="font-size: 2.5rem; font-weight: 700;">$0.00</div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 0.85rem; opacity: 0.9;">Automatically applied at checkout</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Referral Code -->
+                    <div id="myReferralCodeSection" class="hidden" style="background: #f7fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-bottom: 25px;">
+                        <h3 style="margin-bottom: 10px; font-size: 1.1rem;">🎁 Your Referral Code</h3>
+                        <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                            <div style="background: white; padding: 15px 25px; border-radius: 8px; border: 2px dashed #4299e1;">
+                                <span id="myReferralCode" style="font-size: 1.5rem; font-weight: 700; color: #2b6cb0; letter-spacing: 2px;">-</span>
+                            </div>
+                            <div style="font-size: 0.9rem; color: #4a5568;">
+                                <p style="margin-bottom: 5px;">Share this code with friends!</p>
+                                <p id="myReferralDetails" style="color: #718096;">-</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Earnings Summary -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 25px;">
+                        <div style="background: #c6f6d5; padding: 20px; border-radius: 10px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700; color: #276749;" id="totalEarned">$0.00</div>
+                            <div style="font-size: 0.85rem; color: #38a169;">Total Earned</div>
+                        </div>
+                        <div style="background: #bee3f8; padding: 20px; border-radius: 10px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700; color: #2b6cb0;" id="totalUsed">$0.00</div>
+                            <div style="font-size: 0.85rem; color: #3182ce;">Total Used</div>
+                        </div>
+                        <div style="background: #fefcbf; padding: 20px; border-radius: 10px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700; color: #975a16;" id="referralCount">0</div>
+                            <div style="font-size: 0.85rem; color: #b7791f;">Referrals</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Transaction History -->
+                    <div>
+                        <h3 style="margin-bottom: 15px; font-size: 1.1rem;">Transaction History</h3>
+                        <div id="creditTransactionsList"><p style="color: #718096;">Loading...</p></div>
+                    </div>
+                </div>
+            `;
+            
+            await loadMyCreditInfo();
+        }
+
+        async function loadMyCreditInfo() {
+            try {
+                const data = await api('/api/user/credit-history');
+                
+                // Update balance
+                document.getElementById('myCreditBalance').textContent = '$' + parseFloat(data.balance || 0).toFixed(2);
+                
+                // Update summary stats
+                document.getElementById('totalEarned').textContent = '$' + parseFloat(data.total_earned || 0).toFixed(2);
+                document.getElementById('totalUsed').textContent = '$' + parseFloat(data.total_used || 0).toFixed(2);
+                document.getElementById('referralCount').textContent = data.referral_count || 0;
+                
+                // Show referral code if they have one
+                if (data.referral_code) {
+                    document.getElementById('myReferralCodeSection').classList.remove('hidden');
+                    document.getElementById('myReferralCode').textContent = data.referral_code;
+                    document.getElementById('myReferralDetails').textContent = 
+                        `${data.discount_percent || 10}% off for friends, ${data.commission_percent || 20}% credit for you`;
+                }
+                
+                // Show transaction history
+                const container = document.getElementById('creditTransactionsList');
+                
+                if (!data.transactions || data.transactions.length === 0) {
+                    container.innerHTML = '<p style="color: #718096; text-align: center; padding: 20px;">No transactions yet. Earn credit by sharing your referral code!</p>';
+                    return;
+                }
+                
+                container.innerHTML = data.transactions.map(t => {
+                    const isEarning = t.type === 'earned' || t.type === 'credit' || t.type === 'adjustment' && t.amount > 0;
+                    const amount = parseFloat(t.amount || 0);
+                    
+                    return `
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #e2e8f0;">
+                            <div>
+                                <div style="font-weight: 500;">${escapeHtml(t.description || t.type)}</div>
+                                <div style="font-size: 0.85rem; color: #718096;">${new Date(t.created_at).toLocaleDateString()}</div>
+                            </div>
+                            <div style="font-weight: 600; font-size: 1.1rem; color: ${isEarning ? '#38a169' : '#e53e3e'};">
+                                ${isEarning ? '+' : ''}$${Math.abs(amount).toFixed(2)}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+            } catch (err) {
+                console.error('Error loading credit info:', err);
+                document.getElementById('creditTransactionsList').innerHTML = '<p style="color: #e53e3e;">Error loading credit history</p>';
             }
         }
 

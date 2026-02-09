@@ -1269,6 +1269,73 @@ def get_my_referrals():
         'transactions': [dict(t) for t in transactions]
     })
 
+
+@app.route('/api/user/credit-history', methods=['GET'])
+@login_required
+def get_credit_history():
+    """Get user's complete credit history including their referral code if they have one"""
+    conn = get_db()
+    
+    # Get user's credit balance
+    user = conn.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    
+    # Get their referral/discount code if they have one
+    referral_code = conn.execute('''
+        SELECT code, discount_percent, commission_percent 
+        FROM discount_codes 
+        WHERE referrer_user_id = ? AND active = 1
+    ''', (session['user_id'],)).fetchone()
+    
+    # Get all transactions
+    transactions = conn.execute('''
+        SELECT rt.*, o.order_number 
+        FROM referral_transactions rt 
+        LEFT JOIN orders o ON rt.order_id = o.id
+        WHERE rt.user_id = ?
+        ORDER BY rt.created_at DESC
+        LIMIT 50
+    ''', (session['user_id'],)).fetchall()
+    
+    # Get totals and counts
+    totals = conn.execute('''
+        SELECT 
+            COALESCE(SUM(CASE WHEN type = 'earned' THEN amount ELSE 0 END), 0) as total_earned,
+            COALESCE(SUM(CASE WHEN type = 'used' THEN ABS(amount) ELSE 0 END), 0) as total_used,
+            COALESCE(SUM(CASE WHEN type = 'credit' OR type = 'adjustment' THEN amount ELSE 0 END), 0) as total_adjustments,
+            COUNT(CASE WHEN type = 'earned' THEN 1 END) as referral_count
+        FROM referral_transactions WHERE user_id = ?
+    ''', (session['user_id'],)).fetchone()
+    
+    conn.close()
+    
+    result = {
+        'balance': float(user['referral_credit'] or 0) if user else 0,
+        'total_earned': float(totals['total_earned'] or 0) + float(totals['total_adjustments'] or 0),
+        'total_used': float(totals['total_used'] or 0),
+        'referral_count': totals['referral_count'] or 0,
+        'transactions': [dict(t) for t in transactions]
+    }
+    
+    if referral_code:
+        result['referral_code'] = referral_code['code']
+        result['discount_percent'] = referral_code['discount_percent']
+        result['commission_percent'] = referral_code['commission_percent']
+    
+    return jsonify(result)
+
+
+@app.route('/api/user/referral-info', methods=['GET'])
+@login_required
+def get_user_referral_info():
+    """Simple endpoint to get user's credit balance"""
+    conn = get_db()
+    user = conn.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    conn.close()
+    
+    return jsonify({
+        'credit_balance': float(user['referral_credit'] or 0) if user else 0
+    })
+
 @app.route('/api/confirm-first-login', methods=['POST'])
 @login_required
 def confirm_first_login():
