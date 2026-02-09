@@ -2551,6 +2551,112 @@ def admin_update_order_status(oid):
     
     return jsonify({'message': 'Status updated'})
 
+
+@app.route('/api/admin/orders/<int:oid>/edit', methods=['PUT'])
+@admin_required
+def admin_edit_order(oid):
+    """Admin can edit order - add discount code, adjust discount amount, shipping, etc."""
+    data = request.json
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Get current order
+    order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    
+    order_dict = dict(order)
+    subtotal = float(order_dict['subtotal'] or 0)
+    
+    # Track what changed for notes
+    changes = []
+    
+    # Handle discount code application
+    new_discount_code_id = order_dict.get('discount_code_id')
+    new_discount_amount = float(order_dict.get('discount_amount') or 0)
+    
+    if 'discount_code' in data and data['discount_code']:
+        # Look up the discount code
+        code = data['discount_code'].upper().strip()
+        discount = c.execute('''SELECT * FROM discount_codes WHERE code=? AND active=1''', (code,)).fetchone()
+        
+        if discount:
+            discount_dict = dict(discount)
+            new_discount_code_id = discount_dict['id']
+            
+            # Calculate discount
+            if discount_dict['discount_percent'] and discount_dict['discount_percent'] > 0:
+                new_discount_amount = subtotal * (discount_dict['discount_percent'] / 100)
+            else:
+                new_discount_amount = float(discount_dict['discount_amount'] or 0)
+            
+            # Increment usage count
+            c.execute('UPDATE discount_codes SET times_used = times_used + 1 WHERE id = ?', (discount_dict['id'],))
+            changes.append(f"Applied discount code {code}")
+        else:
+            conn.close()
+            return jsonify({'error': f'Discount code "{code}" not found or inactive'}), 400
+    
+    # Handle manual discount amount override
+    elif 'manual_discount' in data:
+        manual = float(data['manual_discount'] or 0)
+        if manual != new_discount_amount:
+            changes.append(f"Discount adjusted from ${new_discount_amount:.2f} to ${manual:.2f}")
+            new_discount_amount = manual
+    
+    # Handle shipping cost adjustment
+    new_shipping = float(order_dict.get('shipping_cost') or 0)
+    if 'shipping_cost' in data:
+        new_ship = float(data['shipping_cost'] or 0)
+        if new_ship != new_shipping:
+            changes.append(f"Shipping adjusted from ${new_shipping:.2f} to ${new_ship:.2f}")
+            new_shipping = new_ship
+    
+    # Calculate new total
+    credit_applied = float(order_dict.get('credit_applied') or 0)
+    new_total = subtotal - new_discount_amount + new_shipping - credit_applied
+    if new_total < 0:
+        new_total = 0
+    
+    old_total = float(order_dict.get('total') or 0)
+    if abs(new_total - old_total) > 0.01:
+        changes.append(f"Total changed from ${old_total:.2f} to ${new_total:.2f}")
+    
+    # Build admin notes
+    admin_notes = order_dict.get('admin_notes') or ''
+    edit_note = data.get('edit_note', '')
+    
+    if changes:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+        change_log = f"\n[EDITED {timestamp}] " + "; ".join(changes)
+        if edit_note:
+            change_log += f" - Note: {edit_note}"
+        admin_notes = (admin_notes + change_log).strip()
+    
+    # Update the order
+    c.execute('''UPDATE orders SET 
+        discount_code_id = ?,
+        discount_amount = ?,
+        shipping_cost = ?,
+        total = ?,
+        admin_notes = ?,
+        updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?''', 
+        (new_discount_code_id, new_discount_amount, new_shipping, new_total, admin_notes, oid))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        'message': 'Order updated successfully',
+        'changes': changes,
+        'new_total': new_total,
+        'discount_amount': new_discount_amount,
+        'shipping_cost': new_shipping
+    })
+
 @app.route('/api/admin/users', methods=['GET'])
 @admin_required
 def admin_get_users():

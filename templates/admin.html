@@ -1237,14 +1237,23 @@ BC10,8.00</pre>
                                 `).join('') : '<tr><td colspan="4">No items found</td></tr>'}
                             </tbody>
                         </table>
-                        <div style="text-align: right; margin-top: 15px;">
+                        <div style="text-align: right; margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px;">
                             <p>Subtotal: $${parseFloat(o.subtotal || 0).toFixed(2)}</p>
+                            ${o.discount_code ? `<p style="color: #2b6cb0;">Discount Code: <strong>${escapeHtml(o.discount_code)}</strong></p>` : ''}
                             ${parseFloat(o.discount_amount || 0) > 0 ? `<p style="color: #38a169;">Discount: -$${parseFloat(o.discount_amount).toFixed(2)}</p>` : ''}
                             ${parseFloat(o.shipping_cost || 0) > 0 ? `<p>Shipping: $${parseFloat(o.shipping_cost).toFixed(2)}</p>` : ''}
-                            <p style="font-size: 1.1rem; font-weight: 600;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
+                            ${parseFloat(o.credit_applied || 0) > 0 ? `<p style="color: #805ad5;">Store Credit: -$${parseFloat(o.credit_applied).toFixed(2)}</p>` : ''}
+                            <p style="font-size: 1.2rem; font-weight: 700; margin-top: 10px; padding-top: 10px; border-top: 2px solid #e2e8f0;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
                         </div>
-                        <div style="margin-top: 20px;">
+                        ${o.admin_notes ? `
+                            <div style="margin-top: 15px; padding: 10px; background: #fffbeb; border-left: 3px solid #f6e05e; border-radius: 4px;">
+                                <strong>Admin Notes:</strong><br>
+                                <span style="white-space: pre-line; font-size: 0.9rem;">${escapeHtml(o.admin_notes)}</span>
+                            </div>
+                        ` : ''}
+                        <div style="margin-top: 20px; display: flex; gap: 10px;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            <button class="btn" onclick="showEditOrderModal(${o.id})">✏️ Edit Order</button>
                         </div>
                     </div>
                 </div>
@@ -2585,12 +2594,107 @@ The Peptide Wizard Team"></textarea>
                         </div>
                         <div style="display: flex; gap: 10px; margin-top: 20px;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            <button class="btn" onclick="showEditOrderModal(${o.id})">✏️ Edit Order</button>
                             <button class="btn btn-success" onclick="markOrderFulfilled(${o.id}); closeModal();">✓ Mark as Fulfilled</button>
                             <button class="btn btn-danger" onclick="cancelOrder(${o.id}); closeModal();">✗ Cancel Order</button>
                         </div>
                     </div>
                 </div>
             `;
+        }
+
+        function showEditOrderModal(id) {
+            const o = state.orders.find(x => x.id === id);
+            if (!o) return;
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 500px;">
+                        <h3>✏️ Edit Order ${escapeHtml(o.order_number)}</h3>
+                        <p style="color: #718096; margin-bottom: 20px;">Customer: ${escapeHtml(o.full_name || 'Unknown')}</p>
+                        
+                        <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                            <p><strong>Current Order:</strong></p>
+                            <p>Subtotal: $${parseFloat(o.subtotal || 0).toFixed(2)}</p>
+                            ${o.discount_code ? `<p>Discount Code: ${escapeHtml(o.discount_code)}</p>` : ''}
+                            <p>Discount Amount: $${parseFloat(o.discount_amount || 0).toFixed(2)}</p>
+                            <p>Shipping: $${parseFloat(o.shipping_cost || 0).toFixed(2)}</p>
+                            ${parseFloat(o.credit_applied || 0) > 0 ? `<p>Credit Applied: $${parseFloat(o.credit_applied).toFixed(2)}</p>` : ''}
+                            <p style="font-weight: 600;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
+                        </div>
+                        
+                        <form onsubmit="submitOrderEdit(event, ${o.id})">
+                            <div class="form-group">
+                                <label>Apply Discount Code</label>
+                                <input type="text" id="editDiscountCode" placeholder="Enter code (e.g. SAVE10)" style="text-transform: uppercase;">
+                                <small style="color: #718096;">Leave blank to keep current or use manual discount below</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>OR Manual Discount Amount ($)</label>
+                                <input type="number" id="editManualDiscount" step="0.01" min="0" value="${parseFloat(o.discount_amount || 0).toFixed(2)}">
+                                <small style="color: #718096;">Only used if no discount code entered above</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Shipping Cost ($)</label>
+                                <input type="number" id="editShippingCost" step="0.01" min="0" value="${parseFloat(o.shipping_cost || 0).toFixed(2)}">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Reason for Edit</label>
+                                <input type="text" id="editNote" placeholder="e.g. Customer forgot discount code" required>
+                            </div>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="button" class="btn btn-secondary" onclick="showOpenOrderDetailModal(${o.id})">Cancel</button>
+                                <button type="submit" class="btn btn-success">💾 Save Changes</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitOrderEdit(e, orderId) {
+            e.preventDefault();
+            
+            const discountCode = document.getElementById('editDiscountCode').value.trim();
+            const manualDiscount = document.getElementById('editManualDiscount').value;
+            const shippingCost = document.getElementById('editShippingCost').value;
+            const editNote = document.getElementById('editNote').value.trim();
+            
+            const payload = {
+                edit_note: editNote,
+                shipping_cost: parseFloat(shippingCost) || 0
+            };
+            
+            // If discount code entered, use that; otherwise use manual discount
+            if (discountCode) {
+                payload.discount_code = discountCode;
+            } else {
+                payload.manual_discount = parseFloat(manualDiscount) || 0;
+            }
+            
+            try {
+                const result = await api('/api/admin/orders/' + orderId + '/edit', {
+                    method: 'PUT',
+                    body: JSON.stringify(payload)
+                });
+                
+                showAlert('Order updated! New total: $' + parseFloat(result.new_total).toFixed(2), 'success');
+                closeModal();
+                
+                // Reload orders to reflect changes
+                if (state.currentTab === 'openOrders') {
+                    loadOpenOrders();
+                } else {
+                    loadOrders();
+                }
+                
+            } catch (err) {
+                showAlert('Error: ' + err.message, 'error');
+            }
         }
 
         async function markOrderFulfilled(id) {
