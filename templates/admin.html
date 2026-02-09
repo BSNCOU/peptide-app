@@ -2485,7 +2485,7 @@ The Peptide Wizard Team"></textarea>
                                 ${escapeHtml(o.email || o.customer_email || '-')} | 
                                 ${escapeHtml(o.phone || o.customer_phone || '-')}
                             </div>
-                            <div>Date: ${new Date(o.created_at).toLocaleString()} | Total: $${parseFloat(o.total || 0).toFixed(2)}</div>
+                            <div>Date: ${new Date(o.created_at).toLocaleString()} | Total: $${parseFloat(o.total || 0).toFixed(2)}${o.discount_code ? ' | <strong>Code: ' + escapeHtml(o.discount_code) + '</strong>' : ''}${parseFloat(o.discount_amount || 0) > 0 ? ' (Discount: -$' + parseFloat(o.discount_amount).toFixed(2) + ')' : ''}</div>
                         </div>
                         <div class="items">
                             <table>
