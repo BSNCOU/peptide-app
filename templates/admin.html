@@ -2552,16 +2552,17 @@ The Peptide Wizard Team"></textarea>
                             </div>
                             <div>
                                 <p><strong>Status:</strong> <span class="status-badge status-${o.status}">${o.status}</span></p>
+                                <p><strong>Delivery:</strong> ${o.delivery_method === 'ship' ? '📦 Ship' : '🏪 Pickup'}</p>
                                 <p><strong>Date:</strong> ${new Date(o.created_at).toLocaleString()}</p>
                             </div>
                         </div>
-                        ${o.shipping_address ? `
+                        ${o.shipping_address && o.delivery_method === 'ship' ? `
                             <p><strong>Shipping Address:</strong></p>
                             <p style="background: #f7fafc; padding: 10px; border-radius: 6px; margin-bottom: 15px; white-space: pre-line;">${o.shipping_address}</p>
                         ` : ''}
                         <h4 style="margin-bottom: 10px;">Items to Ship</h4>
                         <table>
-                            <thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Price</th></tr></thead>
+                            <thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Unit Price</th><th>Subtotal</th></tr></thead>
                             <tbody>
                                 ${o.items && o.items.length > 0 ? o.items.map(i => `
                                     <tr>
@@ -2569,12 +2570,18 @@ The Peptide Wizard Team"></textarea>
                                         <td>${i.sku || '-'}</td>
                                         <td><strong>${i.quantity}</strong></td>
                                         <td>$${parseFloat(i.unit_price || i.price_each || 0).toFixed(2)}</td>
+                                        <td>$${(i.quantity * parseFloat(i.unit_price || i.price_each || 0)).toFixed(2)}</td>
                                     </tr>
-                                `).join('') : '<tr><td colspan="4">No items found</td></tr>'}
+                                `).join('') : '<tr><td colspan="5">No items found</td></tr>'}
                             </tbody>
                         </table>
-                        <div style="text-align: right; margin-top: 15px;">
-                            <p style="font-size: 1.1rem; font-weight: 600;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
+                        <div style="text-align: right; margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px;">
+                            <p>Subtotal: $${parseFloat(o.subtotal || 0).toFixed(2)}</p>
+                            ${o.discount_code ? `<p style="color: #2b6cb0;">Discount Code: <strong>${escapeHtml(o.discount_code)}</strong></p>` : ''}
+                            ${parseFloat(o.discount_amount || 0) > 0 ? `<p style="color: #38a169;">Discount: -$${parseFloat(o.discount_amount).toFixed(2)}</p>` : ''}
+                            ${parseFloat(o.shipping_cost || 0) > 0 ? `<p>Shipping: $${parseFloat(o.shipping_cost).toFixed(2)}</p>` : ''}
+                            ${parseFloat(o.credit_applied || 0) > 0 ? `<p style="color: #805ad5;">Store Credit: -$${parseFloat(o.credit_applied).toFixed(2)}</p>` : ''}
+                            <p style="font-size: 1.2rem; font-weight: 700; margin-top: 10px; padding-top: 10px; border-top: 2px solid #e2e8f0;">Total: $${parseFloat(o.total || 0).toFixed(2)}</p>
                         </div>
                         <div style="display: flex; gap: 10px; margin-top: 20px;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
