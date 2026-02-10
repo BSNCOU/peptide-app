@@ -3004,7 +3004,8 @@ The Peptide Wizard Team"></textarea>
                 const po = await api(`/api/admin/po/${poId}`);
                 state.currentPO = po;
                 
-                const isEditable = po.status === 'draft' || po.status === 'open';
+                // Allow editing for draft, open, and closed POs
+                const isEditable = po.status === 'draft' || po.status === 'open' || po.status === 'closed';
                 const totalCost = po.items.reduce((sum, i) => sum + (i.quantity_ordered * i.unit_cost), 0);
                 
                 document.getElementById('modalContainer').innerHTML = `
@@ -3083,6 +3084,7 @@ The Peptide Wizard Team"></textarea>
                                 ${po.status === 'submitted' || po.status === 'partial' ? `<button class="btn" onclick="showBackorderText(${po.id})">📱 Backorder Follow-up</button>` : ''}
                                 ${po.status !== 'closed' && po.status !== 'draft' ? `<button class="btn btn-warning" onclick="closePO(${po.id})">Close PO</button>` : ''}
                                 ${po.status === 'closed' ? `<button class="btn" onclick="reopenPO(${po.id})">Reopen PO</button>` : ''}
+                                <button class="btn btn-danger" onclick="deletePO(${po.id})">🗑️ Delete PO</button>
                             </div>
                         </div>
                     </div>
@@ -3321,6 +3323,18 @@ The Peptide Wizard Team"></textarea>
                 await api(`/api/admin/po/${poId}/reopen`, { method: 'POST' });
                 showAlert('PO reopened', 'success');
                 showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function deletePO(poId) {
+            if (!confirm('⚠️ DELETE this Purchase Order?\n\nThis will permanently remove the PO and all its items.\nThis action cannot be undone.')) return;
+            try {
+                await api(`/api/admin/po/${poId}`, { method: 'DELETE' });
+                showAlert('PO deleted', 'success');
+                closeModal();
+                loadPurchaseOrders();
             } catch (err) {
                 showAlert(err.message);
             }

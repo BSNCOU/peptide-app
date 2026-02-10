@@ -3739,14 +3739,14 @@ def add_po_item(po_id):
     conn = get_db()
     c = conn.cursor()
     
-    # Verify PO exists and is in draft status
+    # Verify PO exists and is editable (draft, open, or closed)
     po = c.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
     if not po:
         conn.close()
         return jsonify({'error': 'PO not found'}), 404
-    if dict(po)['status'] not in ['draft', 'open']:
+    if dict(po)['status'] not in ['draft', 'open', 'closed']:
         conn.close()
-        return jsonify({'error': 'Cannot modify a submitted or closed PO'}), 400
+        return jsonify({'error': 'Cannot modify a submitted PO - close it first to edit'}), 400
     
     # Get product cost
     product = c.execute('SELECT cost FROM products WHERE id = ?', (data['product_id'],)).fetchone()
@@ -3908,6 +3908,24 @@ def reopen_purchase_order(po_id):
     conn.close()
     
     return jsonify({'message': 'PO reopened'})
+
+
+@app.route('/api/admin/po/<int:po_id>', methods=['DELETE'])
+@admin_required
+def delete_purchase_order(po_id):
+    """Delete a PO and its items"""
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Delete items first
+    c.execute('DELETE FROM purchase_order_items WHERE po_id = ?', (po_id,))
+    # Delete the PO
+    c.execute('DELETE FROM purchase_orders WHERE id = ?', (po_id,))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'PO deleted'})
 
 
 @app.route('/api/admin/po/<int:po_id>/whatsapp', methods=['GET'])
