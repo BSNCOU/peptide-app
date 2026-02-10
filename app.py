@@ -3941,7 +3941,7 @@ def get_po_whatsapp_text(po_id):
     
     po_dict = dict(po)
     items = conn.execute('''
-        SELECT poi.*, p.name, p.sku 
+        SELECT poi.*, p.name, p.sku, p.supplier_pack_size 
         FROM purchase_order_items poi 
         JOIN products p ON poi.product_id = p.id 
         WHERE poi.po_id = ?
@@ -3963,10 +3963,12 @@ def get_po_whatsapp_text(po_id):
     for item in items:
         i = dict(item)
         qty = i['quantity_ordered']
-        cost = i['unit_cost'] * qty
-        total_cost += cost
+        pack_size = i.get('supplier_pack_size') or 1
+        total_units = qty * pack_size
+        line_cost = total_units * (i['unit_cost'] or 0)
+        total_cost += line_cost
         lines.append(f"• {i['sku']} - {i['name']}")
-        lines.append(f"  Qty: {qty} @ ${i['unit_cost']:.2f} = ${cost:.2f}")
+        lines.append(f"  Qty: {qty} packs × {pack_size} = {total_units} units @ ${i['unit_cost']:.2f} = ${line_cost:.2f}")
     
     lines.extend([
         "─" * 20,
@@ -3994,7 +3996,7 @@ def get_backorder_whatsapp_text(po_id):
     
     # Get items that are not fully received
     items = conn.execute('''
-        SELECT poi.*, p.name, p.sku 
+        SELECT poi.*, p.name, p.sku, p.supplier_pack_size 
         FROM purchase_order_items poi 
         JOIN products p ON poi.product_id = p.id 
         WHERE poi.po_id = ? AND poi.quantity_received < poi.quantity_ordered
@@ -4015,9 +4017,11 @@ def get_backorder_whatsapp_text(po_id):
     
     for item in items:
         i = dict(item)
-        outstanding = i['quantity_ordered'] - i['quantity_received']
+        pack_size = i.get('supplier_pack_size') or 1
+        outstanding_packs = i['quantity_ordered'] - i['quantity_received']
+        outstanding_units = outstanding_packs * pack_size
         lines.append(f"• {i['sku']} - {i['name']}")
-        lines.append(f"  Ordered: {i['quantity_ordered']} | Received: {i['quantity_received']} | *Need: {outstanding}*")
+        lines.append(f"  Ordered: {i['quantity_ordered']} packs | Received: {i['quantity_received']} packs | *Need: {outstanding_packs} packs ({outstanding_units} units)*")
     
     lines.extend([
         "─" * 20,

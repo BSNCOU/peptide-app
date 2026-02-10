@@ -3006,7 +3006,8 @@ The Peptide Wizard Team"></textarea>
                 
                 // Allow editing for draft, open, and closed POs
                 const isEditable = po.status === 'draft' || po.status === 'open' || po.status === 'closed';
-                const totalCost = po.items.reduce((sum, i) => sum + (i.quantity_ordered * i.unit_cost), 0);
+                // Total = packs × pack_size × unit_cost
+                const totalCost = po.items.reduce((sum, i) => sum + (i.quantity_ordered * (i.supplier_pack_size || 1) * (i.unit_cost || 0)), 0);
                 
                 document.getElementById('modalContainer').innerHTML = `
                     <div class="modal" onclick="if(event.target===this)closeModal()">
@@ -3054,6 +3055,7 @@ The Peptide Wizard Team"></textarea>
                                                 const packSize = i.supplier_pack_size || 1;
                                                 const totalUnits = i.quantity_ordered * packSize;
                                                 const receivedUnits = i.quantity_received * packSize;
+                                                const lineCost = i.quantity_ordered * packSize * (i.unit_cost || 0);
                                                 return `
                                                 <tr style="${i.quantity_received >= i.quantity_ordered ? 'background: #c6f6d5;' : i.quantity_received > 0 ? 'background: #fefcbf;' : ''}">
                                                     <td><strong>${escapeHtml(i.sku)}</strong></td>
@@ -3063,7 +3065,7 @@ The Peptide Wizard Team"></textarea>
                                                     <td><strong>${totalUnits}</strong></td>
                                                     <td>${i.quantity_received} packs (${receivedUnits} units)</td>
                                                     <td>$${parseFloat(i.unit_cost || 0).toFixed(2)}</td>
-                                                    <td>$${(i.quantity_ordered * (i.unit_cost || 0)).toFixed(2)}</td>
+                                                    <td>$${lineCost.toFixed(2)}</td>
                                                     ${isEditable ? `<td><button class="btn btn-danger btn-small" onclick="removePOItem(${po.id}, ${i.id})">✕</button></td>` : ''}
                                                 </tr>
                                             `}).join('')
