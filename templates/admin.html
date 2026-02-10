@@ -115,6 +115,7 @@
                 <button onclick="showTab('inventory')">Inventory</button>
                 <button onclick="showTab('orders')">All Orders</button>
                 <button onclick="showTab('openOrders')">Open Orders</button>
+                <button onclick="showTab('purchaseOrders')">📦 Purchase Orders</button>
                 <button onclick="showTab('returns')">🔄 Returns</button>
                 <button onclick="showTab('discounts')">Discount Codes</button>
                 <button onclick="showTab('reports')">Reports</button>
@@ -143,7 +144,10 @@
             showInactiveProducts: false,
             currentReferrerReport: null,
             returns: [],
-            returnsFilter: ''
+            returnsFilter: '',
+            purchaseOrders: [],
+            currentPO: null,
+            poFilter: ''
         };
         
         // Global HTML escape helper
@@ -234,7 +238,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','returns','discounts','reports','users','email','notifications'];
+            const tabList = ['products','inventory','orders','openOrders','purchaseOrders','returns','discounts','reports','users','email','notifications'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -242,6 +246,7 @@
                 case 'inventory': loadInventory(); break;
                 case 'orders': loadOrders(); break;
                 case 'openOrders': loadOpenOrders(); break;
+                case 'purchaseOrders': loadPurchaseOrders(); break;
                 case 'returns': loadReturns(); break;
                 case 'discounts': loadDiscounts(); break;
                 case 'reports': renderReports(); break;
@@ -2771,6 +2776,522 @@ The Peptide Wizard Team"></textarea>
                 showAlert('Order cancelled!', 'success');
                 loadOpenOrders();
                 loadStats();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        // ============================================
+        // PURCHASE ORDERS
+        // ============================================
+        
+        async function loadPurchaseOrders() {
+            try {
+                const url = state.poFilter ? `/api/admin/po?status=${state.poFilter}` : '/api/admin/po';
+                state.purchaseOrders = await api(url);
+                renderPurchaseOrders();
+            } catch (e) {
+                showAlert('Failed to load purchase orders: ' + e.message);
+            }
+        }
+
+        function renderPurchaseOrders() {
+            const content = document.getElementById('tabContent');
+            const pos = state.purchaseOrders;
+            
+            content.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px;">
+                    <h3 style="margin: 0;">📦 Purchase Orders</h3>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select onchange="state.poFilter=this.value;loadPurchaseOrders()" style="padding: 8px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                            <option value="">All POs</option>
+                            <option value="draft" ${state.poFilter==='draft'?'selected':''}>Draft</option>
+                            <option value="submitted" ${state.poFilter==='submitted'?'selected':''}>Submitted</option>
+                            <option value="partial" ${state.poFilter==='partial'?'selected':''}>Partial</option>
+                            <option value="received" ${state.poFilter==='received'?'selected':''}>Received</option>
+                            <option value="closed" ${state.poFilter==='closed'?'selected':''}>Closed</option>
+                        </select>
+                        <button class="btn" onclick="showCreatePOModal()">+ New PO</button>
+                        <button class="btn btn-secondary" onclick="showQuickPOFromLowStock()">⚡ Quick PO from Low Stock</button>
+                    </div>
+                </div>
+                
+                ${pos.length === 0 ? '<p style="text-align: center; color: #718096; padding: 40px;">No purchase orders found.</p>' : `
+                    <div style="overflow-x: auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>PO Number</th>
+                                    <th>Supplier</th>
+                                    <th>Items</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${pos.map(po => {
+                                    const statusColors = {
+                                        draft: '#718096',
+                                        submitted: '#3182ce',
+                                        partial: '#d69e2e',
+                                        received: '#38a169',
+                                        closed: '#a0aec0',
+                                        open: '#805ad5'
+                                    };
+                                    return `
+                                        <tr>
+                                            <td><strong>${escapeHtml(po.po_number)}</strong></td>
+                                            <td>${escapeHtml(po.supplier_name || 'Primary Supplier')}</td>
+                                            <td>${po.items ? po.items.length : 0} items</td>
+                                            <td><span style="background: ${statusColors[po.status] || '#718096'}; color: white; padding: 3px 10px; border-radius: 12px; font-size: 0.8rem;">${po.status.toUpperCase()}</span></td>
+                                            <td>${new Date(po.created_at).toLocaleDateString()}</td>
+                                            <td class="actions">
+                                                <button class="btn btn-small" onclick="showPODetail(${po.id})">View</button>
+                                                ${po.status === 'draft' || po.status === 'open' ? `<button class="btn btn-small btn-success" onclick="showPOWhatsApp(${po.id})">📱 WhatsApp</button>` : ''}
+                                                ${po.status === 'submitted' || po.status === 'partial' ? `<button class="btn btn-small btn-success" onclick="showReceivePO(${po.id})">📥 Receive</button>` : ''}
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `}
+            `;
+        }
+
+        function showCreatePOModal() {
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 400px;">
+                        <h3>📦 Create New Purchase Order</h3>
+                        <form onsubmit="createPO(event)">
+                            <div class="form-group">
+                                <label>Supplier Name</label>
+                                <input type="text" id="poSupplier" value="Primary Supplier" placeholder="Supplier name">
+                            </div>
+                            <div class="form-group">
+                                <label>Notes</label>
+                                <textarea id="poNotes" rows="2" placeholder="Optional notes"></textarea>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                                <button type="submit" class="btn btn-success">Create PO</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function createPO(e) {
+            e.preventDefault();
+            try {
+                const result = await api('/api/admin/po', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        supplier_name: document.getElementById('poSupplier').value,
+                        notes: document.getElementById('poNotes').value
+                    })
+                });
+                showAlert(`PO ${result.po_number} created!`, 'success');
+                closeModal();
+                loadPurchaseOrders();
+                // Open the new PO for editing
+                showPODetail(result.po_id);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function showQuickPOFromLowStock() {
+            try {
+                const lowStock = await api('/api/admin/po/low-stock-items');
+                
+                if (lowStock.length === 0) {
+                    showAlert('No low stock items found!', 'success');
+                    return;
+                }
+                
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 700px;">
+                            <h3>⚡ Quick PO from Low Stock Items</h3>
+                            <p style="color: #718096; margin-bottom: 15px;">Select items to include in the new PO:</p>
+                            
+                            <div style="max-height: 400px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px;">
+                                <table>
+                                    <thead style="position: sticky; top: 0; background: white;">
+                                        <tr>
+                                            <th style="width: 40px;"><input type="checkbox" onchange="toggleAllLowStock(this.checked)" checked></th>
+                                            <th>SKU</th>
+                                            <th>Product</th>
+                                            <th>Stock</th>
+                                            <th>Order Qty</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${lowStock.map(item => `
+                                            <tr>
+                                                <td><input type="checkbox" class="low-stock-check" data-id="${item.id}" checked></td>
+                                                <td>${escapeHtml(item.sku)}</td>
+                                                <td>${escapeHtml(item.name)}</td>
+                                                <td style="color: ${item.stock <= 5 ? '#e53e3e' : '#d69e2e'}; font-weight: 600;">${item.stock}</td>
+                                                <td><input type="number" class="low-stock-qty" data-id="${item.id}" value="${item.reorder_qty || 10}" min="1" style="width: 70px; padding: 5px;"></td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                                <button class="btn btn-success" onclick="createPOFromLowStock()">Create PO with Selected Items</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert('Error loading low stock: ' + err.message);
+            }
+        }
+
+        function toggleAllLowStock(checked) {
+            document.querySelectorAll('.low-stock-check').forEach(cb => cb.checked = checked);
+        }
+
+        async function createPOFromLowStock() {
+            try {
+                // First create the PO
+                const result = await api('/api/admin/po', {
+                    method: 'POST',
+                    body: JSON.stringify({ supplier_name: 'Primary Supplier', notes: 'Auto-generated from low stock' })
+                });
+                
+                // Then add selected items
+                const items = [];
+                document.querySelectorAll('.low-stock-check:checked').forEach(cb => {
+                    const id = cb.dataset.id;
+                    const qty = document.querySelector(`.low-stock-qty[data-id="${id}"]`).value;
+                    items.push({ product_id: parseInt(id), quantity: parseInt(qty) });
+                });
+                
+                for (const item of items) {
+                    await api(`/api/admin/po/${result.po_id}/items`, {
+                        method: 'POST',
+                        body: JSON.stringify(item)
+                    });
+                }
+                
+                showAlert(`PO ${result.po_number} created with ${items.length} items!`, 'success');
+                closeModal();
+                loadPurchaseOrders();
+                showPODetail(result.po_id);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function showPODetail(poId) {
+            try {
+                const po = await api(`/api/admin/po/${poId}`);
+                state.currentPO = po;
+                
+                const isEditable = po.status === 'draft' || po.status === 'open';
+                const totalCost = po.items.reduce((sum, i) => sum + (i.quantity_ordered * i.unit_cost), 0);
+                
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 800px;">
+                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
+                                <div>
+                                    <h3 style="margin: 0;">📦 ${escapeHtml(po.po_number)}</h3>
+                                    <p style="color: #718096; margin: 5px 0;">Supplier: ${escapeHtml(po.supplier_name || 'Primary Supplier')}</p>
+                                </div>
+                                <span style="background: ${getStatusColor(po.status)}; color: white; padding: 5px 15px; border-radius: 15px;">${po.status.toUpperCase()}</span>
+                            </div>
+                            
+                            ${isEditable ? `
+                                <div style="margin-bottom: 20px; padding: 15px; background: #f7fafc; border-radius: 8px;">
+                                    <strong>Add Item:</strong>
+                                    <div style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
+                                        <select id="addPoProductId" style="flex: 1; min-width: 200px; padding: 8px;">
+                                            <option value="">Select product...</option>
+                                            ${state.products.filter(p => p.active).map(p => `<option value="${p.id}">${p.sku} - ${p.name}</option>`).join('')}
+                                        </select>
+                                        <input type="number" id="addPoQty" value="10" min="1" style="width: 80px; padding: 8px;" placeholder="Qty">
+                                        <button class="btn btn-success" onclick="addItemToPO(${po.id})">+ Add</button>
+                                    </div>
+                                </div>
+                            ` : ''}
+                            
+                            <div style="max-height: 350px; overflow-y: auto;">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>SKU</th>
+                                            <th>Product</th>
+                                            <th>Ordered</th>
+                                            <th>Received</th>
+                                            <th>Unit Cost</th>
+                                            <th>Total</th>
+                                            ${isEditable ? '<th>Actions</th>' : ''}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${po.items.length === 0 ? '<tr><td colspan="7" style="text-align: center; color: #718096;">No items yet</td></tr>' : 
+                                            po.items.map(i => `
+                                                <tr style="${i.quantity_received >= i.quantity_ordered ? 'background: #c6f6d5;' : i.quantity_received > 0 ? 'background: #fefcbf;' : ''}">
+                                                    <td><strong>${escapeHtml(i.sku)}</strong></td>
+                                                    <td>${escapeHtml(i.name)}</td>
+                                                    <td>${isEditable ? `<input type="number" value="${i.quantity_ordered}" min="0" style="width: 60px;" onchange="updatePOItemQty(${po.id}, ${i.id}, this.value)">` : i.quantity_ordered}</td>
+                                                    <td>${i.quantity_received}</td>
+                                                    <td>$${parseFloat(i.unit_cost || 0).toFixed(2)}</td>
+                                                    <td>$${(i.quantity_ordered * (i.unit_cost || 0)).toFixed(2)}</td>
+                                                    ${isEditable ? `<td><button class="btn btn-danger btn-small" onclick="removePOItem(${po.id}, ${i.id})">✕</button></td>` : ''}
+                                                </tr>
+                                            `).join('')
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <div style="text-align: right; margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px;">
+                                <strong>Total: $${totalCost.toFixed(2)}</strong>
+                            </div>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;">
+                                <button class="btn btn-secondary" onclick="closeModal(); loadPurchaseOrders();">Close</button>
+                                ${po.status === 'draft' && po.items.length > 0 ? `<button class="btn" onclick="showPOWhatsApp(${po.id})">📱 WhatsApp Text</button>` : ''}
+                                ${po.status === 'draft' && po.items.length > 0 ? `<button class="btn btn-success" onclick="submitPO(${po.id})">✓ Mark as Submitted</button>` : ''}
+                                ${po.status === 'submitted' || po.status === 'partial' ? `<button class="btn btn-success" onclick="showReceivePO(${po.id})">📥 Receive Items</button>` : ''}
+                                ${po.status === 'submitted' || po.status === 'partial' ? `<button class="btn" onclick="showBackorderText(${po.id})">📱 Backorder Follow-up</button>` : ''}
+                                ${po.status !== 'closed' && po.status !== 'draft' ? `<button class="btn btn-warning" onclick="closePO(${po.id})">Close PO</button>` : ''}
+                                ${po.status === 'closed' ? `<button class="btn" onclick="reopenPO(${po.id})">Reopen PO</button>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert('Error loading PO: ' + err.message);
+            }
+        }
+
+        function getStatusColor(status) {
+            const colors = { draft: '#718096', submitted: '#3182ce', partial: '#d69e2e', received: '#38a169', closed: '#a0aec0', open: '#805ad5' };
+            return colors[status] || '#718096';
+        }
+
+        async function addItemToPO(poId) {
+            const productId = document.getElementById('addPoProductId').value;
+            const qty = document.getElementById('addPoQty').value;
+            
+            if (!productId) {
+                showAlert('Please select a product');
+                return;
+            }
+            
+            try {
+                await api(`/api/admin/po/${poId}/items`, {
+                    method: 'POST',
+                    body: JSON.stringify({ product_id: parseInt(productId), quantity: parseInt(qty) })
+                });
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function updatePOItemQty(poId, itemId, qty) {
+            try {
+                await api(`/api/admin/po/${poId}/items/${itemId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ quantity_ordered: parseInt(qty) })
+                });
+                if (parseInt(qty) === 0) {
+                    showPODetail(poId);
+                }
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function removePOItem(poId, itemId) {
+            if (!confirm('Remove this item from PO?')) return;
+            try {
+                await api(`/api/admin/po/${poId}/items/${itemId}`, { method: 'DELETE' });
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function submitPO(poId) {
+            if (!confirm('Mark this PO as submitted/ordered?')) return;
+            try {
+                await api(`/api/admin/po/${poId}/submit`, { method: 'POST' });
+                showAlert('PO marked as submitted!', 'success');
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function showPOWhatsApp(poId) {
+            try {
+                const result = await api(`/api/admin/po/${poId}/whatsapp`);
+                
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 500px;">
+                            <h3>📱 WhatsApp Order Text</h3>
+                            <p style="color: #718096; margin-bottom: 15px;">Copy this text and paste into WhatsApp:</p>
+                            
+                            <textarea id="whatsappText" style="width: 100%; height: 300px; font-family: monospace; padding: 15px; border: 1px solid #e2e8f0; border-radius: 8px; resize: vertical;">${escapeHtml(result.text)}</textarea>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button class="btn btn-secondary" onclick="showPODetail(${poId})">Back to PO</button>
+                                <button class="btn btn-success" onclick="copyWhatsAppText()">📋 Copy to Clipboard</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function showBackorderText(poId) {
+            try {
+                const result = await api(`/api/admin/po/${poId}/backorder-text`);
+                
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 500px;">
+                            <h3>📱 Backorder Follow-up Text</h3>
+                            <p style="color: #718096; margin-bottom: 15px;">Copy this text to follow up on outstanding items:</p>
+                            
+                            <textarea id="whatsappText" style="width: 100%; height: 300px; font-family: monospace; padding: 15px; border: 1px solid #e2e8f0; border-radius: 8px; resize: vertical;">${escapeHtml(result.text)}</textarea>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button class="btn btn-secondary" onclick="showPODetail(${poId})">Back to PO</button>
+                                <button class="btn btn-success" onclick="copyWhatsAppText()">📋 Copy to Clipboard</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        function copyWhatsAppText() {
+            const text = document.getElementById('whatsappText');
+            text.select();
+            document.execCommand('copy');
+            showAlert('Copied to clipboard!', 'success');
+        }
+
+        async function showReceivePO(poId) {
+            try {
+                const po = await api(`/api/admin/po/${poId}`);
+                
+                // Only show items that aren't fully received
+                const pendingItems = po.items.filter(i => i.quantity_received < i.quantity_ordered);
+                
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 700px;">
+                            <h3>📥 Receive Items - ${escapeHtml(po.po_number)}</h3>
+                            <p style="color: #718096; margin-bottom: 15px;">Enter quantities received:</p>
+                            
+                            <div style="max-height: 400px; overflow-y: auto;">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>SKU</th>
+                                            <th>Product</th>
+                                            <th>Ordered</th>
+                                            <th>Already Rcvd</th>
+                                            <th>Receiving Now</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${pendingItems.map(i => `
+                                            <tr>
+                                                <td><strong>${escapeHtml(i.sku)}</strong></td>
+                                                <td>${escapeHtml(i.name)}</td>
+                                                <td>${i.quantity_ordered}</td>
+                                                <td>${i.quantity_received}</td>
+                                                <td>
+                                                    <input type="number" class="receive-qty" data-id="${i.id}" 
+                                                           value="${i.quantity_ordered - i.quantity_received}" 
+                                                           min="0" max="${i.quantity_ordered - i.quantity_received}"
+                                                           style="width: 70px; padding: 8px;">
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            ${pendingItems.length === 0 ? '<p style="text-align: center; color: #38a169; padding: 20px;">All items have been received!</p>' : ''}
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button class="btn btn-secondary" onclick="showPODetail(${poId})">Cancel</button>
+                                ${pendingItems.length > 0 ? `<button class="btn btn-success" onclick="receiveItems(${poId})">✓ Receive & Update Stock</button>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function receiveItems(poId) {
+            const items = [];
+            document.querySelectorAll('.receive-qty').forEach(input => {
+                const qty = parseInt(input.value) || 0;
+                if (qty > 0) {
+                    items.push({ id: parseInt(input.dataset.id), quantity_received: qty });
+                }
+            });
+            
+            if (items.length === 0) {
+                showAlert('No items to receive');
+                return;
+            }
+            
+            try {
+                await api(`/api/admin/po/${poId}/receive`, {
+                    method: 'POST',
+                    body: JSON.stringify({ items })
+                });
+                showAlert('Items received and stock updated!', 'success');
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function closePO(poId) {
+            if (!confirm('Close this PO? You can reopen it later if needed.')) return;
+            try {
+                await api(`/api/admin/po/${poId}/close`, { method: 'POST' });
+                showAlert('PO closed', 'success');
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function reopenPO(poId) {
+            try {
+                await api(`/api/admin/po/${poId}/reopen`, { method: 'POST' });
+                showAlert('PO reopened', 'success');
+                showPODetail(poId);
             } catch (err) {
                 showAlert(err.message);
             }

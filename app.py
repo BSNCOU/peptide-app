@@ -252,6 +252,34 @@ def init_returns_table(c, using_postgres, auto_id):
     
     print("✓ Returns tables initialized")
 
+
+def init_po_tables(c, using_postgres, auto_id):
+    """Initialize purchase orders tables"""
+    c.execute(f'''CREATE TABLE IF NOT EXISTS purchase_orders (
+        id {auto_id},
+        po_number TEXT UNIQUE NOT NULL,
+        supplier_name TEXT DEFAULT 'Primary Supplier',
+        status TEXT DEFAULT 'draft',
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        submitted_at TIMESTAMP,
+        received_at TIMESTAMP,
+        closed_at TIMESTAMP
+    )''')
+    
+    c.execute(f'''CREATE TABLE IF NOT EXISTS purchase_order_items (
+        id {auto_id},
+        po_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        quantity_ordered INTEGER NOT NULL,
+        quantity_received INTEGER DEFAULT 0,
+        unit_cost REAL DEFAULT 0,
+        status TEXT DEFAULT 'pending',
+        notes TEXT
+    )''')
+    
+    print("✓ Purchase Orders tables initialized")
+
 def init_db():
     using_postgres = is_postgres()
     conn = get_raw_db()
@@ -530,6 +558,13 @@ def init_db():
         conn.commit()
     except Exception as e:
         print(f"Note: Returns tables: {e}")
+    
+    # Initialize purchase orders tables
+    try:
+        init_po_tables(c, using_postgres, auto_id)
+        conn.commit()
+    except Exception as e:
+        print(f"Note: PO tables: {e}")
     
     # Create default admin if none exists
     if using_postgres:
@@ -846,6 +881,60 @@ def send_order_confirmation(order_id):
         sms = f"Research Materials Order {order['order_number']} confirmed. Total: ${order['total']:.2f}"
         ok, msg = send_sms(order['phone'], sms)
         log_notification(order['user_id'], order_id, 'order_confirmation', 'sms', order['phone'], 'sent' if ok else 'failed', None if ok else msg)
+    
+    # Send notification to admin
+    send_new_order_admin_notification(order, items)
+
+def send_new_order_admin_notification(order, items):
+    """Send new order notification to admin email"""
+    admin_email = 'info@thepeptidewizard.com'
+    
+    items_html = "".join([f"""<tr>
+        <td style="padding:8px;border:1px solid #ddd;">{i['sku']}</td>
+        <td style="padding:8px;border:1px solid #ddd;">{i['name']}</td>
+        <td style="padding:8px;border:1px solid #ddd;text-align:center;">{i['quantity']}</td>
+        <td style="padding:8px;border:1px solid #ddd;text-align:right;">${i['unit_price']:.2f}</td>
+        <td style="padding:8px;border:1px solid #ddd;text-align:right;">${i['unit_price']*i['quantity']:.2f}</td>
+    </tr>""" for i in items])
+    
+    delivery_info = f"📦 SHIP TO: {order.get('shipping_address', 'N/A')}" if order.get('delivery_method') == 'ship' else "🏪 PICKUP"
+    
+    html = f"""<html><body style="font-family:Arial;max-width:700px;margin:0 auto;padding:20px;">
+    <div style="background:#48bb78;color:white;padding:20px;border-radius:10px 10px 0 0;">
+        <h2 style="margin:0;">🎉 New Order Received!</h2>
+    </div>
+    <div style="background:white;padding:20px;border:1px solid #ddd;border-top:none;border-radius:0 0 10px 10px;">
+        <div style="background:#f7fafc;padding:15px;border-radius:8px;margin-bottom:20px;">
+            <h3 style="margin:0 0 10px 0;color:#2d3748;">Order {order['order_number']}</h3>
+            <p style="margin:5px 0;"><strong>Customer:</strong> {order['full_name']}</p>
+            <p style="margin:5px 0;"><strong>Email:</strong> {order['email']}</p>
+            <p style="margin:5px 0;"><strong>Phone:</strong> {order.get('phone', 'N/A')}</p>
+            <p style="margin:5px 0;"><strong>Delivery:</strong> {delivery_info}</p>
+        </div>
+        
+        <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+            <tr style="background:#4a5568;color:white;">
+                <th style="padding:10px;text-align:left;">SKU</th>
+                <th style="padding:10px;text-align:left;">Product</th>
+                <th style="padding:10px;text-align:center;">Qty</th>
+                <th style="padding:10px;text-align:right;">Price</th>
+                <th style="padding:10px;text-align:right;">Total</th>
+            </tr>
+            {items_html}
+        </table>
+        
+        <div style="text-align:right;padding:15px;background:#f7fafc;border-radius:8px;">
+            <p style="margin:5px 0;"><strong>Subtotal:</strong> ${order['subtotal']:.2f}</p>
+            {f"<p style='margin:5px 0;color:#38a169;'><strong>Discount:</strong> -${order['discount_amount']:.2f}</p>" if order.get('discount_amount') else ""}
+            {f"<p style='margin:5px 0;'><strong>Shipping:</strong> ${order.get('shipping_cost', 0):.2f}</p>" if order.get('shipping_cost') else ""}
+            <p style="margin:10px 0 0 0;font-size:20px;"><strong>Total: ${order['total']:.2f}</strong></p>
+        </div>
+        
+        {f"<div style='margin-top:15px;padding:10px;background:#fffbeb;border-left:4px solid #f6e05e;'><strong>Notes:</strong> {order.get('notes', '')}</div>" if order.get('notes') else ""}
+    </div>
+    </body></html>"""
+    
+    send_email(admin_email, f"🎉 New Order: {order['order_number']} - ${order['total']:.2f}", html)
 
 def send_password_reset(email, token):
     url = f"{CONFIG['APP_URL']}/#reset={token}"
@@ -3526,6 +3615,407 @@ def admin_reset_user_password(uid):
     
     conn.close()
     return jsonify({'error': 'Invalid action'}), 400
+
+
+# ============================================
+# PURCHASE ORDERS SYSTEM
+# ============================================
+
+def generate_po_number():
+    """Generate auto-incrementing PO number"""
+    conn = get_db()
+    year = datetime.now().year
+    prefix = f"PO-{year}-"
+    
+    # Get the highest PO number for this year
+    result = conn.execute(
+        "SELECT po_number FROM purchase_orders WHERE po_number LIKE ? ORDER BY po_number DESC LIMIT 1",
+        (f"{prefix}%",)
+    ).fetchone()
+    
+    if result:
+        try:
+            last_num = int(result['po_number'].split('-')[-1])
+            new_num = last_num + 1
+        except:
+            new_num = 1
+    else:
+        new_num = 1
+    
+    conn.close()
+    return f"{prefix}{new_num:04d}"
+
+
+@app.route('/api/admin/po', methods=['GET'])
+@admin_required
+def get_purchase_orders():
+    """Get all purchase orders"""
+    status = request.args.get('status')
+    conn = get_db()
+    
+    query = 'SELECT * FROM purchase_orders'
+    params = []
+    if status:
+        query += ' WHERE status = ?'
+        params.append(status)
+    query += ' ORDER BY created_at DESC'
+    
+    pos = conn.execute(query, params).fetchall()
+    
+    result = []
+    for po in pos:
+        po_dict = dict(po)
+        # Get items for this PO
+        items = conn.execute('''
+            SELECT poi.*, p.name, p.sku 
+            FROM purchase_order_items poi 
+            JOIN products p ON poi.product_id = p.id 
+            WHERE poi.po_id = ?
+        ''', (po_dict['id'],)).fetchall()
+        po_dict['items'] = [dict(i) for i in items]
+        result.append(po_dict)
+    
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/admin/po', methods=['POST'])
+@admin_required
+def create_purchase_order():
+    """Create a new purchase order"""
+    data = request.json
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    po_number = generate_po_number()
+    
+    c.execute('''INSERT INTO purchase_orders (po_number, supplier_name, status, notes) 
+                 VALUES (?, ?, 'draft', ?)''',
+              (po_number, data.get('supplier_name', 'Primary Supplier'), data.get('notes', '')))
+    po_id = c.lastrowid
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'PO created', 'po_id': po_id, 'po_number': po_number}), 201
+
+
+@app.route('/api/admin/po/<int:po_id>', methods=['GET'])
+@admin_required
+def get_purchase_order(po_id):
+    """Get single purchase order with items"""
+    conn = get_db()
+    
+    po = conn.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    
+    po_dict = dict(po)
+    items = conn.execute('''
+        SELECT poi.*, p.name, p.sku, p.stock as current_stock
+        FROM purchase_order_items poi 
+        JOIN products p ON poi.product_id = p.id 
+        WHERE poi.po_id = ?
+    ''', (po_id,)).fetchall()
+    po_dict['items'] = [dict(i) for i in items]
+    
+    conn.close()
+    return jsonify(po_dict)
+
+
+@app.route('/api/admin/po/<int:po_id>/items', methods=['POST'])
+@admin_required
+def add_po_item(po_id):
+    """Add item to purchase order"""
+    data = request.json
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Verify PO exists and is in draft status
+    po = c.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    if dict(po)['status'] not in ['draft', 'open']:
+        conn.close()
+        return jsonify({'error': 'Cannot modify a submitted or closed PO'}), 400
+    
+    # Get product cost
+    product = c.execute('SELECT cost FROM products WHERE id = ?', (data['product_id'],)).fetchone()
+    unit_cost = dict(product)['cost'] if product else 0
+    
+    # Check if item already exists in PO
+    existing = c.execute('SELECT id, quantity_ordered FROM purchase_order_items WHERE po_id = ? AND product_id = ?', 
+                        (po_id, data['product_id'])).fetchone()
+    
+    if existing:
+        # Update quantity
+        new_qty = dict(existing)['quantity_ordered'] + data.get('quantity', 1)
+        c.execute('UPDATE purchase_order_items SET quantity_ordered = ? WHERE id = ?', 
+                 (new_qty, dict(existing)['id']))
+    else:
+        c.execute('''INSERT INTO purchase_order_items (po_id, product_id, quantity_ordered, unit_cost) 
+                     VALUES (?, ?, ?, ?)''',
+                  (po_id, data['product_id'], data.get('quantity', 1), unit_cost))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'Item added to PO'})
+
+
+@app.route('/api/admin/po/<int:po_id>/items/<int:item_id>', methods=['PUT'])
+@admin_required
+def update_po_item(po_id, item_id):
+    """Update PO item quantity"""
+    data = request.json
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    if data.get('quantity_ordered', 0) == 0:
+        # Delete item if quantity is 0
+        c.execute('DELETE FROM purchase_order_items WHERE id = ? AND po_id = ?', (item_id, po_id))
+    else:
+        c.execute('UPDATE purchase_order_items SET quantity_ordered = ? WHERE id = ? AND po_id = ?',
+                 (data['quantity_ordered'], item_id, po_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'Item updated'})
+
+
+@app.route('/api/admin/po/<int:po_id>/items/<int:item_id>', methods=['DELETE'])
+@admin_required
+def delete_po_item(po_id, item_id):
+    """Remove item from PO"""
+    conn = get_db()
+    conn.execute('DELETE FROM purchase_order_items WHERE id = ? AND po_id = ?', (item_id, po_id))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'Item removed'})
+
+
+@app.route('/api/admin/po/<int:po_id>/submit', methods=['POST'])
+@admin_required
+def submit_purchase_order(po_id):
+    """Submit PO (mark as ordered)"""
+    conn = get_db()
+    c = conn.cursor()
+    
+    c.execute("UPDATE purchase_orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP WHERE id = ?", (po_id,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'PO submitted'})
+
+
+@app.route('/api/admin/po/<int:po_id>/receive', methods=['POST'])
+@admin_required
+def receive_po_items(po_id):
+    """Receive items against PO"""
+    data = request.json
+    items = data.get('items', [])
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    all_complete = True
+    
+    for item in items:
+        item_id = item['id']
+        qty_received = item.get('quantity_received', 0)
+        
+        # Get current item info
+        poi = c.execute('SELECT * FROM purchase_order_items WHERE id = ?', (item_id,)).fetchone()
+        if not poi:
+            continue
+        poi_dict = dict(poi)
+        
+        # Update received quantity
+        new_total_received = poi_dict['quantity_received'] + qty_received
+        c.execute('UPDATE purchase_order_items SET quantity_received = ? WHERE id = ?', 
+                 (new_total_received, item_id))
+        
+        # Update item status
+        if new_total_received >= poi_dict['quantity_ordered']:
+            c.execute("UPDATE purchase_order_items SET status = 'received' WHERE id = ?", (item_id,))
+        elif new_total_received > 0:
+            c.execute("UPDATE purchase_order_items SET status = 'partial' WHERE id = ?", (item_id,))
+            all_complete = False
+        else:
+            all_complete = False
+        
+        # Update product stock
+        if qty_received > 0:
+            c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', 
+                     (qty_received, poi_dict['product_id']))
+    
+    # Update PO status
+    if all_complete:
+        # Check if all items are received
+        remaining = c.execute('''SELECT COUNT(*) as cnt FROM purchase_order_items 
+                                WHERE po_id = ? AND quantity_received < quantity_ordered''', (po_id,)).fetchone()
+        if dict(remaining)['cnt'] == 0:
+            c.execute("UPDATE purchase_orders SET status = 'received', received_at = CURRENT_TIMESTAMP WHERE id = ?", (po_id,))
+        else:
+            c.execute("UPDATE purchase_orders SET status = 'partial' WHERE id = ?", (po_id,))
+    else:
+        c.execute("UPDATE purchase_orders SET status = 'partial' WHERE id = ?", (po_id,))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'Items received and stock updated'})
+
+
+@app.route('/api/admin/po/<int:po_id>/close', methods=['POST'])
+@admin_required
+def close_purchase_order(po_id):
+    """Close PO (even if partially received)"""
+    conn = get_db()
+    conn.execute("UPDATE purchase_orders SET status = 'closed', closed_at = CURRENT_TIMESTAMP WHERE id = ?", (po_id,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'PO closed'})
+
+
+@app.route('/api/admin/po/<int:po_id>/reopen', methods=['POST'])
+@admin_required
+def reopen_purchase_order(po_id):
+    """Reopen a PO"""
+    conn = get_db()
+    conn.execute("UPDATE purchase_orders SET status = 'open' WHERE id = ?", (po_id,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'PO reopened'})
+
+
+@app.route('/api/admin/po/<int:po_id>/whatsapp', methods=['GET'])
+@admin_required
+def get_po_whatsapp_text(po_id):
+    """Generate WhatsApp-friendly text for PO"""
+    conn = get_db()
+    
+    po = conn.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    
+    po_dict = dict(po)
+    items = conn.execute('''
+        SELECT poi.*, p.name, p.sku 
+        FROM purchase_order_items poi 
+        JOIN products p ON poi.product_id = p.id 
+        WHERE poi.po_id = ?
+        ORDER BY p.name
+    ''', (po_id,)).fetchall()
+    
+    conn.close()
+    
+    # Build WhatsApp-friendly text
+    lines = [
+        f"📦 *Purchase Order: {po_dict['po_number']}*",
+        f"Date: {datetime.now().strftime('%Y-%m-%d')}",
+        "",
+        "*Items to Order:*",
+        "─" * 20
+    ]
+    
+    total_cost = 0
+    for item in items:
+        i = dict(item)
+        qty = i['quantity_ordered']
+        cost = i['unit_cost'] * qty
+        total_cost += cost
+        lines.append(f"• {i['sku']} - {i['name']}")
+        lines.append(f"  Qty: {qty} @ ${i['unit_cost']:.2f} = ${cost:.2f}")
+    
+    lines.extend([
+        "─" * 20,
+        f"*Total: ${total_cost:.2f}*",
+        "",
+        "Please confirm availability and ETA.",
+        "Thank you! 🙏"
+    ])
+    
+    return jsonify({'text': '\n'.join(lines), 'po_number': po_dict['po_number']})
+
+
+@app.route('/api/admin/po/<int:po_id>/backorder-text', methods=['GET'])
+@admin_required
+def get_backorder_whatsapp_text(po_id):
+    """Generate WhatsApp text for backorder follow-up"""
+    conn = get_db()
+    
+    po = conn.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    
+    po_dict = dict(po)
+    
+    # Get items that are not fully received
+    items = conn.execute('''
+        SELECT poi.*, p.name, p.sku 
+        FROM purchase_order_items poi 
+        JOIN products p ON poi.product_id = p.id 
+        WHERE poi.po_id = ? AND poi.quantity_received < poi.quantity_ordered
+        ORDER BY p.name
+    ''', (po_id,)).fetchall()
+    
+    conn.close()
+    
+    if not items:
+        return jsonify({'text': 'All items have been received!', 'po_number': po_dict['po_number']})
+    
+    lines = [
+        f"📦 *Backorder Follow-up: {po_dict['po_number']}*",
+        "",
+        "*Outstanding Items:*",
+        "─" * 20
+    ]
+    
+    for item in items:
+        i = dict(item)
+        outstanding = i['quantity_ordered'] - i['quantity_received']
+        lines.append(f"• {i['sku']} - {i['name']}")
+        lines.append(f"  Ordered: {i['quantity_ordered']} | Received: {i['quantity_received']} | *Need: {outstanding}*")
+    
+    lines.extend([
+        "─" * 20,
+        "",
+        "Please advise on status and ETA for remaining items.",
+        "Thank you! 🙏"
+    ])
+    
+    return jsonify({'text': '\n'.join(lines), 'po_number': po_dict['po_number']})
+
+
+@app.route('/api/admin/po/low-stock-items', methods=['GET'])
+@admin_required
+def get_low_stock_for_po():
+    """Get low stock items to add to PO"""
+    conn = get_db()
+    
+    threshold = CONFIG.get('LOW_STOCK_THRESHOLD', 10)
+    items = conn.execute('''
+        SELECT id, name, sku, stock, cost, reorder_qty 
+        FROM products 
+        WHERE active = 1 AND stock <= ?
+        ORDER BY stock ASC, name ASC
+    ''', (threshold,)).fetchall()
+    
+    conn.close()
+    return jsonify([dict(i) for i in items])
+
 
 # ============================================
 # MAIN
