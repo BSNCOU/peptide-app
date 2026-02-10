@@ -3624,13 +3624,16 @@ The Peptide Wizard Team"></textarea>
                         
                         <div style="max-height: 250px; overflow-y: auto;">
                             <table style="font-size: 0.85rem;">
-                                <thead><tr><th>SKU</th><th>Product</th><th>Stock</th><th>Min</th><th>Order Qty</th><th>Cost</th></tr></thead>
+                                <thead><tr><th>SKU</th><th>Product</th><th>Stock</th><th>On Order</th><th>Min</th><th>Order Qty</th><th>Cost</th></tr></thead>
                                 <tbody>
                                     ${needsOrder.map(p => `
                                         <tr>
-                                            <td><strong>${p.sku}</strong></td>
-                                            <td>${p.name}</td>
+                                            <td><strong>${escapeHtml(p.sku)}</strong></td>
+                                            <td>${escapeHtml(p.name)}</td>
                                             <td class="low-stock">${p.stock}</td>
+                                            <td style="color: ${p.on_order > 0 ? '#3182ce' : '#a0aec0'}; font-weight: ${p.on_order > 0 ? '600' : 'normal'};">
+                                                ${p.on_order > 0 ? `+${p.on_order} 📦` : '-'}
+                                            </td>
                                             <td>${p.min_units} (${p.reorder_qty} boxes)</td>
                                             <td>${p.boxes_to_order} boxes</td>
                                             <td>$${parseFloat(p.order_cost || 0).toFixed(2)}</td>

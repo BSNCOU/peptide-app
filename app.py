@@ -2309,13 +2309,28 @@ def admin_inventory_report():
     
     # Get all active products with their stock, costs, and reorder quantities
     products = conn.execute('''
-        SELECT id, sku, name, stock, cost, price_single, price_bulk, reorder_qty
+        SELECT id, sku, name, stock, cost, price_single, price_bulk, reorder_qty, supplier_pack_size
         FROM products 
         WHERE active = 1
         ORDER BY sku
     ''').fetchall()
     
+    # Get pending PO quantities (draft, submitted, partial - not yet fully received)
+    pending_po = conn.execute('''
+        SELECT poi.product_id, 
+               SUM((poi.quantity_ordered - poi.quantity_received) * COALESCE(p.supplier_pack_size, 1)) as pending_units
+        FROM purchase_order_items poi
+        JOIN purchase_orders po ON poi.po_id = po.id
+        JOIN products p ON poi.product_id = p.id
+        WHERE po.status IN ('draft', 'submitted', 'partial', 'open')
+          AND poi.quantity_received < poi.quantity_ordered
+        GROUP BY poi.product_id
+    ''').fetchall()
+    
     conn.close()
+    
+    # Build pending qty lookup
+    pending_by_product = {row['product_id']: row['pending_units'] for row in pending_po}
     
     total_units = 0
     inventory_cost = 0
@@ -2328,35 +2343,44 @@ def admin_inventory_report():
         cost = float(p['cost'] or 0)
         price = float(p['price_single'] or 0)
         reorder_qty = p['reorder_qty'] if p['reorder_qty'] is not None else 4  # Default to 4 boxes
-        min_units = reorder_qty * 10  # Convert boxes to units
+        pack_size = p['supplier_pack_size'] or 10
+        min_units = reorder_qty * pack_size  # Convert boxes to units using pack size
+        on_order = pending_by_product.get(p['id'], 0)  # Units already on PO
         
         total_units += stock
         inventory_cost += stock * cost
         potential_revenue += stock * price
+        
+        # Effective stock = current stock + pending PO units
+        effective_stock = stock + on_order
         
         # Add to all products list for display
         all_products.append({
             'sku': p['sku'],
             'name': p['name'],
             'stock': stock,
+            'on_order': on_order,
+            'effective_stock': effective_stock,
             'cost': cost,
             'reorder_qty': reorder_qty,
             'min_units': min_units
         })
         
-        # Check if needs reorder (below minimum AND reorder_qty > 0)
-        if reorder_qty > 0 and stock < min_units and cost > 0:
+        # Check if needs reorder (effective stock below minimum AND reorder_qty > 0)
+        if reorder_qty > 0 and effective_stock < min_units and cost > 0:
             # Calculate how many boxes to order to get back to minimum
-            units_needed = min_units - stock
-            boxes_to_order = max(1, (units_needed + 9) // 10)  # Round up to nearest box
+            units_needed = min_units - effective_stock
+            boxes_to_order = max(1, (units_needed + pack_size - 1) // pack_size)  # Round up to nearest box
             
-            # Order cost is boxes * (cost per unit * 10 units per box)
-            order_cost = boxes_to_order * cost * 10
+            # Order cost is boxes * (cost per unit * pack_size)
+            order_cost = boxes_to_order * cost * pack_size
             
             needs_reorder.append({
                 'sku': p['sku'],
                 'name': p['name'],
                 'stock': stock,
+                'on_order': on_order,
+                'effective_stock': effective_stock,
                 'cost': cost,
                 'reorder_qty': reorder_qty,
                 'min_units': min_units,
