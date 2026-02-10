@@ -447,6 +447,7 @@ def init_db():
         if using_postgres:
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS cost REAL DEFAULT 0")
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS reorder_qty INTEGER DEFAULT 4")
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_pack_size INTEGER DEFAULT 1")
         else:
             try:
                 c.execute("ALTER TABLE products ADD COLUMN cost REAL DEFAULT 0")
@@ -454,6 +455,10 @@ def init_db():
                 pass
             try:
                 c.execute("ALTER TABLE products ADD COLUMN reorder_qty INTEGER DEFAULT 4")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN supplier_pack_size INTEGER DEFAULT 1")
             except:
                 pass
         conn.commit()
@@ -1914,8 +1919,8 @@ def admin_add_product():
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('INSERT INTO products (sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,sort_order,cost,reorder_qty) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                  (data['sku'].upper(), data['name'], data.get('description', 'For research use only.'), data['price_single'], data.get('price_bulk'), data.get('bulk_quantity', 10), data.get('stock', 0), data.get('category'), data.get('sort_order', 0), data.get('cost', 0), data.get('reorder_qty', 4)))
+        c.execute('INSERT INTO products (sku,name,description,price_single,price_bulk,bulk_quantity,stock,category,sort_order,cost,reorder_qty,supplier_pack_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                  (data['sku'].upper(), data['name'], data.get('description', 'For research use only.'), data['price_single'], data.get('price_bulk'), data.get('bulk_quantity', 10), data.get('stock', 0), data.get('category'), data.get('sort_order', 0), data.get('cost', 0), data.get('reorder_qty', 4), data.get('supplier_pack_size', 1)))
         conn.commit()
         pid = c.lastrowid
         conn.close()
@@ -1950,12 +1955,12 @@ def admin_update_product(pid):
         sale_min_qty = 1
     
     conn.execute('''UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,
-        stock=?,category=?,active=?,sort_order=?,cost=?,reorder_qty=?,sale_price=?,sale_start=?,sale_end=?,sale_min_qty=?,
+        stock=?,category=?,active=?,sort_order=?,cost=?,reorder_qty=?,supplier_pack_size=?,sale_price=?,sale_start=?,sale_end=?,sale_min_qty=?,
         updated_at=CURRENT_TIMESTAMP WHERE id=?''',
                  (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), 
                   data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 
                   1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0), 
-                  data.get('reorder_qty',4), sale_price, sale_start, sale_end, int(sale_min_qty), pid))
+                  data.get('reorder_qty',4), data.get('supplier_pack_size',1), sale_price, sale_start, sale_end, int(sale_min_qty), pid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Product updated'})
@@ -3714,7 +3719,7 @@ def get_purchase_order(po_id):
     
     po_dict = dict(po)
     items = conn.execute('''
-        SELECT poi.*, p.name, p.sku, p.stock as current_stock
+        SELECT poi.*, p.name, p.sku, p.stock as current_stock, p.supplier_pack_size
         FROM purchase_order_items poi 
         JOIN products p ON poi.product_id = p.id 
         WHERE poi.po_id = ?
@@ -3818,7 +3823,7 @@ def submit_purchase_order(po_id):
 @app.route('/api/admin/po/<int:po_id>/receive', methods=['POST'])
 @admin_required
 def receive_po_items(po_id):
-    """Receive items against PO"""
+    """Receive items against PO - multiplies by supplier_pack_size for stock"""
     data = request.json
     items = data.get('items', [])
     
@@ -3831,13 +3836,19 @@ def receive_po_items(po_id):
         item_id = item['id']
         qty_received = item.get('quantity_received', 0)
         
-        # Get current item info
-        poi = c.execute('SELECT * FROM purchase_order_items WHERE id = ?', (item_id,)).fetchone()
+        # Get current item info with product pack size
+        poi = c.execute('''
+            SELECT poi.*, p.supplier_pack_size 
+            FROM purchase_order_items poi 
+            JOIN products p ON poi.product_id = p.id 
+            WHERE poi.id = ?
+        ''', (item_id,)).fetchone()
         if not poi:
             continue
         poi_dict = dict(poi)
+        pack_size = poi_dict.get('supplier_pack_size') or 1
         
-        # Update received quantity
+        # Update received quantity (in packs)
         new_total_received = poi_dict['quantity_received'] + qty_received
         c.execute('UPDATE purchase_order_items SET quantity_received = ? WHERE id = ?', 
                  (new_total_received, item_id))
@@ -3851,10 +3862,11 @@ def receive_po_items(po_id):
         else:
             all_complete = False
         
-        # Update product stock
+        # Update product stock - multiply packs by pack_size to get units
         if qty_received > 0:
+            units_to_add = qty_received * pack_size
             c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', 
-                     (qty_received, poi_dict['product_id']))
+                     (units_to_add, poi_dict['product_id']))
     
     # Update PO status
     if all_complete:
@@ -4007,7 +4019,7 @@ def get_low_stock_for_po():
     
     threshold = CONFIG.get('LOW_STOCK_THRESHOLD', 10)
     items = conn.execute('''
-        SELECT id, name, sku, stock, cost, reorder_qty 
+        SELECT id, name, sku, stock, cost, reorder_qty, supplier_pack_size 
         FROM products 
         WHERE active = 1 AND stock <= ?
         ORDER BY stock ASC, name ASC

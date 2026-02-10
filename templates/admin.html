@@ -504,16 +504,21 @@
                                     <small style="color: #718096;">Margin: ${margin}%</small>
                                 </div>
                                 <div class="form-group">
-                                    <label>Reorder Qty (boxes)</label>
+                                    <label>Reorder Qty (packs)</label>
                                     <input type="number" id="prodReorderQty" value="${reorderQty}" min="0">
                                     <small style="color: #718096;">0 = don't reorder</small>
                                 </div>
                                 <div class="form-group">
-                                    <label>Stock *</label>
-                                    <input type="number" id="prodStock" value="${p.stock}" required>
+                                    <label>Pack Size (units/pack)</label>
+                                    <input type="number" id="prodPackSize" value="${p.supplier_pack_size || 1}" min="1">
+                                    <small style="color: #718096;">Units per supplier pack</small>
                                 </div>
                             </div>
                             <div class="form-row">
+                                <div class="form-group">
+                                    <label>Stock *</label>
+                                    <input type="number" id="prodStock" value="${p.stock}" required>
+                                </div>
                                 <div class="form-group">
                                     <label>Category</label>
                                     <input type="text" id="prodCategory" value="${escapeHtml(p.category || '')}">
@@ -575,6 +580,7 @@
                         stock: parseInt(document.getElementById('prodStock').value),
                         cost: parseFloat(document.getElementById('prodCost').value) || 0,
                         reorder_qty: parseInt(document.getElementById('prodReorderQty').value) || 0,
+                        supplier_pack_size: parseInt(document.getElementById('prodPackSize').value) || 1,
                         sale_price: parseFloat(document.getElementById('prodSalePrice').value) || null,
                         sale_min_qty: parseInt(document.getElementById('prodSaleMinQty').value) || 1,
                         sale_start: document.getElementById('prodSaleStart').value || null,
@@ -3032,7 +3038,9 @@ The Peptide Wizard Team"></textarea>
                                         <tr>
                                             <th>SKU</th>
                                             <th>Product</th>
-                                            <th>Ordered</th>
+                                            <th>Packs Ordered</th>
+                                            <th>Pack Size</th>
+                                            <th>Units (Stock)</th>
                                             <th>Received</th>
                                             <th>Unit Cost</th>
                                             <th>Total</th>
@@ -3040,18 +3048,24 @@ The Peptide Wizard Team"></textarea>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${po.items.length === 0 ? '<tr><td colspan="7" style="text-align: center; color: #718096;">No items yet</td></tr>' : 
-                                            po.items.map(i => `
+                                        ${po.items.length === 0 ? '<tr><td colspan="9" style="text-align: center; color: #718096;">No items yet</td></tr>' : 
+                                            po.items.map(i => {
+                                                const packSize = i.supplier_pack_size || 1;
+                                                const totalUnits = i.quantity_ordered * packSize;
+                                                const receivedUnits = i.quantity_received * packSize;
+                                                return `
                                                 <tr style="${i.quantity_received >= i.quantity_ordered ? 'background: #c6f6d5;' : i.quantity_received > 0 ? 'background: #fefcbf;' : ''}">
                                                     <td><strong>${escapeHtml(i.sku)}</strong></td>
                                                     <td>${escapeHtml(i.name)}</td>
                                                     <td>${isEditable ? `<input type="number" value="${i.quantity_ordered}" min="0" style="width: 60px;" onchange="updatePOItemQty(${po.id}, ${i.id}, this.value)">` : i.quantity_ordered}</td>
-                                                    <td>${i.quantity_received}</td>
+                                                    <td style="color: #718096;">${packSize}/pack</td>
+                                                    <td><strong>${totalUnits}</strong></td>
+                                                    <td>${i.quantity_received} packs (${receivedUnits} units)</td>
                                                     <td>$${parseFloat(i.unit_cost || 0).toFixed(2)}</td>
                                                     <td>$${(i.quantity_ordered * (i.unit_cost || 0)).toFixed(2)}</td>
                                                     ${isEditable ? `<td><button class="btn btn-danger btn-small" onclick="removePOItem(${po.id}, ${i.id})">✕</button></td>` : ''}
                                                 </tr>
-                                            `).join('')
+                                            `}).join('')
                                         }
                                     </tbody>
                                 </table>
@@ -3109,9 +3123,8 @@ The Peptide Wizard Team"></textarea>
                     method: 'PUT',
                     body: JSON.stringify({ quantity_ordered: parseInt(qty) })
                 });
-                if (parseInt(qty) === 0) {
-                    showPODetail(poId);
-                }
+                // Always refresh to show updated totals
+                showPODetail(poId);
             } catch (err) {
                 showAlert(err.message);
             }
@@ -3202,9 +3215,9 @@ The Peptide Wizard Team"></textarea>
                 
                 document.getElementById('modalContainer').innerHTML = `
                     <div class="modal" onclick="if(event.target===this)closeModal()">
-                        <div class="modal-content" style="max-width: 700px;">
+                        <div class="modal-content" style="max-width: 800px;">
                             <h3>📥 Receive Items - ${escapeHtml(po.po_number)}</h3>
-                            <p style="color: #718096; margin-bottom: 15px;">Enter quantities received:</p>
+                            <p style="color: #718096; margin-bottom: 15px;">Enter number of <strong>packs</strong> received (units will be calculated automatically):</p>
                             
                             <div style="max-height: 400px; overflow-y: auto;">
                                 <table>
@@ -3212,26 +3225,34 @@ The Peptide Wizard Team"></textarea>
                                         <tr>
                                             <th>SKU</th>
                                             <th>Product</th>
-                                            <th>Ordered</th>
-                                            <th>Already Rcvd</th>
-                                            <th>Receiving Now</th>
+                                            <th>Pack Size</th>
+                                            <th>Packs Ordered</th>
+                                            <th>Packs Rcvd</th>
+                                            <th>Receiving (packs)</th>
+                                            <th>Units to Add</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${pendingItems.map(i => `
+                                        ${pendingItems.map(i => {
+                                            const packSize = i.supplier_pack_size || 1;
+                                            const remaining = i.quantity_ordered - i.quantity_received;
+                                            return `
                                             <tr>
                                                 <td><strong>${escapeHtml(i.sku)}</strong></td>
                                                 <td>${escapeHtml(i.name)}</td>
+                                                <td style="color: #718096;">${packSize}/pack</td>
                                                 <td>${i.quantity_ordered}</td>
                                                 <td>${i.quantity_received}</td>
                                                 <td>
-                                                    <input type="number" class="receive-qty" data-id="${i.id}" 
-                                                           value="${i.quantity_ordered - i.quantity_received}" 
-                                                           min="0" max="${i.quantity_ordered - i.quantity_received}"
-                                                           style="width: 70px; padding: 8px;">
+                                                    <input type="number" class="receive-qty" data-id="${i.id}" data-pack-size="${packSize}"
+                                                           value="${remaining}" 
+                                                           min="0" max="${remaining}"
+                                                           style="width: 70px; padding: 8px;"
+                                                           onchange="updateUnitsPreview(this)">
                                                 </td>
+                                                <td class="units-preview" style="font-weight: 600; color: #38a169;">+${remaining * packSize} units</td>
                                             </tr>
-                                        `).join('')}
+                                        `}).join('')}
                                     </tbody>
                                 </table>
                             </div>
@@ -3248,6 +3269,14 @@ The Peptide Wizard Team"></textarea>
             } catch (err) {
                 showAlert(err.message);
             }
+        }
+
+        function updateUnitsPreview(input) {
+            const packSize = parseInt(input.dataset.packSize) || 1;
+            const qty = parseInt(input.value) || 0;
+            const units = qty * packSize;
+            const row = input.closest('tr');
+            row.querySelector('.units-preview').textContent = '+' + units + ' units';
         }
 
         async function receiveItems(poId) {
