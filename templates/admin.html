@@ -1035,6 +1035,7 @@ BC10,8.00</pre>
                                 <th>Product</th>
                                 <th>Qty Received</th>
                                 <th>Notes</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1042,13 +1043,17 @@ BC10,8.00</pre>
                                 ? state.inventory.map(r => `
                                     <tr>
                                         <td>${new Date(r.received_date).toLocaleDateString()}</td>
-                                        <td><strong>${r.lot_number}</strong></td>
-                                        <td>${r.product_name || r.sku}</td>
+                                        <td><strong>${escapeHtml(r.lot_number || '')}</strong></td>
+                                        <td>${escapeHtml(r.product_name || r.sku)}</td>
                                         <td>${r.quantity}</td>
-                                        <td>${r.notes || '-'}</td>
+                                        <td>${escapeHtml(r.notes || '-')}</td>
+                                        <td class="actions">
+                                            <button class="btn btn-small" onclick="showEditReceiptModal(${r.id})">Edit</button>
+                                            <button class="btn btn-small btn-danger" onclick="deleteReceipt(${r.id})">✕</button>
+                                        </td>
                                     </tr>
                                 `).join('')
-                                : '<tr><td colspan="5" style="text-align: center; color: #718096;">No inventory receipts yet</td></tr>'
+                                : '<tr><td colspan="6" style="text-align: center; color: #718096;">No inventory receipts yet</td></tr>'
                             }
                         </tbody>
                     </table>
@@ -1141,6 +1146,92 @@ BC10,8.00</pre>
                 });
                 closeModal();
                 showAlert(`Received ${quantity} units. Stock updated!`, 'success');
+                loadInventory();
+                loadStats();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        function showEditReceiptModal(receiptId) {
+            const receipt = state.inventory.find(r => r.id === receiptId);
+            if (!receipt) return;
+            
+            // Format date for input
+            const dateStr = receipt.received_date ? receipt.received_date.split('T')[0] : '';
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content">
+                        <h3>✏️ Edit Inventory Receipt</h3>
+                        <form onsubmit="updateReceipt(event, ${receiptId})">
+                            <div class="form-group">
+                                <label>Product</label>
+                                <input type="text" value="${escapeHtml(receipt.product_name || receipt.sku)}" readonly style="background: #f7fafc;">
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Quantity Received *</label>
+                                    <input type="number" id="editReceiptQty" value="${receipt.quantity}" min="1" required>
+                                    <small style="color: #718096;">Changing this will adjust stock accordingly</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Date Received *</label>
+                                    <input type="date" id="editReceiptDate" value="${dateStr}" required>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Lot Number</label>
+                                <input type="text" id="editReceiptLot" value="${escapeHtml(receipt.lot_number || '')}">
+                            </div>
+                            <div class="form-group">
+                                <label>Notes (Vendor/Invoice info)</label>
+                                <textarea id="editReceiptNotes" rows="2">${escapeHtml(receipt.notes || '')}</textarea>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                                <button type="submit" class="btn btn-success">Save Changes</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function updateReceipt(e, receiptId) {
+            e.preventDefault();
+            
+            const quantity = parseInt(document.getElementById('editReceiptQty').value);
+            const receivedDate = document.getElementById('editReceiptDate').value;
+            const lotNumber = document.getElementById('editReceiptLot').value;
+            const notes = document.getElementById('editReceiptNotes').value;
+            
+            try {
+                await api(`/api/admin/inventory-receipts/${receiptId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        quantity: quantity,
+                        received_date: receivedDate,
+                        lot_number: lotNumber,
+                        notes: notes
+                    })
+                });
+                closeModal();
+                showAlert('Receipt updated and stock adjusted!', 'success');
+                loadInventory();
+                loadStats();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function deleteReceipt(receiptId) {
+            const receipt = state.inventory.find(r => r.id === receiptId);
+            if (!confirm(`Delete this receipt?\n\nLot: ${receipt?.lot_number || 'N/A'}\nQty: ${receipt?.quantity}\n\n⚠️ This will SUBTRACT ${receipt?.quantity} units from stock!`)) return;
+            
+            try {
+                await api(`/api/admin/inventory-receipts/${receiptId}`, { method: 'DELETE' });
+                showAlert('Receipt deleted and stock adjusted', 'success');
                 loadInventory();
                 loadStats();
             } catch (err) {

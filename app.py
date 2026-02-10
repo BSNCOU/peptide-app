@@ -2668,6 +2668,79 @@ def admin_create_inventory_receipt():
         'lot_number': lot_number
     }), 201
 
+
+@app.route('/api/admin/inventory-receipts/<int:receipt_id>', methods=['PUT'])
+@admin_required
+def admin_update_inventory_receipt(receipt_id):
+    """Update inventory receipt and adjust product stock accordingly"""
+    data = request.json
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Get original receipt
+    original = c.execute('SELECT * FROM inventory_receipts WHERE id = ?', (receipt_id,)).fetchone()
+    if not original:
+        conn.close()
+        return jsonify({'error': 'Receipt not found'}), 404
+    
+    original = dict(original)
+    old_qty = original['quantity']
+    new_qty = data.get('quantity', old_qty)
+    qty_diff = new_qty - old_qty
+    
+    # Update receipt
+    c.execute('''UPDATE inventory_receipts 
+                 SET quantity = ?, received_date = ?, lot_number = ?, notes = ?
+                 WHERE id = ?''',
+              (new_qty, 
+               data.get('received_date', original['received_date']),
+               data.get('lot_number', original['lot_number']),
+               data.get('notes', original['notes']),
+               receipt_id))
+    
+    # Adjust product stock by the difference
+    if qty_diff != 0:
+        c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', 
+                 (qty_diff, original['product_id']))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"[INVENTORY] Updated receipt {receipt_id}: qty {old_qty} → {new_qty} (diff: {qty_diff:+d})")
+    
+    return jsonify({'message': 'Receipt updated and stock adjusted'})
+
+
+@app.route('/api/admin/inventory-receipts/<int:receipt_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_inventory_receipt(receipt_id):
+    """Delete inventory receipt and subtract from product stock"""
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Get receipt to know how much to subtract
+    receipt = c.execute('SELECT * FROM inventory_receipts WHERE id = ?', (receipt_id,)).fetchone()
+    if not receipt:
+        conn.close()
+        return jsonify({'error': 'Receipt not found'}), 404
+    
+    receipt = dict(receipt)
+    
+    # Subtract from product stock
+    c.execute('UPDATE products SET stock = stock - ? WHERE id = ?', 
+             (receipt['quantity'], receipt['product_id']))
+    
+    # Delete receipt
+    c.execute('DELETE FROM inventory_receipts WHERE id = ?', (receipt_id,))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"[INVENTORY] Deleted receipt {receipt_id}: removed {receipt['quantity']} units from product {receipt['product_id']}")
+    
+    return jsonify({'message': 'Receipt deleted and stock adjusted'})
+
 @app.route('/api/admin/orders', methods=['GET'])
 @admin_required
 def admin_get_orders():
