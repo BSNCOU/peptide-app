@@ -122,6 +122,7 @@
                 <button onclick="showTab('users')">Users</button>
                 <button onclick="showTab('email')">📧 Email</button>
                 <button onclick="showTab('notifications')">Notifications</button>
+                <button onclick="showTab('todos')">✅ To-Do</button>
             </div>
             <div id="tabContent"></div>
         </div>
@@ -147,7 +148,8 @@
             returnsFilter: '',
             purchaseOrders: [],
             currentPO: null,
-            poFilter: ''
+            poFilter: '',
+            todos: []
         };
         
         // Global HTML escape helper
@@ -238,7 +240,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','purchaseOrders','returns','discounts','reports','users','email','notifications'];
+            const tabList = ['products','inventory','orders','openOrders','purchaseOrders','returns','discounts','reports','users','email','notifications','todos'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -253,6 +255,7 @@
                 case 'users': loadUsers(); break;
                 case 'email': loadEmail(); break;
                 case 'notifications': loadNotifications(); break;
+                case 'todos': loadTodos(); break;
             }
         }
 
@@ -2437,6 +2440,116 @@ The Peptide Wizard Team"></textarea>
             document.getElementById('emailBody').value = e.body;
             closeModal();
             showAlert('Template loaded - edit and send!', 'success');
+        }
+
+        // To-Do List
+        async function loadTodos() {
+            try {
+                state.todos = await api('/api/admin/todos');
+                renderTodos();
+            } catch (e) {
+                showAlert('Failed to load todos');
+            }
+        }
+
+        function renderTodos() {
+            const pending = state.todos.filter(t => !t.completed);
+            const completed = state.todos.filter(t => t.completed);
+            
+            document.getElementById('tabContent').innerHTML = `
+                <h3 style="margin-bottom: 15px;">✅ To-Do List</h3>
+                <p style="color: #718096; margin-bottom: 20px;">Jot down upgrades, ideas, or tasks to remember.</p>
+                
+                <form onsubmit="addTodo(event)" style="display: flex; gap: 10px; margin-bottom: 20px;">
+                    <input type="text" id="newTodoInput" placeholder="Add a new task..." style="flex: 1; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 1rem;">
+                    <button type="submit" class="btn btn-success">+ Add</button>
+                </form>
+                
+                ${pending.length > 0 ? `
+                    <div style="margin-bottom: 25px;">
+                        <h4 style="color: #2b6cb0; margin-bottom: 10px;">📋 Pending (${pending.length})</h4>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            ${pending.map(t => `
+                                <div style="display: flex; align-items: center; gap: 12px; padding: 12px 15px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;">
+                                    <input type="checkbox" onchange="toggleTodo(${t.id}, true)" style="width: 20px; height: 20px; cursor: pointer;">
+                                    <span style="flex: 1; font-size: 0.95rem;">${escapeHtml(t.task)}</span>
+                                    <small style="color: #a0aec0;">${new Date(t.created_at).toLocaleDateString()}</small>
+                                    <button onclick="deleteTodo(${t.id})" style="background: none; border: none; color: #e53e3e; cursor: pointer; font-size: 1.1rem;" title="Delete">✕</button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : `
+                    <div style="text-align: center; padding: 30px; color: #718096; background: #f7fafc; border-radius: 8px; margin-bottom: 25px;">
+                        🎉 No pending tasks! Add one above.
+                    </div>
+                `}
+                
+                ${completed.length > 0 ? `
+                    <div>
+                        <h4 style="color: #38a169; margin-bottom: 10px;">✓ Completed (${completed.length})</h4>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            ${completed.map(t => `
+                                <div style="display: flex; align-items: center; gap: 12px; padding: 12px 15px; background: #f0fff4; border: 1px solid #c6f6d5; border-radius: 8px; opacity: 0.8;">
+                                    <input type="checkbox" checked onchange="toggleTodo(${t.id}, false)" style="width: 20px; height: 20px; cursor: pointer;">
+                                    <span style="flex: 1; font-size: 0.95rem; text-decoration: line-through; color: #718096;">${escapeHtml(t.task)}</span>
+                                    <small style="color: #a0aec0;">${t.completed_at ? new Date(t.completed_at).toLocaleDateString() : ''}</small>
+                                    <button onclick="deleteTodo(${t.id})" style="background: none; border: none; color: #e53e3e; cursor: pointer; font-size: 1.1rem;" title="Delete">✕</button>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <button onclick="clearCompletedTodos()" class="btn btn-secondary" style="margin-top: 15px;">🗑️ Clear Completed</button>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        async function addTodo(e) {
+            e.preventDefault();
+            const input = document.getElementById('newTodoInput');
+            const task = input.value.trim();
+            
+            if (!task) return;
+            
+            try {
+                await api('/api/admin/todos', {
+                    method: 'POST',
+                    body: JSON.stringify({ task })
+                });
+                input.value = '';
+                loadTodos();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function toggleTodo(id, completed) {
+            try {
+                await api(`/api/admin/todos/${id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ completed })
+                });
+                loadTodos();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function deleteTodo(id) {
+            try {
+                await api(`/api/admin/todos/${id}`, { method: 'DELETE' });
+                loadTodos();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function clearCompletedTodos() {
+            const completed = state.todos.filter(t => t.completed);
+            for (const t of completed) {
+                await api(`/api/admin/todos/${t.id}`, { method: 'DELETE' });
+            }
+            loadTodos();
         }
 
         // Notifications

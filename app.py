@@ -287,6 +287,14 @@ def init_po_tables(c, using_postgres, auto_id):
         notes TEXT
     )''')
     
+    c.execute(f'''CREATE TABLE IF NOT EXISTS admin_todos (
+        id {auto_id},
+        task TEXT NOT NULL,
+        completed INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP
+    )''')
+    
     print("✓ Purchase Orders tables initialized")
 
 def init_db():
@@ -4162,6 +4170,74 @@ def get_low_stock_for_po():
     
     conn.close()
     return jsonify([dict(i) for i in items])
+
+
+# ============================================
+# ADMIN TO-DO LIST
+# ============================================
+
+@app.route('/api/admin/todos', methods=['GET'])
+@admin_required
+def get_todos():
+    """Get all admin todos"""
+    conn = get_db()
+    todos = conn.execute('SELECT * FROM admin_todos ORDER BY completed ASC, created_at DESC').fetchall()
+    conn.close()
+    return jsonify([dict(t) for t in todos])
+
+
+@app.route('/api/admin/todos', methods=['POST'])
+@admin_required
+def create_todo():
+    """Create a new todo"""
+    data = request.json
+    task = data.get('task', '').strip()
+    
+    if not task:
+        return jsonify({'error': 'Task is required'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('INSERT INTO admin_todos (task) VALUES (?)', (task,))
+    todo_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'Todo created', 'id': todo_id}), 201
+
+
+@app.route('/api/admin/todos/<int:todo_id>', methods=['PUT'])
+@admin_required
+def update_todo(todo_id):
+    """Toggle todo completion or update task"""
+    data = request.json
+    
+    conn = get_db()
+    
+    if 'completed' in data:
+        completed_at = 'CURRENT_TIMESTAMP' if data['completed'] else 'NULL'
+        conn.execute(f'UPDATE admin_todos SET completed = ?, completed_at = {completed_at} WHERE id = ?',
+                    (1 if data['completed'] else 0, todo_id))
+    
+    if 'task' in data:
+        conn.execute('UPDATE admin_todos SET task = ? WHERE id = ?', (data['task'], todo_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'Todo updated'})
+
+
+@app.route('/api/admin/todos/<int:todo_id>', methods=['DELETE'])
+@admin_required
+def delete_todo(todo_id):
+    """Delete a todo"""
+    conn = get_db()
+    conn.execute('DELETE FROM admin_todos WHERE id = ?', (todo_id,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': 'Todo deleted'})
 
 
 # ============================================
