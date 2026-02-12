@@ -232,6 +232,35 @@ def get_db():
     """Get database connection with automatic ? to %s conversion for PostgreSQL"""
     return get_wrapped_db()
 
+
+def get_setting(key, default=None):
+    """Get a setting value from app_settings table"""
+    try:
+        conn = get_db()
+        result = conn.execute('SELECT value FROM app_settings WHERE key = ?', (key,)).fetchone()
+        conn.close()
+        return result['value'] if result else default
+    except:
+        return default
+
+
+def set_setting(key, value):
+    """Set a setting value in app_settings table"""
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Check if key exists
+    existing = c.execute('SELECT key FROM app_settings WHERE key = ?', (key,)).fetchone()
+    
+    if existing:
+        c.execute('UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?', (str(value), key))
+    else:
+        c.execute('INSERT INTO app_settings (key, value) VALUES (?, ?)', (key, str(value)))
+    
+    conn.commit()
+    conn.close()
+
+
 def init_returns_table(c, using_postgres, auto_id):
     """Initialize returns and return_items tables"""
     c.execute(f'''CREATE TABLE IF NOT EXISTS returns (
@@ -294,6 +323,21 @@ def init_po_tables(c, using_postgres, auto_id):
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         completed_at TIMESTAMP
     )''')
+    
+    c.execute(f'''CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # Insert default settings if they don't exist
+    try:
+        # Check if shipping_cost exists
+        result = c.execute("SELECT key FROM app_settings WHERE key = 'shipping_cost'").fetchone()
+        if not result:
+            c.execute("INSERT INTO app_settings (key, value) VALUES ('shipping_cost', '20.00')")
+    except:
+        pass  # Already exists or error
     
     print("✓ Purchase Orders tables initialized")
 
@@ -1793,7 +1837,7 @@ def create_order():
     
     # Handle delivery method and shipping cost
     delivery_method = data.get('delivery_method', 'pickup')
-    shipping_cost = 20.0 if delivery_method == 'ship' else 0.0
+    shipping_cost = float(get_setting('shipping_cost', '20.00')) if delivery_method == 'ship' else 0.0
     
     # Handle credit application
     credit_applied = 0
@@ -4170,6 +4214,32 @@ def get_low_stock_for_po():
     
     conn.close()
     return jsonify([dict(i) for i in items])
+
+
+# ============================================
+# ADMIN SETTINGS
+# ============================================
+
+@app.route('/api/admin/settings', methods=['GET'])
+@admin_required
+def get_all_settings():
+    """Get all app settings"""
+    conn = get_db()
+    settings = conn.execute('SELECT * FROM app_settings ORDER BY key').fetchall()
+    conn.close()
+    return jsonify({s['key']: s['value'] for s in settings})
+
+
+@app.route('/api/admin/settings', methods=['PUT'])
+@admin_required
+def update_settings():
+    """Update app settings"""
+    data = request.json
+    
+    for key, value in data.items():
+        set_setting(key, value)
+    
+    return jsonify({'message': 'Settings updated'})
 
 
 # ============================================

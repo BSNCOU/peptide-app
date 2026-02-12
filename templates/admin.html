@@ -123,6 +123,7 @@
                 <button onclick="showTab('email')">📧 Email</button>
                 <button onclick="showTab('notifications')">Notifications</button>
                 <button onclick="showTab('todos')">✅ To-Do</button>
+                <button onclick="showTab('settings')">⚙️ Settings</button>
             </div>
             <div id="tabContent"></div>
         </div>
@@ -149,7 +150,8 @@
             purchaseOrders: [],
             currentPO: null,
             poFilter: '',
-            todos: []
+            todos: [],
+            settings: {}
         };
         
         // Global HTML escape helper
@@ -240,7 +242,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','purchaseOrders','returns','discounts','reports','users','email','notifications','todos'];
+            const tabList = ['products','inventory','orders','openOrders','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','settings'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -256,6 +258,7 @@
                 case 'email': loadEmail(); break;
                 case 'notifications': loadNotifications(); break;
                 case 'todos': loadTodos(); break;
+                case 'settings': loadSettings(); break;
             }
         }
 
@@ -2550,6 +2553,65 @@ The Peptide Wizard Team"></textarea>
                 await api(`/api/admin/todos/${t.id}`, { method: 'DELETE' });
             }
             loadTodos();
+        }
+
+        // Settings
+        async function loadSettings() {
+            try {
+                state.settings = await api('/api/admin/settings');
+                renderSettings();
+            } catch (e) {
+                showAlert('Failed to load settings');
+            }
+        }
+
+        function renderSettings() {
+            const shippingCost = state.settings.shipping_cost || '20.00';
+            
+            document.getElementById('tabContent').innerHTML = `
+                <h3 style="margin-bottom: 15px;">⚙️ App Settings</h3>
+                <p style="color: #718096; margin-bottom: 25px;">Configure your store settings.</p>
+                
+                <form onsubmit="saveSettings(event)">
+                    <div style="max-width: 500px;">
+                        <div style="background: #f7fafc; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                            <h4 style="margin-bottom: 15px; color: #2b6cb0;">💰 Pricing</h4>
+                            
+                            <div class="form-group">
+                                <label><strong>Shipping Cost ($)</strong></label>
+                                <input type="number" id="settingShippingCost" value="${shippingCost}" step="0.01" min="0" style="max-width: 150px;">
+                                <small style="color: #718096; display: block; margin-top: 5px;">Cost charged when customer selects "Ship" delivery</small>
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-success">💾 Save Settings</button>
+                    </div>
+                </form>
+                
+                <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
+                    <h4 style="color: #718096; margin-bottom: 10px;">Current Settings</h4>
+                    <pre style="background: #f7fafc; padding: 15px; border-radius: 8px; font-size: 0.85rem; overflow-x: auto;">${JSON.stringify(state.settings, null, 2)}</pre>
+                </div>
+            `;
+        }
+
+        async function saveSettings(e) {
+            e.preventDefault();
+            
+            const settings = {
+                shipping_cost: document.getElementById('settingShippingCost').value
+            };
+            
+            try {
+                await api('/api/admin/settings', {
+                    method: 'PUT',
+                    body: JSON.stringify(settings)
+                });
+                showAlert('Settings saved!', 'success');
+                loadSettings();
+            } catch (err) {
+                showAlert(err.message);
+            }
         }
 
         // Notifications
