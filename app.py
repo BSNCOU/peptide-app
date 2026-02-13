@@ -934,11 +934,8 @@ def send_order_confirmation(order_id):
             <p style="font-size:18px;"><strong>Total:</strong> ${order['total']:.2f}</p>
         </div>
         <div style="background:#e8f4fd;border:1px solid #3b82f6;padding:15px;border-radius:8px;margin-top:20px;">
-            <strong style="color:#1e40af;">💳 Payment Instructions</strong><br/><br/>
-            <span style="font-size:14px;">We are upgrading our systems to include payment options soon. Until this is done please use:</span><br/><br/>
-            <span style="font-size:14px;"><strong>Venmo:</strong> @Ben-Nagel</span><br/>
-            <span style="font-size:14px;"><strong>PayPal:</strong> @bnagel123</span><br/><br/>
-            <span style="font-size:13px;color:#666;">Please include your order number <strong>{order['order_number']}</strong> in the payment notes.</span>
+            <strong style="color:#1e40af;">💳 Payment Information</strong><br/><br/>
+            <span style="font-size:14px;">Payment instructions will be sent separately. Please reference your order number <strong>{order['order_number']}</strong> with your payment.</span>
         </div>
         <div style="background:#fff3cd;border:1px solid #ffc107;padding:15px;border-radius:8px;margin-top:20px;">
             <strong>⚠️ Research Use Only</strong><br/>
