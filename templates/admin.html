@@ -1262,11 +1262,6 @@ BC10,8.00</pre>
         function renderOrders() {
             const content = document.getElementById('tabContent');
             
-            // Filter orders that can be shipped (paid, processing status with ship delivery)
-            const shippableOrders = state.orders.filter(o => 
-                ['paid', 'processing'].includes(o.status) && o.delivery_method === 'ship'
-            );
-            
             content.innerHTML = `
                 <div class="search-bar" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                     <select onchange="state.orderStatusFilter=this.value;loadOrders()">
@@ -1278,16 +1273,12 @@ BC10,8.00</pre>
                         <option value="delivered" ${state.orderStatusFilter==='delivered'?'selected':''}>Delivered</option>
                         <option value="cancelled" ${state.orderStatusFilter==='cancelled'?'selected':''}>Cancelled</option>
                     </select>
-                    <div style="display: flex; gap: 10px;">
-                        <button class="btn" onclick="exportSelectedForShipping()" title="Export checked orders to CSV for Pirate Ship">📦 Export for Shipping</button>
-                        <button class="btn btn-secondary" onclick="showImportTrackingModal()" title="Import tracking numbers from Pirate Ship CSV">📥 Import Tracking</button>
-                    </div>
+                    <span style="color: #718096; font-size: 0.9rem;">💡 Use Open Orders tab for shipping workflow</span>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
                             <tr>
-                                <th style="width: 40px;"><input type="checkbox" id="selectAllOrders" onchange="toggleSelectAllOrders(this.checked)" title="Select all"></th>
                                 <th>Order #</th>
                                 <th>Customer</th>
                                 <th>Items</th>
@@ -1300,8 +1291,7 @@ BC10,8.00</pre>
                         <tbody>
                             ${state.orders.map(o => `
                                 <tr>
-                                    <td><input type="checkbox" class="order-checkbox" data-order-id="${o.id}" ${state.selectedOrders.has(o.id) ? 'checked' : ''} onchange="toggleOrderSelection(${o.id}, this.checked)"></td>
-                                    <td><strong>${o.order_number}</strong>${o.tracking_number ? '<br><small style="color:#38a169;">📦 ' + o.tracking_number + '</small>' : ''}</td>
+                                    <td><strong>${o.order_number}</strong>${o.tracking_number ? '<br><small style="color:#38a169;">📦 ' + escapeHtml(o.tracking_number) + '</small>' : ''}</td>
                                     <td>${escapeHtml(o.full_name || o.customer_name || 'Unknown')}<br><small style="color:#718096;">${escapeHtml(o.email || o.customer_email || '')}</small></td>
                                     <td>${o.items ? o.items.length : 0} items</td>
                                     <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
@@ -1315,10 +1305,6 @@ BC10,8.00</pre>
                             `).join('')}
                         </tbody>
                     </table>
-                </div>
-                <div style="margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px;">
-                    <strong>Selected:</strong> <span id="selectedCount">${state.selectedOrders.size}</span> orders
-                    ${shippableOrders.length > 0 ? `<span style="margin-left: 15px; color: #718096;">(${shippableOrders.length} ready to ship)</span>` : ''}
                 </div>
             `;
         }
@@ -1751,7 +1737,12 @@ BC10,8.00</pre>
                 showAlert(`Successfully updated ${successCount} orders with tracking numbers!`, 'success');
             }
             
-            loadOrders();
+            // Refresh the current tab
+            if (state.currentTab === 'openOrders') {
+                loadOpenOrders();
+            } else {
+                loadOrders();
+            }
             loadStats();
         }
 
@@ -3002,20 +2993,28 @@ The Peptide Wizard Team"></textarea>
                 !['fulfilled', 'delivered', 'cancelled', 'refunded'].includes(o.status)
             );
             
+            // Orders ready to ship (paid or processing)
+            const readyToShip = openOrders.filter(o => ['paid', 'processing'].includes(o.status));
+            
             const content = document.getElementById('tabContent');
             content.innerHTML = `
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                     <div>
                         <h3 style="color: #2d3748; margin: 0;">Open Orders (${openOrders.length})</h3>
                         <p style="color: #718096; font-size: 0.9rem; margin: 5px 0 0 0;">Orders that need to be fulfilled</p>
                     </div>
-                    ${openOrders.length > 0 ? '<button class="btn btn-secondary" onclick="printOpenOrders()">🖨️ Print Pick List</button>' : ''}
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="btn" onclick="exportSelectedForShipping()" title="Export checked orders to CSV for Pirate Ship">📦 Export for Shipping</button>
+                        <button class="btn btn-secondary" onclick="showImportTrackingModal()" title="Import tracking numbers from Pirate Ship CSV">📥 Import Tracking</button>
+                        ${openOrders.length > 0 ? '<button class="btn btn-secondary" onclick="printOpenOrders()">🖨️ Print Pick List</button>' : ''}
+                    </div>
                 </div>
                 ${openOrders.length === 0 ? '<p style="text-align: center; color: #718096; padding: 40px;">🎉 No open orders! All caught up.</p>' : `
                     <div style="overflow-x: auto;">
                         <table>
                             <thead>
                                 <tr>
+                                    <th style="width: 40px;"><input type="checkbox" id="selectAllOpenOrders" onchange="toggleSelectAllOrders(this.checked)" title="Select all"></th>
                                     <th>Order #</th>
                                     <th>Customer</th>
                                     <th>Items</th>
@@ -3028,7 +3027,8 @@ The Peptide Wizard Team"></textarea>
                             <tbody>
                                 ${openOrders.map(o => `
                                     <tr>
-                                        <td><strong>${escapeHtml(o.order_number)}</strong></td>
+                                        <td><input type="checkbox" class="order-checkbox" data-order-id="${o.id}" ${state.selectedOrders.has(o.id) ? 'checked' : ''} onchange="toggleOrderSelection(${o.id}, this.checked)"></td>
+                                        <td><strong>${escapeHtml(o.order_number)}</strong>${o.tracking_number ? '<br><small style="color:#38a169;">📦 ' + escapeHtml(o.tracking_number) + '</small>' : ''}</td>
                                         <td>${escapeHtml(o.full_name || o.customer_name || 'Unknown')}<br><small style="color:#718096;">${escapeHtml(o.email || o.customer_email || '')}</small></td>
                                         <td>${o.items ? o.items.length : 0} items</td>
                                         <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
@@ -3043,6 +3043,14 @@ The Peptide Wizard Team"></textarea>
                                 `).join('')}
                             </tbody>
                         </table>
+                    </div>
+                    <div style="margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                        <div>
+                            <strong>Selected:</strong> <span id="selectedCount">${state.selectedOrders.size}</span> orders
+                        </div>
+                        <div style="color: #718096;">
+                            ${readyToShip.length} ready to ship (paid/processing)
+                        </div>
                     </div>
                 `}
             `;
