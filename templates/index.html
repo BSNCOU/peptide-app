@@ -920,6 +920,10 @@
                                 <input type="checkbox" id="ack4">
                                 <label for="ack4">I agree to use these materials in compliance with all applicable laws and regulations.</label>
                             </div>
+                            <div class="checkbox-group" style="background: #ebf8ff; padding: 12px; border-radius: 8px; border: 1px solid #63b3ed;">
+                                <input type="checkbox" id="ack5">
+                                <label for="ack5">I have read and agree to the <a href="/policies" target="_blank" style="color: #3182ce; text-decoration: underline;">Terms of Service, Return Policy, and all other policies</a>.</label>
+                            </div>
                             <div id="checkoutTotals" style="background: #f7fafc; padding: 15px; border-radius: 8px; margin: 15px 0;">
                                 <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
                                     <span>Subtotal:</span>
@@ -998,9 +1002,10 @@
             const ack2 = document.getElementById('ack2').checked;
             const ack3 = document.getElementById('ack3').checked;
             const ack4 = document.getElementById('ack4').checked;
+            const ack5 = document.getElementById('ack5').checked;
             
-            if (!ack1 || !ack2 || !ack3 || !ack4) {
-                showAlert('Please confirm all acknowledgments');
+            if (!ack1 || !ack2 || !ack3 || !ack4 || !ack5) {
+                showAlert('Please confirm all acknowledgments including the Terms of Service');
                 return;
             }
             
@@ -1036,7 +1041,8 @@
                             research_only: ack1,
                             not_for_consumption: ack2,
                             authorized: ack3,
-                            compliance: ack4
+                            compliance: ack4,
+                            terms_accepted: ack5
                         }
                     })
                 });
@@ -1655,5 +1661,26 @@
         window.onhashchange = handleHash;
         init().then(handleHash);
     </script>
+    
+    <footer style="background: #1a202c; color: #a0aec0; padding: 30px 20px; margin-top: 50px; text-align: center;">
+        <div style="max-width: 800px; margin: 0 auto;">
+            <p style="margin-bottom: 15px;">
+                <a href="/policies#terms" style="color: #a0aec0; text-decoration: none; margin: 0 10px;">Terms of Service</a> |
+                <a href="/policies#returns" style="color: #a0aec0; text-decoration: none; margin: 0 10px;">Return Policy</a> |
+                <a href="/policies#shipping" style="color: #a0aec0; text-decoration: none; margin: 0 10px;">Shipping Policy</a> |
+                <a href="/policies#privacy" style="color: #a0aec0; text-decoration: none; margin: 0 10px;">Privacy Policy</a> |
+                <a href="/policies#disclaimer" style="color: #a0aec0; text-decoration: none; margin: 0 10px;">Disclaimer</a>
+            </p>
+            <p style="font-size: 0.85rem; margin-bottom: 10px;">
+                ⚠️ All products are for <strong>research use only</strong>. Not for human consumption.
+            </p>
+            <p style="font-size: 0.8rem; margin-bottom: 5px;">
+                &copy; 2026 The Peptide Wizard™ | Operated by <strong>NH Chemicals LLC</strong>
+            </p>
+            <p style="font-size: 0.75rem;">
+                530 North St, Auburn, IN 46706
+            </p>
+        </div>
+    </footer>
 </body>
 </html>
