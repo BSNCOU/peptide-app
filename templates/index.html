@@ -156,7 +156,8 @@
             referrerChoice: null,
             userCredit: 0,
             eligibleOrders: [],
-            myReturns: []
+            myReturns: [],
+            shippingCost: 20.00
         };
 
         // API helpers
@@ -203,6 +204,11 @@
                 const tokenRes = await api('/api/csrf-token');
                 state.csrfToken = tokenRes.token;
             } catch (e) { console.error('CSRF error:', e); }
+
+            try {
+                const shippingRes = await api('/api/settings/shipping');
+                state.shippingCost = shippingRes.shipping_cost || 20.00;
+            } catch (e) { console.error('Shipping cost error:', e); }
 
             try {
                 const user = await api('/api/me');
@@ -895,27 +901,8 @@
                         </div>
                         <form id="checkoutForm">
                             <div class="form-group">
-                                <label><strong>Delivery Method *</strong></label>
-                                <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
-                                    <label style="display: flex; align-items: center; gap: 12px; cursor: pointer; padding: 15px; border: 2px solid #e2e8f0; border-radius: 8px;">
-                                        <input type="radio" name="deliveryMethod" value="pickup" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})" checked style="width: 20px; height: 20px; min-width: 20px;">
-                                        <div>
-                                            <strong>Pickup</strong> - Free<br>
-                                            <small style="color: #718096;">Pick up at location</small>
-                                        </div>
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 12px; cursor: pointer; padding: 15px; border: 2px solid #e2e8f0; border-radius: 8px;">
-                                        <input type="radio" name="deliveryMethod" value="ship" onchange="updateCheckoutTotal(${subtotal}, ${discountAmount})" style="width: 20px; height: 20px; min-width: 20px;">
-                                        <div>
-                                            <strong>Ship</strong> - +$20.00<br>
-                                            <small style="color: #718096;">Shipping fee</small>
-                                        </div>
-                                    </label>
-                                </div>
-                            </div>
-                            <div id="shippingAddressGroup" class="form-group" style="display: none;">
-                                <label>Shipping Address *</label>
-                                <textarea id="shippingAddress" rows="3" placeholder="Enter full shipping address"></textarea>
+                                <label><strong>Shipping Address *</strong></label>
+                                <textarea id="shippingAddress" rows="3" placeholder="Enter full shipping address" required></textarea>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="ack1">
@@ -944,9 +931,9 @@
                                     <span>-$${discountAmount.toFixed(2)}</span>
                                 </div>
                                 ` : ''}
-                                <div id="shippingLine" style="display: none; justify-content: space-between; margin-bottom: 5px;">
+                                <div id="shippingLine" style="display: flex; justify-content: space-between; margin-bottom: 5px;">
                                     <span>Shipping:</span>
-                                    <span>$20.00</span>
+                                    <span>$${state.shippingCost.toFixed(2)}</span>
                                 </div>
                                 <div id="creditLine" style="display: none; justify-content: space-between; margin-bottom: 5px; color: #805ad5;">
                                     <span>Credit Applied:</span>
@@ -954,7 +941,7 @@
                                 </div>
                                 <div style="display: flex; justify-content: space-between; font-weight: 600; font-size: 1.1rem; border-top: 1px solid #e2e8f0; padding-top: 10px; margin-top: 10px;">
                                     <span>Total:</span>
-                                    <span id="checkoutTotal">$${(subtotal - discountAmount).toFixed(2)}</span>
+                                    <span id="checkoutTotal">$${(subtotal - discountAmount + state.shippingCost).toFixed(2)}</span>
                                 </div>
                             </div>
                             <div id="creditSection" style="display: none; background: #faf5ff; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
@@ -986,8 +973,7 @@
         }
         
         function updateCheckoutTotal(subtotal, discountAmount) {
-            const deliveryMethod = document.querySelector('input[name="deliveryMethod"]:checked').value;
-            const shippingCost = deliveryMethod === 'ship' ? 20 : 0;
+            const shippingCost = state.shippingCost;
             
             // Handle credit application
             let creditApplied = 0;
@@ -1004,16 +990,6 @@
             const total = Math.max(0, subtotal - discountAmount + shippingCost - creditApplied);
             
             document.getElementById('checkoutTotal').textContent = '$' + total.toFixed(2);
-            document.getElementById('shippingLine').style.display = deliveryMethod === 'ship' ? 'flex' : 'none';
-            document.getElementById('shippingAddressGroup').style.display = deliveryMethod === 'ship' ? 'block' : 'none';
-            
-            // Make shipping address required only for ship
-            const addressField = document.getElementById('shippingAddress');
-            if (deliveryMethod === 'ship') {
-                addressField.setAttribute('required', 'required');
-            } else {
-                addressField.removeAttribute('required');
-            }
         }
 
         async function submitOrder() {
@@ -1028,11 +1004,10 @@
                 return;
             }
             
-            const deliveryMethod = document.querySelector('input[name="deliveryMethod"]:checked').value;
             const shippingAddressEl = document.getElementById('shippingAddress');
             const shippingAddress = shippingAddressEl ? shippingAddressEl.value : '';
             
-            if (deliveryMethod === 'ship' && !shippingAddress.trim()) {
+            if (!shippingAddress.trim()) {
                 showAlert('Please enter a shipping address');
                 return;
             }
@@ -1053,8 +1028,8 @@
                         items,
                         discount_code: state.discount?.code || null,
                         referrer_choice: state.referrerChoice || null,
-                        delivery_method: deliveryMethod,
-                        shipping_address: deliveryMethod === 'ship' ? shippingAddress : 'Pickup',
+                        delivery_method: 'ship',
+                        shipping_address: shippingAddress,
                         apply_credit: applyCredit,
                         final_attestation: true,
                         acknowledgments: {

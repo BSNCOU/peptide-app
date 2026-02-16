@@ -4230,16 +4230,27 @@ def get_all_settings():
     return jsonify({s['key']: s['value'] for s in settings})
 
 
+@app.route('/api/settings/shipping', methods=['GET'])
+def get_shipping_cost():
+    """Get shipping cost (public endpoint)"""
+    cost = get_setting('shipping_cost', '20.00')
+    return jsonify({'shipping_cost': float(cost)})
+
+
 @app.route('/api/admin/settings', methods=['PUT'])
 @admin_required
 def update_settings():
     """Update app settings"""
-    data = request.json
-    
-    for key, value in data.items():
-        set_setting(key, value)
-    
-    return jsonify({'message': 'Settings updated'})
+    try:
+        data = request.json
+        
+        for key, value in data.items():
+            set_setting(key, value)
+        
+        return jsonify({'message': 'Settings updated'})
+    except Exception as e:
+        print(f"[SETTINGS ERROR] {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================
