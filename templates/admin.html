@@ -3004,9 +3004,10 @@ The Peptide Wizard Team"></textarea>
                         <p style="color: #718096; font-size: 0.9rem; margin: 5px 0 0 0;">Orders that need to be fulfilled</p>
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        ${openOrders.length > 0 ? '<button class="btn btn-success" onclick="startPickMode()">📱 Pick Mode</button>' : ''}
                         <button class="btn" onclick="exportSelectedForShipping()" title="Export checked orders to CSV for Pirate Ship">📦 Export for Shipping</button>
                         <button class="btn btn-secondary" onclick="showImportTrackingModal()" title="Import tracking numbers from Pirate Ship CSV">📥 Import Tracking</button>
-                        ${openOrders.length > 0 ? '<button class="btn btn-secondary" onclick="printOpenOrders()">🖨️ Print Pick List</button>' : ''}
+                        ${openOrders.length > 0 ? '<button class="btn btn-secondary" onclick="printOpenOrders()">🖨️ Print</button>' : ''}
                     </div>
                 </div>
                 ${openOrders.length === 0 ? '<p style="text-align: center; color: #718096; padding: 40px;">🎉 No open orders! All caught up.</p>' : `
@@ -3160,6 +3161,289 @@ The Peptide Wizard Team"></textarea>
             printWindow.document.write(html);
             printWindow.document.close();
             printWindow.print();
+        }
+
+        // ============================================
+        // PICK MODE - Interactive Mobile Pick List
+        // ============================================
+        
+        let pickState = {
+            active: false,
+            pickedItems: {}, // { orderId_itemId: true }
+            viewMode: 'byOrder' // 'byOrder' or 'byProduct'
+        };
+
+        function startPickMode() {
+            pickState.active = true;
+            pickState.pickedItems = {};
+            renderPickMode();
+        }
+
+        function exitPickMode() {
+            pickState.active = false;
+            pickState.pickedItems = {};
+            renderOpenOrders();
+        }
+
+        function renderPickMode() {
+            const openOrders = state.orders.filter(o => 
+                !['fulfilled', 'delivered', 'cancelled', 'refunded'].includes(o.status)
+            );
+            
+            const content = document.getElementById('tabContent');
+            
+            if (pickState.viewMode === 'byProduct') {
+                renderPickModeByProduct(openOrders, content);
+            } else {
+                renderPickModeByOrder(openOrders, content);
+            }
+        }
+
+        function renderPickModeByOrder(openOrders, content) {
+            // Calculate totals
+            let totalItems = 0;
+            let pickedItems = 0;
+            openOrders.forEach(o => {
+                (o.items || []).forEach(item => {
+                    totalItems += item.quantity;
+                    const key = `${o.id}_${item.id}`;
+                    if (pickState.pickedItems[key]) {
+                        pickedItems += item.quantity;
+                    }
+                });
+            });
+
+            content.innerHTML = `
+                <div style="position: sticky; top: 0; background: white; z-index: 100; padding: 15px 0; border-bottom: 2px solid #e2e8f0;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                        <div>
+                            <h3 style="margin: 0; color: #2d3748;">📱 Pick Mode</h3>
+                            <p style="margin: 5px 0 0 0; color: #718096; font-size: 0.9rem;">
+                                Progress: <strong>${pickedItems}/${totalItems}</strong> items
+                            </p>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-small ${pickState.viewMode === 'byOrder' ? 'btn-success' : 'btn-secondary'}" onclick="setPickViewMode('byOrder')">By Order</button>
+                            <button class="btn btn-small ${pickState.viewMode === 'byProduct' ? 'btn-success' : 'btn-secondary'}" onclick="setPickViewMode('byProduct')">By Product</button>
+                            <button class="btn btn-secondary btn-small" onclick="exitPickMode()">✕ Exit</button>
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px; background: #e2e8f0; border-radius: 999px; height: 8px; overflow: hidden;">
+                        <div style="background: #38a169; height: 100%; width: ${totalItems > 0 ? (pickedItems/totalItems*100) : 0}%; transition: width 0.3s;"></div>
+                    </div>
+                </div>
+
+                <div style="padding: 15px 0;">
+                    ${openOrders.map(o => {
+                        const orderItems = o.items || [];
+                        const orderPickedCount = orderItems.filter(item => pickState.pickedItems[`${o.id}_${item.id}`]).length;
+                        const allPicked = orderItems.length > 0 && orderPickedCount === orderItems.length;
+                        
+                        return `
+                            <div style="background: ${allPicked ? '#f0fff4' : 'white'}; border: 2px solid ${allPicked ? '#38a169' : '#e2e8f0'}; border-radius: 12px; margin-bottom: 15px; overflow: hidden;">
+                                <div style="background: ${allPicked ? '#38a169' : '#f7fafc'}; padding: 15px; border-bottom: 1px solid #e2e8f0;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                        <div>
+                                            <strong style="font-size: 1.1rem; color: ${allPicked ? 'white' : '#2d3748'};">${escapeHtml(o.order_number)}</strong>
+                                            <span style="color: ${allPicked ? 'rgba(255,255,255,0.8)' : '#718096'}; margin-left: 10px;">${orderPickedCount}/${orderItems.length} items</span>
+                                            <p style="margin: 5px 0 0 0; color: ${allPicked ? 'rgba(255,255,255,0.9)' : '#4a5568'}; font-size: 0.9rem;">
+                                                ${escapeHtml(o.full_name || o.customer_name || 'Unknown')}
+                                            </p>
+                                        </div>
+                                        ${allPicked ? `
+                                            <button class="btn btn-small" style="background: white; color: #38a169;" onclick="markOrderFulfilledFromPick(${o.id})">
+                                                ✓ Mark Fulfilled
+                                            </button>
+                                        ` : ''}
+                                    </div>
+                                </div>
+                                <div style="padding: 10px;">
+                                    ${orderItems.map(item => {
+                                        const key = `${o.id}_${item.id}`;
+                                        const isPicked = pickState.pickedItems[key];
+                                        return `
+                                            <div onclick="togglePickItem('${key}')" style="display: flex; align-items: center; gap: 15px; padding: 15px; margin: 5px 0; background: ${isPicked ? '#f0fff4' : '#f7fafc'}; border-radius: 8px; cursor: pointer; border: 2px solid ${isPicked ? '#38a169' : 'transparent'};">
+                                                <div style="width: 40px; height: 40px; border-radius: 50%; background: ${isPicked ? '#38a169' : '#e2e8f0'}; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; flex-shrink: 0;">
+                                                    ${isPicked ? '✓' : ''}
+                                                </div>
+                                                <div style="flex: 1;">
+                                                    <strong style="font-size: 1rem; ${isPicked ? 'text-decoration: line-through; color: #38a169;' : ''}">${escapeHtml(item.name || item.product_name || 'Unknown')}</strong>
+                                                    ${item.sku ? `<br><small style="color: #718096;">SKU: ${escapeHtml(item.sku)}</small>` : ''}
+                                                </div>
+                                                <div style="text-align: right; flex-shrink: 0;">
+                                                    <span style="font-size: 1.5rem; font-weight: 700; color: ${isPicked ? '#38a169' : '#2d3748'};">×${item.quantity}</span>
+                                                </div>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                                ${o.delivery_method === 'ship' && o.shipping_address ? `
+                                    <div style="background: #ebf8ff; padding: 12px 15px; border-top: 1px solid #bee3f8; font-size: 0.85rem;">
+                                        <strong>📦 Ship to:</strong> ${escapeHtml(o.shipping_address).replace(/\n/g, ', ')}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        function renderPickModeByProduct(openOrders, content) {
+            // Group all items by product
+            const productMap = {};
+            openOrders.forEach(o => {
+                (o.items || []).forEach(item => {
+                    const productId = item.product_id;
+                    const productName = item.name || item.product_name || 'Unknown';
+                    const sku = item.sku || '';
+                    
+                    if (!productMap[productId]) {
+                        productMap[productId] = {
+                            name: productName,
+                            sku: sku,
+                            totalQty: 0,
+                            orders: []
+                        };
+                    }
+                    productMap[productId].totalQty += item.quantity;
+                    productMap[productId].orders.push({
+                        orderId: o.id,
+                        orderNumber: o.order_number,
+                        customerName: o.full_name || o.customer_name || 'Unknown',
+                        itemId: item.id,
+                        quantity: item.quantity
+                    });
+                });
+            });
+
+            const products = Object.entries(productMap).sort((a, b) => a[1].name.localeCompare(b[1].name));
+
+            // Calculate totals
+            let totalItems = 0;
+            let pickedItems = 0;
+            products.forEach(([productId, product]) => {
+                product.orders.forEach(order => {
+                    totalItems += order.quantity;
+                    const key = `${order.orderId}_${order.itemId}`;
+                    if (pickState.pickedItems[key]) {
+                        pickedItems += order.quantity;
+                    }
+                });
+            });
+
+            content.innerHTML = `
+                <div style="position: sticky; top: 0; background: white; z-index: 100; padding: 15px 0; border-bottom: 2px solid #e2e8f0;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                        <div>
+                            <h3 style="margin: 0; color: #2d3748;">📱 Pick Mode</h3>
+                            <p style="margin: 5px 0 0 0; color: #718096; font-size: 0.9rem;">
+                                Progress: <strong>${pickedItems}/${totalItems}</strong> items
+                            </p>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-small ${pickState.viewMode === 'byOrder' ? 'btn-success' : 'btn-secondary'}" onclick="setPickViewMode('byOrder')">By Order</button>
+                            <button class="btn btn-small ${pickState.viewMode === 'byProduct' ? 'btn-success' : 'btn-secondary'}" onclick="setPickViewMode('byProduct')">By Product</button>
+                            <button class="btn btn-secondary btn-small" onclick="exitPickMode()">✕ Exit</button>
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px; background: #e2e8f0; border-radius: 999px; height: 8px; overflow: hidden;">
+                        <div style="background: #38a169; height: 100%; width: ${totalItems > 0 ? (pickedItems/totalItems*100) : 0}%; transition: width 0.3s;"></div>
+                    </div>
+                </div>
+
+                <div style="padding: 15px 0;">
+                    ${products.map(([productId, product]) => {
+                        const allPicked = product.orders.every(order => pickState.pickedItems[`${order.orderId}_${order.itemId}`]);
+                        
+                        return `
+                            <div style="background: ${allPicked ? '#f0fff4' : 'white'}; border: 2px solid ${allPicked ? '#38a169' : '#e2e8f0'}; border-radius: 12px; margin-bottom: 15px; overflow: hidden;">
+                                <div style="background: ${allPicked ? '#38a169' : '#f7fafc'}; padding: 15px; border-bottom: 1px solid #e2e8f0;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <div>
+                                            <strong style="font-size: 1.1rem; color: ${allPicked ? 'white' : '#2d3748'};">${escapeHtml(product.name)}</strong>
+                                            ${product.sku ? `<span style="color: ${allPicked ? 'rgba(255,255,255,0.8)' : '#718096'}; margin-left: 10px; font-size: 0.85rem;">SKU: ${escapeHtml(product.sku)}</span>` : ''}
+                                        </div>
+                                        <div style="font-size: 1.5rem; font-weight: 700; color: ${allPicked ? 'white' : '#2d3748'};">
+                                            ×${product.totalQty}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div style="padding: 10px;">
+                                    ${product.orders.map(order => {
+                                        const key = `${order.orderId}_${order.itemId}`;
+                                        const isPicked = pickState.pickedItems[key];
+                                        return `
+                                            <div onclick="togglePickItem('${key}')" style="display: flex; align-items: center; gap: 15px; padding: 12px; margin: 5px 0; background: ${isPicked ? '#f0fff4' : '#f7fafc'}; border-radius: 8px; cursor: pointer; border: 2px solid ${isPicked ? '#38a169' : 'transparent'};">
+                                                <div style="width: 32px; height: 32px; border-radius: 50%; background: ${isPicked ? '#38a169' : '#e2e8f0'}; display: flex; align-items: center; justify-content: center; font-size: 1rem; flex-shrink: 0;">
+                                                    ${isPicked ? '✓' : ''}
+                                                </div>
+                                                <div style="flex: 1;">
+                                                    <strong>${escapeHtml(order.orderNumber)}</strong>
+                                                    <span style="color: #718096; margin-left: 8px;">${escapeHtml(order.customerName)}</span>
+                                                </div>
+                                                <div style="font-weight: 600; color: ${isPicked ? '#38a169' : '#2d3748'};">×${order.quantity}</div>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+                
+                <div style="padding: 15px; background: #f7fafc; border-radius: 8px; margin-top: 10px;">
+                    <strong>Ready to fulfill:</strong>
+                    ${openOrders.filter(o => {
+                        const orderItems = o.items || [];
+                        return orderItems.length > 0 && orderItems.every(item => pickState.pickedItems[`${o.id}_${item.id}`]);
+                    }).map(o => `
+                        <button class="btn btn-success btn-small" style="margin: 5px;" onclick="markOrderFulfilledFromPick(${o.id})">
+                            ✓ ${escapeHtml(o.order_number)}
+                        </button>
+                    `).join('') || '<span style="color: #718096;">No orders fully picked yet</span>'}
+                </div>
+            `;
+        }
+
+        function setPickViewMode(mode) {
+            pickState.viewMode = mode;
+            renderPickMode();
+        }
+
+        function togglePickItem(key) {
+            if (pickState.pickedItems[key]) {
+                delete pickState.pickedItems[key];
+            } else {
+                pickState.pickedItems[key] = true;
+            }
+            renderPickMode();
+        }
+
+        async function markOrderFulfilledFromPick(orderId) {
+            try {
+                await api(`/api/admin/orders/${orderId}/status`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ status: 'fulfilled' })
+                });
+                
+                // Remove picked items for this order
+                Object.keys(pickState.pickedItems).forEach(key => {
+                    if (key.startsWith(`${orderId}_`)) {
+                        delete pickState.pickedItems[key];
+                    }
+                });
+                
+                showAlert('Order marked as fulfilled!', 'success');
+                
+                // Reload orders and re-render
+                await loadOpenOrders();
+                if (pickState.active) {
+                    renderPickMode();
+                }
+            } catch (err) {
+                showAlert(err.message);
+            }
         }
 
         function showOpenOrderDetailModal(id) {
