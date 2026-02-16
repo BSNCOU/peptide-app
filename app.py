@@ -1059,6 +1059,70 @@ def send_status_update(order_id, new_status):
     if order['phone']:
         send_sms(order['phone'], f"Order {order['order_number']}: {msg}")
 
+
+def send_tracking_notification(order_id, tracking_number):
+    """Send tracking number notification email to customer"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT o.*,u.full_name,u.email,u.phone FROM orders o JOIN users u ON o.user_id=u.id WHERE o.id=?', (order_id,))
+    order = c.fetchone()
+    conn.close()
+    
+    if not order:
+        return
+    order = dict(order)
+    
+    # Determine carrier and tracking URL
+    tracking_url = ''
+    if tracking_number.startswith('1Z'):
+        tracking_url = f'https://www.ups.com/track?tracknum={tracking_number}'
+        carrier = 'UPS'
+    elif len(tracking_number) == 22 or tracking_number.startswith('94'):
+        tracking_url = f'https://tools.usps.com/go/TrackConfirmAction?tLabels={tracking_number}'
+        carrier = 'USPS'
+    else:
+        tracking_url = f'https://tools.usps.com/go/TrackConfirmAction?tLabels={tracking_number}'
+        carrier = 'USPS'
+    
+    html = f"""<html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: linear-gradient(135deg, #1a365d 0%, #2b6cb0 100%); color: white; padding: 20px; text-align: center;">
+        <h1 style="margin: 0;">📦 Your Order Has Shipped!</h1>
+    </div>
+    <div style="padding: 30px; background: #f7fafc;">
+        <p style="font-size: 16px;">Hi {order['full_name']},</p>
+        <p>Great news! Your order <strong>{order['order_number']}</strong> is on its way.</p>
+        
+        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0;">
+            <p style="margin: 0 0 10px 0;"><strong>Carrier:</strong> {carrier}</p>
+            <p style="margin: 0 0 15px 0;"><strong>Tracking Number:</strong></p>
+            <p style="font-family: monospace; font-size: 18px; background: #edf2f7; padding: 10px; border-radius: 4px; margin: 0;">{tracking_number}</p>
+            
+            <a href="{tracking_url}" style="display: inline-block; background: #3182ce; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 15px;">Track Your Package</a>
+        </div>
+        
+        <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 8px; margin-top: 20px;">
+            <strong>⚠️ Research Use Only</strong><br>
+            <span style="font-size: 13px;">All materials are for laboratory research purposes only. Not for human or animal consumption.</span>
+        </div>
+        
+        <p style="color: #718096; font-size: 14px; margin-top: 30px;">
+            Thank you for your order!<br>
+            The Peptide Wizard Team
+        </p>
+    </div>
+    <div style="background: #1a202c; color: #a0aec0; padding: 15px; text-align: center; font-size: 12px;">
+        <p style="margin: 0;">© 2026 The Peptide Wizard™ | Operated by NH Chemicals LLC</p>
+    </div>
+    </body></html>"""
+    
+    ok, msg = send_email(order['email'], f"📦 Shipment Tracking - {order['order_number']}", html)
+    log_notification(order.get('user_id'), order_id, 'tracking_shipped', 'email', order['email'], 'sent' if ok else 'failed', None if ok else msg)
+    
+    # Also send SMS if phone available
+    if order['phone']:
+        sms = f"Your order {order['order_number']} has shipped! Track: {tracking_url}"
+        send_sms(order['phone'], sms)
+
 # ============================================
 # PDF INVOICE GENERATION
 # ============================================
@@ -2858,24 +2922,37 @@ def admin_get_orders():
 def admin_update_order_status(oid):
     data = request.json
     status = data.get('status')
-    valid = ['pending', 'pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
-    if status not in valid:
-        return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
+    tracking_number = data.get('tracking_number', '')
+    send_tracking_email = data.get('send_tracking_email', False)
     
+    # If only updating tracking (no status provided), keep current status
     conn = get_db()
-    current = conn.execute('SELECT status FROM orders WHERE id=?', (oid,)).fetchone()
+    current = conn.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
     if not current:
         conn.close()
         return jsonify({'error': 'Order not found'}), 404
     
-    conn.execute('UPDATE orders SET status=?, admin_notes=?, tracking_number=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                 (status, data.get('admin_notes',''), data.get('tracking_number',''), oid))
-    conn.commit()
-    conn.close()
+    current_dict = dict(current)
     
-    if current['status'] != status:
+    # If no status provided, keep current
+    if not status:
+        status = current_dict['status']
+    
+    valid = ['pending', 'pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
+    if status not in valid:
+        return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
+    
+    conn.execute('UPDATE orders SET status=?, admin_notes=?, tracking_number=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                 (status, data.get('admin_notes', current_dict.get('admin_notes', '')), tracking_number, oid))
+    conn.commit()
+    
+    # Send tracking email if requested and tracking number provided
+    if send_tracking_email and tracking_number:
+        send_tracking_notification(oid, tracking_number)
+    elif current_dict['status'] != status:
         send_status_update(oid, status)
     
+    conn.close()
     return jsonify({'message': 'Status updated'})
 
 
