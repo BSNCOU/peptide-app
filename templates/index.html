@@ -1027,6 +1027,7 @@
             }));
 
             try {
+                // Step 1: Create the order
                 const result = await api('/api/orders', {
                     method: 'POST',
                     body: JSON.stringify({
@@ -1047,22 +1048,45 @@
                     })
                 });
                 
+                // Clear cart immediately
                 state.cart = [];
                 state.discount = null;
                 state.referrerChoice = null;
-                state.userCredit = 0;
                 saveCart();
-                closeModal();
                 
-                let message = 'Order ' + result.order_number + ' placed successfully!';
-                if (result.credit_applied > 0) {
-                    message += ' ($' + result.credit_applied.toFixed(2) + ' credit applied)';
+                // Step 2: Create Stripe checkout session and redirect
+                if (result.total > 0) {
+                    try {
+                        const stripeResult = await api('/api/create-checkout-session', {
+                            method: 'POST',
+                            body: JSON.stringify({ order_id: result.order_id })
+                        });
+                        
+                        closeModal();
+                        
+                        // Show message then redirect
+                        showAlert('Redirecting to secure payment...', 'success');
+                        
+                        // Redirect to Stripe
+                        setTimeout(() => {
+                            window.location.href = stripeResult.checkout_url;
+                        }, 1000);
+                        
+                    } catch (stripeErr) {
+                        closeModal();
+                        showAlert('Order created but payment setup failed. Please go to My Orders to pay.', 'warning');
+                        showView('orders');
+                    }
+                } else {
+                    // Order is free (fully covered by credit)
+                    closeModal();
+                    let message = 'Order ' + result.order_number + ' placed successfully!';
+                    if (result.credit_applied > 0) {
+                        message += ' ($' + result.credit_applied.toFixed(2) + ' credit applied)';
+                    }
+                    showAlert(message, 'success');
+                    showView('orders');
                 }
-                if (result.credit_earned > 0) {
-                    message += ' (+$' + result.credit_earned.toFixed(2) + ' credit earned!)';
-                }
-                showAlert(message, 'success');
-                showView('orders');
             } catch (err) {
                 showAlert(err.message);
             }
@@ -1087,8 +1111,8 @@
                     ${state.orders.length === 0 ? '<p style="text-align: center; color: #718096;">No orders yet</p>' : `
                         <div>
                             ${state.orders.map(order => `
-                                <div class="order-row" onclick="showOrderDetail(${order.id})">
-                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div class="order-row" style="cursor: pointer;">
+                                    <div onclick="showOrderDetail(${order.id})" style="display: flex; justify-content: space-between; align-items: center;">
                                         <div>
                                             <h4>${order.order_number}</h4>
                                             <p>${new Date(order.created_at).toLocaleDateString()} - ${order.items ? order.items.length : 0} item(s)</p>
@@ -1098,6 +1122,11 @@
                                             <p style="margin-top: 5px; font-weight: 600;">$${parseFloat(order.total).toFixed(2)}</p>
                                         </div>
                                     </div>
+                                    ${['pending', 'pending_payment'].includes(order.status) && parseFloat(order.total) > 0 ? `
+                                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0;">
+                                            <button class="btn btn-success btn-small" onclick="event.stopPropagation(); payForOrder(${order.id})">💳 Pay Now</button>
+                                        </div>
+                                    ` : ''}
                                 </div>
                             `).join('')}
                         </div>
@@ -1141,9 +1170,17 @@
                             <div style="text-align: right; margin-top: 15px;">
                                 <p>Subtotal: $${parseFloat(order.subtotal).toFixed(2)}</p>
                                 ${parseFloat(order.discount_amount) > 0 ? `<p style="color: #38a169;">Discount: -$${parseFloat(order.discount_amount).toFixed(2)}</p>` : ''}
+                                ${parseFloat(order.credit_applied || 0) > 0 ? `<p style="color: #805ad5;">Credit Applied: -$${parseFloat(order.credit_applied).toFixed(2)}</p>` : ''}
                                 ${parseFloat(order.shipping_cost || 0) > 0 ? `<p>Shipping: $${parseFloat(order.shipping_cost).toFixed(2)}</p>` : ''}
                                 <p style="font-size: 1.2rem; font-weight: 600;">Total: $${parseFloat(order.total).toFixed(2)}</p>
                             </div>
+                            
+                            ${['pending', 'pending_payment'].includes(order.status) && parseFloat(order.total) > 0 ? `
+                                <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 8px; margin-top: 15px; text-align: center;">
+                                    <p style="margin: 0 0 10px 0;"><strong>⏳ Payment Required</strong></p>
+                                    <button class="btn btn-success" onclick="payForOrder(${order.id})" style="width: 100%;">💳 Pay Now</button>
+                                </div>
+                            ` : ''}
                         </div>
                         <div style="display: flex; gap: 10px; margin-top: 20px;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
@@ -1168,6 +1205,22 @@
                 a.download = `invoice-${orderId}.pdf`;
                 a.click();
                 window.URL.revokeObjectURL(url);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function payForOrder(orderId) {
+            try {
+                showAlert('Redirecting to secure payment...', 'success');
+                
+                const result = await api('/api/create-checkout-session', {
+                    method: 'POST',
+                    body: JSON.stringify({ order_id: orderId })
+                });
+                
+                closeModal();
+                window.location.href = result.checkout_url;
             } catch (err) {
                 showAlert(err.message);
             }
@@ -1601,6 +1654,47 @@
             } else if (hash.startsWith('#verify=')) {
                 const token = hash.slice(8);
                 verifyEmail(token);
+            } else if (hash.startsWith('#order-success')) {
+                // Payment successful - extract order_id from hash
+                const params = new URLSearchParams(hash.split('?')[1] || '');
+                const orderId = params.get('order_id');
+                handlePaymentSuccess(orderId);
+            } else if (hash.startsWith('#order-cancelled')) {
+                // Payment cancelled
+                const params = new URLSearchParams(hash.split('?')[1] || '');
+                const orderId = params.get('order_id');
+                handlePaymentCancelled(orderId);
+            }
+        }
+
+        async function handlePaymentSuccess(orderId) {
+            window.location.hash = '';
+            
+            if (orderId) {
+                try {
+                    const result = await api(`/api/verify-payment/${orderId}`);
+                    if (result.paid) {
+                        showAlert(`🎉 Payment successful! Order ${result.order_number} is confirmed.`, 'success');
+                    } else {
+                        showAlert(`Order ${result.order_number} created. Payment is being processed...`, 'success');
+                    }
+                } catch (err) {
+                    showAlert('Payment received! Thank you for your order.', 'success');
+                }
+            } else {
+                showAlert('Payment received! Thank you for your order.', 'success');
+            }
+            
+            if (state.user) {
+                showView('orders');
+            }
+        }
+
+        function handlePaymentCancelled(orderId) {
+            window.location.hash = '';
+            showAlert('Payment was cancelled. Your order is saved - you can pay from My Orders.', 'warning');
+            if (state.user) {
+                showView('orders');
             }
         }
 

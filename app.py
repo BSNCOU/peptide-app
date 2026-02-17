@@ -12,6 +12,11 @@ from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
 import sqlite3
+import stripe
+import json
+
+# Initialize Stripe
+stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -420,15 +425,37 @@ def init_db():
         discount_code_id INTEGER DEFAULT NULL,
         shipping_cost REAL DEFAULT 0,
         delivery_method TEXT DEFAULT 'pickup',
+        credit_applied REAL DEFAULT 0,
         total REAL NOT NULL,
         status TEXT DEFAULT 'pending',
         notes TEXT,
         admin_notes TEXT,
         shipping_address TEXT,
         tracking_number TEXT,
+        stripe_session_id TEXT,
+        stripe_payment_intent TEXT,
+        paid_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
+    
+    # Add Stripe columns if they don't exist (migration for existing databases)
+    try:
+        c.execute("ALTER TABLE orders ADD COLUMN stripe_session_id TEXT")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE orders ADD COLUMN stripe_payment_intent TEXT")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE orders ADD COLUMN paid_at TIMESTAMP")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE orders ADD COLUMN credit_applied REAL DEFAULT 0")
+    except:
+        pass
     
     c.execute(f'''CREATE TABLE IF NOT EXISTS order_items (
         id {auto_id},
@@ -934,8 +961,8 @@ def send_order_confirmation(order_id):
             <p style="font-size:18px;"><strong>Total:</strong> ${order['total']:.2f}</p>
         </div>
         <div style="background:#e8f4fd;border:1px solid #3b82f6;padding:15px;border-radius:8px;margin-top:20px;">
-            <strong style="color:#1e40af;">💳 Payment Information</strong><br/><br/>
-            <span style="font-size:14px;">Payment instructions will be sent separately. Please reference your order number <strong>{order['order_number']}</strong> with your payment.</span>
+            <strong style="color:#1e40af;">💳 Payment</strong><br/><br/>
+            <span style="font-size:14px;">If you haven't completed payment yet, you can pay securely from your <strong>My Orders</strong> page. Your order number is <strong>{order['order_number']}</strong>.</span>
         </div>
         <div style="background:#fff3cd;border:1px solid #ffc107;padding:15px;border-radius:8px;margin-top:20px;">
             <strong>⚠️ Research Use Only</strong><br/>
@@ -1963,6 +1990,219 @@ def create_order():
     check_low_stock()
     
     return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
+
+
+# ============================================
+# STRIPE PAYMENT INTEGRATION
+# ============================================
+
+@app.route('/api/create-checkout-session', methods=['POST'])
+@login_required
+def create_checkout_session():
+    """Create a Stripe checkout session for an order"""
+    data = request.json
+    order_id = data.get('order_id')
+    
+    if not order_id:
+        return jsonify({'error': 'Order ID required'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Get order details
+    order = c.execute('SELECT * FROM orders WHERE id = ? AND user_id = ?', (order_id, session['user_id'])).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    
+    order = dict(order)
+    
+    # Check if already paid
+    if order['status'] in ['paid', 'processing', 'shipped', 'delivered', 'fulfilled']:
+        conn.close()
+        return jsonify({'error': 'Order already paid'}), 400
+    
+    # Get order items for line items
+    items = c.execute('''SELECT oi.*, p.name, p.sku 
+                         FROM order_items oi 
+                         JOIN products p ON oi.product_id = p.id 
+                         WHERE oi.order_id = ?''', (order_id,)).fetchall()
+    conn.close()
+    
+    # Build Stripe line items
+    line_items = []
+    for item in items:
+        line_items.append({
+            'price_data': {
+                'currency': 'usd',
+                'product_data': {
+                    'name': item['name'],
+                    'description': f"SKU: {item['sku']}" if item['sku'] else 'Research compound - RUO',
+                },
+                'unit_amount': int(float(item['unit_price']) * 100),  # Stripe uses cents
+            },
+            'quantity': item['quantity'],
+        })
+    
+    # Add shipping as a line item if applicable
+    if float(order['shipping_cost'] or 0) > 0:
+        line_items.append({
+            'price_data': {
+                'currency': 'usd',
+                'product_data': {
+                    'name': 'Shipping',
+                    'description': 'USPS Ground Advantage',
+                },
+                'unit_amount': int(float(order['shipping_cost']) * 100),
+            },
+            'quantity': 1,
+        })
+    
+    # Calculate discount for Stripe (if any)
+    discounts = []
+    if float(order['discount_amount'] or 0) > 0:
+        # Create a coupon for the discount amount
+        try:
+            coupon = stripe.Coupon.create(
+                amount_off=int(float(order['discount_amount']) * 100),
+                currency='usd',
+                duration='once',
+                name=f"Discount for Order {order['order_number']}"
+            )
+            discounts = [{'coupon': coupon.id}]
+        except Exception as e:
+            print(f"[STRIPE] Could not create coupon: {e}")
+    
+    # Handle store credit as a discount too
+    if float(order['credit_applied'] or 0) > 0:
+        try:
+            credit_coupon = stripe.Coupon.create(
+                amount_off=int(float(order['credit_applied']) * 100),
+                currency='usd',
+                duration='once',
+                name=f"Store Credit for Order {order['order_number']}"
+            )
+            discounts.append({'coupon': credit_coupon.id})
+        except Exception as e:
+            print(f"[STRIPE] Could not create credit coupon: {e}")
+    
+    try:
+        # Get the base URL from request
+        base_url = request.url_root.rstrip('/')
+        
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=line_items,
+            discounts=discounts if discounts else None,
+            mode='payment',
+            success_url=f"{base_url}/#order-success?order_id={order_id}&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{base_url}/#order-cancelled?order_id={order_id}",
+            metadata={
+                'order_id': str(order_id),
+                'order_number': order['order_number'],
+                'user_id': str(session['user_id'])
+            },
+            customer_email=session.get('email'),
+        )
+        
+        # Store session ID on order
+        conn = get_db()
+        conn.execute('UPDATE orders SET stripe_session_id = ? WHERE id = ?', (checkout_session.id, order_id))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'checkout_url': checkout_session.url, 'session_id': checkout_session.id})
+    
+    except stripe.error.StripeError as e:
+        print(f"[STRIPE ERROR] {str(e)}")
+        return jsonify({'error': f'Payment error: {str(e)}'}), 400
+    except Exception as e:
+        print(f"[STRIPE ERROR] Unexpected: {str(e)}")
+        return jsonify({'error': 'Could not create checkout session'}), 500
+
+
+@app.route('/api/stripe-webhook', methods=['POST'])
+def stripe_webhook():
+    """Handle Stripe webhook events"""
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+    
+    # If no webhook secret configured, just parse the event directly
+    # (less secure but works for testing)
+    if webhook_secret:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        except ValueError as e:
+            print(f"[STRIPE WEBHOOK] Invalid payload: {e}")
+            return jsonify({'error': 'Invalid payload'}), 400
+        except stripe.error.SignatureVerificationError as e:
+            print(f"[STRIPE WEBHOOK] Invalid signature: {e}")
+            return jsonify({'error': 'Invalid signature'}), 400
+    else:
+        try:
+            event = stripe.Event.construct_from(
+                json.loads(payload), stripe.api_key
+            )
+        except Exception as e:
+            print(f"[STRIPE WEBHOOK] Error parsing event: {e}")
+            return jsonify({'error': 'Invalid event'}), 400
+    
+    # Handle the checkout.session.completed event
+    if event['type'] == 'checkout.session.completed':
+        session_obj = event['data']['object']
+        
+        order_id = session_obj.get('metadata', {}).get('order_id')
+        payment_intent = session_obj.get('payment_intent')
+        
+        if order_id:
+            conn = get_db()
+            c = conn.cursor()
+            
+            # Update order status to paid
+            c.execute('''UPDATE orders 
+                        SET status = 'paid', 
+                            stripe_payment_intent = ?,
+                            paid_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP 
+                        WHERE id = ?''', (payment_intent, order_id))
+            
+            conn.commit()
+            
+            # Get order for notification
+            order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
+            conn.close()
+            
+            if order:
+                print(f"[STRIPE] Order {order['order_number']} marked as PAID")
+                # Send payment confirmation
+                send_status_update(int(order_id), 'paid')
+    
+    elif event['type'] == 'payment_intent.payment_failed':
+        session_obj = event['data']['object']
+        print(f"[STRIPE] Payment failed: {session_obj.get('id')}")
+    
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/verify-payment/<int:order_id>', methods=['GET'])
+@login_required
+def verify_payment(order_id):
+    """Verify if an order has been paid (for frontend to check after redirect)"""
+    conn = get_db()
+    order = conn.execute('SELECT status, order_number FROM orders WHERE id = ? AND user_id = ?', 
+                         (order_id, session['user_id'])).fetchone()
+    conn.close()
+    
+    if not order:
+        return jsonify({'error': 'Order not found'}), 404
+    
+    return jsonify({
+        'order_id': order_id,
+        'order_number': order['order_number'],
+        'status': order['status'],
+        'paid': order['status'] in ['paid', 'processing', 'shipped', 'delivered', 'fulfilled']
+    })
 
 @app.route('/api/orders', methods=['GET'])
 @login_required
