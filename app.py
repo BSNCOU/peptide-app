@@ -440,22 +440,30 @@ def init_db():
     )''')
     
     # Add Stripe columns if they don't exist (migration for existing databases)
-    try:
-        c.execute("ALTER TABLE orders ADD COLUMN stripe_session_id TEXT")
-    except:
-        pass
-    try:
-        c.execute("ALTER TABLE orders ADD COLUMN stripe_payment_intent TEXT")
-    except:
-        pass
-    try:
-        c.execute("ALTER TABLE orders ADD COLUMN paid_at TIMESTAMP")
-    except:
-        pass
-    try:
-        c.execute("ALTER TABLE orders ADD COLUMN credit_applied REAL DEFAULT 0")
-    except:
-        pass
+    # PostgreSQL syntax - ADD COLUMN IF NOT EXISTS
+    if using_postgres:
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS stripe_session_id TEXT")
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS stripe_payment_intent TEXT")
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP")
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
+    else:
+        # SQLite - need try/except
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN stripe_session_id TEXT")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN stripe_payment_intent TEXT")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN paid_at TIMESTAMP")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN credit_applied REAL DEFAULT 0")
+        except:
+            pass
     
     c.execute(f'''CREATE TABLE IF NOT EXISTS order_items (
         id {auto_id},
