@@ -577,7 +577,38 @@
             }
             saveCart();
             renderNav();
-            showAlert(`Added ${qty} x ${product.name} to cart`, 'success');
+            showAddedToCartPopup(product, qty);
+        }
+
+        function showAddedToCartPopup(product, qty) {
+            const cartTotal = state.cart.reduce((sum, item) => {
+                const p = state.products.find(pr => pr.id === item.productId);
+                if (!p) return sum;
+                return sum + item.qty;
+            }, 0);
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 400px; text-align: center;">
+                        <div style="font-size: 3rem; margin-bottom: 15px;">✅</div>
+                        <h3 style="margin-bottom: 10px;">Added to Cart!</h3>
+                        <p style="color: #4a5568; margin-bottom: 20px;">
+                            <strong>${qty} × ${product.name}</strong>
+                        </p>
+                        <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                            <p style="margin: 0; color: #718096;">Your cart has <strong style="color: #2d3748;">${cartTotal} item${cartTotal !== 1 ? 's' : ''}</strong></p>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-secondary" onclick="closeModal()" style="flex: 1;">
+                                🛒 Keep Shopping
+                            </button>
+                            <button class="btn btn-success" onclick="closeModal(); showView('cart');" style="flex: 1;">
+                                Checkout →
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
         }
 
         // Cart view
