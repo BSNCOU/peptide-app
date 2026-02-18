@@ -252,15 +252,14 @@ def get_setting(key, default=None):
 def set_setting(key, value):
     """Set a setting value in app_settings table"""
     conn = get_db()
-    c = conn.cursor()
     
     # Check if key exists
-    existing = c.execute('SELECT key FROM app_settings WHERE key = ?', (key,)).fetchone()
+    existing = conn.execute('SELECT key FROM app_settings WHERE key = ?', (key,)).fetchone()
     
     if existing:
-        c.execute('UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?', (str(value), key))
+        conn.execute('UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?', (str(value), key))
     else:
-        c.execute('INSERT INTO app_settings (key, value) VALUES (?, ?)', (key, str(value)))
+        conn.execute('INSERT INTO app_settings (key, value) VALUES (?, ?)', (key, str(value)))
     
     conn.commit()
     conn.close()
