@@ -31,7 +31,6 @@ def add_cache_headers(response):
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
     return response
-    
 
 # ============================================
 # CONFIGURATION
@@ -3198,6 +3197,21 @@ def admin_update_order_status(oid):
     valid = ['pending', 'pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
     if status not in valid:
         return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
+    
+    # If changing TO cancelled/refunded, restore inventory
+    if status in ['cancelled', 'refunded'] and current_dict['status'] not in ['cancelled', 'refunded']:
+        # Get order items and restore stock
+        items = conn.execute('SELECT product_id, quantity FROM order_items WHERE order_id = ?', (oid,)).fetchall()
+        for item in items:
+            conn.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (item['quantity'], item['product_id']))
+        print(f"[INVENTORY] Restored stock for cancelled/refunded order {oid}")
+    
+    # If changing FROM cancelled/refunded back to active, deduct inventory again
+    elif current_dict['status'] in ['cancelled', 'refunded'] and status not in ['cancelled', 'refunded']:
+        items = conn.execute('SELECT product_id, quantity FROM order_items WHERE order_id = ?', (oid,)).fetchall()
+        for item in items:
+            conn.execute('UPDATE products SET stock = stock - ? WHERE id = ?', (item['quantity'], item['product_id']))
+        print(f"[INVENTORY] Deducted stock for reactivated order {oid}")
     
     conn.execute('UPDATE orders SET status=?, admin_notes=?, tracking_number=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
                  (status, data.get('admin_notes', current_dict.get('admin_notes', '')), tracking_number, oid))

@@ -3037,6 +3037,7 @@ The Peptide Wizard Team"></textarea>
                                         <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOpenOrderDetailModal(${o.id})">View</button>
+                                            <button class="btn btn-secondary btn-small" onclick="showUpdateStatusModal(${o.id})">Status</button>
                                             <button class="btn btn-success btn-small" onclick="markOrderFulfilled(${o.id})">✓ Complete</button>
                                             <button class="btn btn-danger btn-small" onclick="cancelOrder(${o.id})">✗ Cancel</button>
                                         </td>
