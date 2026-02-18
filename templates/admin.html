@@ -2892,6 +2892,8 @@ The Peptide Wizard Team"></textarea>
             const shippingCost = state.settings.shipping_cost || '20.00';
             const salesTaxRate = state.settings.sales_tax_rate || '7.00';
             const salesTaxEnabled = state.settings.sales_tax_enabled !== 'false';
+            const processingFeeRate = state.settings.processing_fee_rate || '3.00';
+            const processingFeeEnabled = state.settings.processing_fee_enabled !== 'false';
             
             document.getElementById('tabContent').innerHTML = `
                 <h3 style="margin-bottom: 15px;">⚙️ App Settings</h3>
@@ -2900,12 +2902,12 @@ The Peptide Wizard Team"></textarea>
                 <form onsubmit="saveSettings(event)">
                     <div style="max-width: 500px;">
                         <div style="background: #f7fafc; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                            <h4 style="margin-bottom: 15px; color: #2b6cb0;">💰 Pricing</h4>
+                            <h4 style="margin-bottom: 15px; color: #2b6cb0;">📦 Shipping</h4>
                             
                             <div class="form-group">
                                 <label><strong>Shipping Cost ($)</strong></label>
                                 <input type="number" id="settingShippingCost" value="${shippingCost}" step="0.01" min="0" style="max-width: 150px;">
-                                <small style="color: #718096; display: block; margin-top: 5px;">Cost charged when customer selects "Ship" delivery</small>
+                                <small style="color: #718096; display: block; margin-top: 5px;">Flat rate charged for shipping</small>
                             </div>
                         </div>
                         
@@ -2927,6 +2929,25 @@ The Peptide Wizard Team"></textarea>
                             </div>
                         </div>
                         
+                        <div style="background: #fff8e6; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #f6e05e;">
+                            <h4 style="margin-bottom: 15px; color: #d69e2e;">💳 Processing Fee</h4>
+                            <p style="color: #744210; font-size: 0.85rem; margin-bottom: 15px;">Pass credit card processing costs to customers. Stripe charges ~2.9% + $0.30 per transaction.</p>
+                            
+                            <div class="form-group">
+                                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                    <input type="checkbox" id="settingProcessingFeeEnabled" ${processingFeeEnabled ? 'checked' : ''} style="width: 18px; height: 18px;">
+                                    <strong>Charge Processing Fee</strong>
+                                </label>
+                                <small style="color: #718096; display: block; margin-top: 5px;">Customer pays processing fee at checkout</small>
+                            </div>
+                            
+                            <div class="form-group" style="margin-top: 15px;">
+                                <label><strong>Fee Rate (%)</strong></label>
+                                <input type="number" id="settingProcessingFeeRate" value="${processingFeeRate}" step="0.1" min="0" max="10" style="max-width: 100px;">
+                                <small style="color: #718096; display: block; margin-top: 5px;">Recommend 3% to cover Stripe fees</small>
+                            </div>
+                        </div>
+                        
                         <button type="submit" class="btn btn-success">💾 Save Settings</button>
                     </div>
                 </form>
@@ -2944,7 +2965,9 @@ The Peptide Wizard Team"></textarea>
             const settings = {
                 shipping_cost: document.getElementById('settingShippingCost').value,
                 sales_tax_rate: document.getElementById('settingSalesTaxRate').value,
-                sales_tax_enabled: document.getElementById('settingSalesTaxEnabled').checked ? 'true' : 'false'
+                sales_tax_enabled: document.getElementById('settingSalesTaxEnabled').checked ? 'true' : 'false',
+                processing_fee_rate: document.getElementById('settingProcessingFeeRate').value,
+                processing_fee_enabled: document.getElementById('settingProcessingFeeEnabled').checked ? 'true' : 'false'
             };
             
             try {
@@ -4327,6 +4350,33 @@ The Peptide Wizard Team"></textarea>
                         <button class="btn" onclick="loadOrderSummary()">Generate Report</button>
                         <div id="orderSummaryContent" style="margin-top: 20px;"></div>
                     </div>
+                    
+                    <div class="card" style="margin-bottom: 0; background: linear-gradient(135deg, #f0fff4 0%, #c6f6d5 100%); border: 2px solid #38a169;">
+                        <h3 style="margin-bottom: 15px; color: #276749;">💵 True Profitability</h3>
+                        <p style="color: #2f855a; margin-bottom: 15px;">Real margins after credits, fees & taxes</p>
+                        <div class="form-row" style="margin-bottom: 15px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">Start</label>
+                                <input type="date" id="profitStartDate" value="${lastMonth}">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">End</label>
+                                <input type="date" id="profitEndDate" value="${today}">
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 15px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">Income Tax %</label>
+                                <input type="number" id="incomeTaxRate" value="25" min="0" max="50" style="width: 70px;">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">SE Tax %</label>
+                                <input type="number" id="seTaxRate" value="15.3" step="0.1" min="0" max="20" style="width: 70px;">
+                            </div>
+                        </div>
+                        <button class="btn btn-success" onclick="loadProfitabilityReport()">Calculate True Profit</button>
+                        <div id="profitabilityReportContent" style="margin-top: 20px;"></div>
+                    </div>
                 </div>
             `;
         }
@@ -4374,8 +4424,8 @@ The Peptide Wizard Team"></textarea>
                             <div><span style="color: #718096;">Discounts Given:</span> <strong>$${s.total_discounts.toFixed(2)}</strong></div>
                             <div><span style="color: #718096;">Shipping Collected:</span> <strong>$${(s.shipping_collected || 0).toFixed(2)}</strong></div>
                             <div><span style="color: #718096;">Sales Tax Collected:</span> <strong style="color: #805ad5;">$${(s.sales_tax_collected || 0).toFixed(2)}</strong></div>
+                            <div><span style="color: #718096;">Processing Fees:</span> <strong style="color: #d69e2e;">$${(s.processing_fees_collected || 0).toFixed(2)}</strong></div>
                             <div><span style="color: #718096;">Inventory Value:</span> <strong>$${inv.total_value.toFixed(2)}</strong></div>
-                            <div><span style="color: #718096;">Units in Stock:</span> <strong>${inv.total_units}</strong></div>
                         </div>
                     </div>
                     
@@ -4527,6 +4577,170 @@ The Peptide Wizard Team"></textarea>
                             </tbody>
                         </table>
                     ` : ''}
+                    
+                    <hr style="margin-top: 30px;">
+                    <p style="color: #718096; font-size: 0.8rem;">The Peptide Wizard - NH Chemicals LLC</p>
+                </body>
+                </html>
+            `);
+            printWindow.document.close();
+            printWindow.print();
+        }
+
+        async function loadProfitabilityReport() {
+            const startDate = document.getElementById('profitStartDate').value;
+            const endDate = document.getElementById('profitEndDate').value;
+            const incomeTaxRate = document.getElementById('incomeTaxRate').value;
+            const seTaxRate = document.getElementById('seTaxRate').value;
+            const container = document.getElementById('profitabilityReportContent');
+            
+            container.innerHTML = '<p style="color: #718096;">Calculating...</p>';
+            
+            try {
+                const r = await api(`/api/admin/reports/profitability?start_date=${startDate}&end_date=${endDate}&income_tax_rate=${incomeTaxRate}&se_tax_rate=${seTaxRate}`);
+                
+                // Store for printing
+                window.lastProfitReport = r;
+                
+                container.innerHTML = `
+                    <div style="margin-bottom: 15px; text-align: right;">
+                        <button class="btn btn-small" onclick="printProfitabilityReport()">🖨️ Print</button>
+                    </div>
+                    
+                    <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <h4 style="margin: 0 0 15px 0; color: #2d3748;">📊 Revenue Breakdown</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9rem;">
+                            <div>Gross Revenue:</div><div style="text-align: right; font-weight: 600;">$${r.revenue.gross_revenue.toFixed(2)}</div>
+                            <div style="color: #718096; padding-left: 15px;">• Product Sales:</div><div style="text-align: right;">$${r.revenue.product_revenue.toFixed(2)}</div>
+                            <div style="color: #718096; padding-left: 15px;">• Shipping:</div><div style="text-align: right;">$${r.revenue.shipping_collected.toFixed(2)}</div>
+                            <div style="color: #718096; padding-left: 15px;">• Processing Fees:</div><div style="text-align: right;">$${r.revenue.processing_fees_collected.toFixed(2)}</div>
+                            <div style="color: #e53e3e; padding-left: 15px;">• Discounts Given:</div><div style="text-align: right; color: #e53e3e;">-$${r.revenue.discounts_given.toFixed(2)}</div>
+                            <div style="color: #805ad5; padding-left: 15px;">• Sales Tax (pass-thru):</div><div style="text-align: right; color: #805ad5;">$${r.revenue.sales_tax_collected.toFixed(2)}</div>
+                        </div>
+                    </div>
+                    
+                    <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <h4 style="margin: 0 0 15px 0; color: #2d3748;">💸 Costs</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9rem;">
+                            <div>Cost of Goods Sold:</div><div style="text-align: right; color: #e53e3e;">$${r.costs.cogs.toFixed(2)}</div>
+                            <div>Stripe Fees (est.):</div><div style="text-align: right; color: #e53e3e;">$${r.costs.stripe_fees_estimated.toFixed(2)}</div>
+                            <div>Credits Given (period):</div><div style="text-align: right; color: #e53e3e;">$${r.costs.credits_given_period.toFixed(2)}</div>
+                            <div style="color: #805ad5;">Outstanding Credit Liability:</div><div style="text-align: right; color: #805ad5;">$${r.costs.outstanding_credit_liability.toFixed(2)}</div>
+                        </div>
+                    </div>
+                    
+                    <div style="background: #f0fff4; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #9ae6b4;">
+                        <h4 style="margin: 0 0 15px 0; color: #276749;">✅ Operating Profit</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9rem;">
+                            <div>Operating Profit:</div><div style="text-align: right; font-weight: 600; color: #38a169;">$${r.profit.operating_profit.toFixed(2)}</div>
+                            <div>Operating Margin:</div><div style="text-align: right; font-weight: 600; color: #38a169;">${r.profit.operating_margin_pct}%</div>
+                            <div style="color: #718096;">After Credits:</div><div style="text-align: right;">$${r.profit.adjusted_profit.toFixed(2)} (${r.profit.adjusted_margin_pct}%)</div>
+                        </div>
+                    </div>
+                    
+                    <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #f6e05e;">
+                        <h4 style="margin: 0 0 15px 0; color: #92400e;">🏛️ Estimated Taxes</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9rem;">
+                            <div>Income Tax (${r.taxes.income_tax_rate}%):</div><div style="text-align: right; color: #d97706;">$${r.taxes.estimated_income_tax.toFixed(2)}</div>
+                            <div>Self-Employment (${r.taxes.se_tax_rate}%):</div><div style="text-align: right; color: #d97706;">$${r.taxes.estimated_se_tax.toFixed(2)}</div>
+                            <div style="font-weight: 600;">Total Estimated Tax:</div><div style="text-align: right; font-weight: 600; color: #d97706;">$${r.taxes.total_estimated_tax.toFixed(2)}</div>
+                        </div>
+                    </div>
+                    
+                    <div style="background: linear-gradient(135deg, #48bb78 0%, #38a169 100%); padding: 20px; border-radius: 8px; margin-bottom: 15px; color: white;">
+                        <h4 style="margin: 0 0 10px 0;">💰 Net Take-Home</h4>
+                        <div style="font-size: 2rem; font-weight: 700;">$${r.take_home.net_take_home.toFixed(2)}</div>
+                        <div style="opacity: 0.9;">${r.take_home.take_home_pct}% of gross revenue</div>
+                    </div>
+                    
+                    <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; border: 1px solid #90cdf4;">
+                        <h4 style="margin: 0 0 15px 0; color: #2b6cb0;">📦 Inventory Projection</h4>
+                        <p style="color: #4a5568; font-size: 0.85rem; margin-bottom: 10px;">If you sold all current inventory at current margins:</p>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9rem;">
+                            <div>Inventory Cost:</div><div style="text-align: right;">$${r.inventory_projection.inventory_cost.toFixed(2)}</div>
+                            <div>Potential Revenue:</div><div style="text-align: right;">$${r.inventory_projection.potential_revenue.toFixed(2)}</div>
+                            <div>Projected Operating:</div><div style="text-align: right; color: #38a169;">$${r.inventory_projection.projected_operating_profit.toFixed(2)}</div>
+                            <div>Projected Tax:</div><div style="text-align: right; color: #d97706;">$${r.inventory_projection.projected_tax.toFixed(2)}</div>
+                            <div style="font-weight: 600;">Projected Take-Home:</div><div style="text-align: right; font-weight: 600; color: #38a169;">$${r.inventory_projection.projected_take_home.toFixed(2)}</div>
+                            <div></div><div style="text-align: right; color: #718096;">(${r.inventory_projection.projected_take_home_pct}% of potential revenue)</div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                container.innerHTML = '<p style="color: #e53e3e;">Error: ' + err.message + '</p>';
+            }
+        }
+        
+        function printProfitabilityReport() {
+            if (!window.lastProfitReport) {
+                showAlert('Generate report first');
+                return;
+            }
+            const r = window.lastProfitReport;
+            
+            const printWindow = window.open('', '_blank');
+            printWindow.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Profitability Report - The Peptide Wizard</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; padding: 20px; max-width: 700px; margin: 0 auto; }
+                        h1 { color: #276749; border-bottom: 2px solid #38a169; padding-bottom: 10px; }
+                        h2 { color: #4a5568; margin-top: 25px; font-size: 1.1rem; }
+                        .section { background: #f7fafc; padding: 15px; border-radius: 8px; margin: 15px 0; }
+                        .row { display: flex; justify-content: space-between; padding: 5px 0; }
+                        .highlight { background: #f0fff4; border: 1px solid #9ae6b4; }
+                        .big-number { font-size: 2rem; font-weight: bold; color: #38a169; text-align: center; padding: 20px; }
+                        @media print { body { padding: 0; } }
+                    </style>
+                </head>
+                <body>
+                    <h1>💵 True Profitability Report</h1>
+                    <p><strong>Period:</strong> ${r.period.start_date} to ${r.period.end_date} (${r.period.total_orders} orders)</p>
+                    <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+                    
+                    <h2>📊 Revenue</h2>
+                    <div class="section">
+                        <div class="row"><span>Gross Revenue:</span><strong>$${r.revenue.gross_revenue.toFixed(2)}</strong></div>
+                        <div class="row" style="padding-left: 20px; color: #718096;"><span>Product Sales:</span><span>$${r.revenue.product_revenue.toFixed(2)}</span></div>
+                        <div class="row" style="padding-left: 20px; color: #718096;"><span>Shipping:</span><span>$${r.revenue.shipping_collected.toFixed(2)}</span></div>
+                        <div class="row" style="padding-left: 20px; color: #718096;"><span>Processing Fees:</span><span>$${r.revenue.processing_fees_collected.toFixed(2)}</span></div>
+                        <div class="row" style="color: #e53e3e;"><span>Discounts Given:</span><span>-$${r.revenue.discounts_given.toFixed(2)}</span></div>
+                    </div>
+                    
+                    <h2>💸 Costs</h2>
+                    <div class="section">
+                        <div class="row"><span>Cost of Goods Sold:</span><span>$${r.costs.cogs.toFixed(2)}</span></div>
+                        <div class="row"><span>Stripe Fees (est.):</span><span>$${r.costs.stripe_fees_estimated.toFixed(2)}</span></div>
+                        <div class="row"><span>Credits Given:</span><span>$${r.costs.credits_given_period.toFixed(2)}</span></div>
+                        <div class="row" style="color: #805ad5;"><span>Outstanding Credits:</span><span>$${r.costs.outstanding_credit_liability.toFixed(2)}</span></div>
+                    </div>
+                    
+                    <h2>✅ Operating Profit</h2>
+                    <div class="section highlight">
+                        <div class="row"><span>Operating Profit:</span><strong style="color: #38a169;">$${r.profit.operating_profit.toFixed(2)} (${r.profit.operating_margin_pct}%)</strong></div>
+                        <div class="row"><span>After Credits:</span><span>$${r.profit.adjusted_profit.toFixed(2)} (${r.profit.adjusted_margin_pct}%)</span></div>
+                    </div>
+                    
+                    <h2>🏛️ Estimated Taxes</h2>
+                    <div class="section">
+                        <div class="row"><span>Income Tax (${r.taxes.income_tax_rate}%):</span><span>$${r.taxes.estimated_income_tax.toFixed(2)}</span></div>
+                        <div class="row"><span>Self-Employment (${r.taxes.se_tax_rate}%):</span><span>$${r.taxes.estimated_se_tax.toFixed(2)}</span></div>
+                        <div class="row"><span><strong>Total Tax:</strong></span><strong>$${r.taxes.total_estimated_tax.toFixed(2)}</strong></div>
+                    </div>
+                    
+                    <div class="big-number">
+                        Net Take-Home: $${r.take_home.net_take_home.toFixed(2)}<br>
+                        <span style="font-size: 1rem; color: #718096;">(${r.take_home.take_home_pct}% of gross)</span>
+                    </div>
+                    
+                    <h2>📦 Inventory Projection</h2>
+                    <div class="section">
+                        <div class="row"><span>Inventory Cost:</span><span>$${r.inventory_projection.inventory_cost.toFixed(2)}</span></div>
+                        <div class="row"><span>Potential Revenue:</span><span>$${r.inventory_projection.potential_revenue.toFixed(2)}</span></div>
+                        <div class="row"><span>Projected Take-Home:</span><strong style="color: #38a169;">$${r.inventory_projection.projected_take_home.toFixed(2)} (${r.inventory_projection.projected_take_home_pct}%)</strong></div>
+                    </div>
                     
                     <hr style="margin-top: 30px;">
                     <p style="color: #718096; font-size: 0.8rem;">The Peptide Wizard - NH Chemicals LLC</p>

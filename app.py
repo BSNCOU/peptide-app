@@ -357,6 +357,14 @@ def init_po_tables(c, using_postgres, auto_id):
         result = c.execute("SELECT key FROM app_settings WHERE key = 'sales_tax_enabled'").fetchone()
         if not result:
             c.execute("INSERT INTO app_settings (key, value) VALUES ('sales_tax_enabled', 'true')")
+        # Check if processing_fee_rate exists (Stripe ~3%)
+        result = c.execute("SELECT key FROM app_settings WHERE key = 'processing_fee_rate'").fetchone()
+        if not result:
+            c.execute("INSERT INTO app_settings (key, value) VALUES ('processing_fee_rate', '3.00')")
+        # Check if processing_fee_enabled exists
+        result = c.execute("SELECT key FROM app_settings WHERE key = 'processing_fee_enabled'").fetchone()
+        if not result:
+            c.execute("INSERT INTO app_settings (key, value) VALUES ('processing_fee_enabled', 'true')")
     except:
         pass  # Already exists or error
     
@@ -441,6 +449,7 @@ def init_db():
         discount_code_id INTEGER DEFAULT NULL,
         shipping_cost REAL DEFAULT 0,
         sales_tax REAL DEFAULT 0,
+        processing_fee REAL DEFAULT 0,
         delivery_method TEXT DEFAULT 'pickup',
         credit_applied REAL DEFAULT 0,
         total REAL NOT NULL,
@@ -464,6 +473,7 @@ def init_db():
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP")
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS sales_tax REAL DEFAULT 0")
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS processing_fee REAL DEFAULT 0")
     else:
         # SQLite - need try/except
         try:
@@ -484,6 +494,10 @@ def init_db():
             pass
         try:
             c.execute("ALTER TABLE orders ADD COLUMN sales_tax REAL DEFAULT 0")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN processing_fee REAL DEFAULT 0")
         except:
             pass
     
@@ -1969,23 +1983,32 @@ def create_order():
         if taxable_amount > 0:
             sales_tax = round(taxable_amount * (tax_rate / 100), 2)
     
+    # Calculate processing fee (covers Stripe fees ~3%)
+    processing_fee = 0
+    if get_setting('processing_fee_enabled', 'true').lower() == 'true':
+        fee_rate = float(get_setting('processing_fee_rate', '3.00'))
+        # Calculate fee on subtotal after discount (before tax/shipping)
+        fee_base = subtotal - discount_amount
+        if fee_base > 0:
+            processing_fee = round(fee_base * (fee_rate / 100), 2)
+    
     # Handle credit application
     credit_applied = 0
     if data.get('apply_credit'):
         user = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
         available_credit = float(user['referral_credit'] or 0) if user else 0
         if available_credit > 0:
-            # Calculate how much credit can be applied (up to subtotal after discount + shipping + tax)
-            max_credit = subtotal - discount_amount + shipping_cost + sales_tax
+            # Calculate how much credit can be applied (up to subtotal after discount + shipping + tax + fee)
+            max_credit = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee
             credit_applied = min(available_credit, max_credit)
     
-    total = subtotal - discount_amount + shipping_cost + sales_tax - credit_applied
+    total = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee - credit_applied
     if total < 0:
         total = 0
     order_number = gen_order_num()
     
-    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,delivery_method,credit_applied,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', '')))
+    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,credit_applied,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', '')))
     order_id = c.lastrowid
     
     for item in order_items:
@@ -2027,7 +2050,7 @@ def create_order():
     send_order_confirmation(order_id)
     check_low_stock()
     
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
 
 
 # ============================================
@@ -2644,7 +2667,8 @@ def admin_financial_report():
             COALESCE(SUM(o.total), 0) as gross_revenue,
             COALESCE(SUM(o.discount_amount), 0) as total_discounts,
             COALESCE(SUM(o.shipping_cost), 0) as shipping_collected,
-            COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected
+            COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected,
+            COALESCE(SUM(o.processing_fee), 0) as processing_fees_collected
         FROM orders o
         WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
@@ -2711,9 +2735,12 @@ def admin_financial_report():
     total_cogs = float(cogs['cogs'] or 0)
     shipping_collected = float(orders['shipping_collected'] or 0)
     sales_tax = float(orders['sales_tax_collected'] or 0)
-    # Net revenue excludes shipping and tax (which are pass-throughs)
-    net_revenue = gross_revenue - shipping_collected - sales_tax
+    processing_fees = float(orders['processing_fees_collected'] or 0)
+    # Net revenue excludes shipping, tax, and processing fees (pass-throughs/cost recovery)
+    net_revenue = gross_revenue - shipping_collected - sales_tax - processing_fees
     gross_profit = net_revenue - total_cogs
+    
+    conn.close()
     
     return jsonify({
         'summary': {
@@ -2722,6 +2749,7 @@ def admin_financial_report():
             'total_discounts': float(orders['total_discounts'] or 0),
             'shipping_collected': shipping_collected,
             'sales_tax_collected': sales_tax,
+            'processing_fees_collected': processing_fees,
             'net_revenue': net_revenue,
             'cogs': total_cogs,
             'gross_profit': gross_profit,
@@ -2734,30 +2762,182 @@ def admin_financial_report():
         'products': [dict(p) for p in products],
         'categories': [dict(c) for c in categories]
     })
+
+@app.route('/api/admin/reports/profitability', methods=['GET'])
+@admin_required
+def admin_profitability_report():
+    """Get true profitability report accounting for credits, fees, and taxes"""
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    income_tax_rate = float(request.args.get('income_tax_rate', 25))
+    se_tax_rate = float(request.args.get('se_tax_rate', 15.3))
+    
+    conn = get_db()
+    
+    # Build date filter
+    date_filter = "1=1"
+    if start_date and end_date:
+        date_filter = f"DATE(o.created_at) >= '{start_date}' AND DATE(o.created_at) <= '{end_date}'"
+    
+    # Get order summary excluding cancelled/refunded
+    orders_query = f'''
+        SELECT 
+            COUNT(*) as total_orders,
+            COALESCE(SUM(o.total), 0) as gross_revenue,
+            COALESCE(SUM(o.subtotal), 0) as product_revenue,
+            COALESCE(SUM(o.discount_amount), 0) as total_discounts,
+            COALESCE(SUM(o.shipping_cost), 0) as shipping_collected,
+            COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected,
+            COALESCE(SUM(o.processing_fee), 0) as processing_fees_collected
+        FROM orders o
+        WHERE o.status NOT IN ('cancelled', 'refunded')
+        AND {date_filter}
+    '''
+    orders = conn.execute(orders_query).fetchone()
+    
+    # Get COGS
+    cogs_query = f'''
+        SELECT COALESCE(SUM(oi.quantity * p.cost), 0) as cogs
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.id
+        JOIN products p ON oi.product_id = p.id
+        WHERE o.status NOT IN ('cancelled', 'refunded')
+        AND {date_filter}
+    '''
+    cogs = conn.execute(cogs_query).fetchone()
+    
+    # Get outstanding referral credits (liability)
+    credits = conn.execute('SELECT COALESCE(SUM(referral_credit), 0) as total_credits FROM users WHERE referral_credit > 0').fetchone()
+    
+    # Get credits given in this period
+    credits_given_query = f'''
+        SELECT COALESCE(SUM(amount), 0) as credits_given
+        FROM referral_transactions
+        WHERE type = 'earned'
+        AND {date_filter.replace('o.created_at', 'created_at')}
+    '''
+    try:
+        credits_given = conn.execute(credits_given_query).fetchone()
+        credits_given_amount = float(credits_given['credits_given'] or 0)
+    except:
+        credits_given_amount = 0
+    
+    # Get current inventory value and potential
+    inventory = conn.execute('''
+        SELECT 
+            SUM(stock * cost) as inventory_cost,
+            SUM(stock * price_single) as potential_revenue,
+            SUM(stock) as total_units
+        FROM products 
+        WHERE active = 1
+    ''').fetchone()
     
     conn.close()
     
+    # Calculate metrics
     gross_revenue = float(orders['gross_revenue'] or 0)
+    product_revenue = float(orders['product_revenue'] or 0)
+    total_discounts = float(orders['total_discounts'] or 0)
+    shipping_collected = float(orders['shipping_collected'] or 0)
+    sales_tax_collected = float(orders['sales_tax_collected'] or 0)
+    processing_fees_collected = float(orders['processing_fees_collected'] or 0)
     total_cogs = float(cogs['cogs'] or 0)
-    gross_profit = gross_revenue - total_cogs
+    outstanding_credits = float(credits['total_credits'] or 0)
+    
+    # Net product revenue (what you actually keep from product sales)
+    net_product_revenue = product_revenue - total_discounts
+    
+    # Stripe takes ~2.9% + $0.30 per transaction (estimate actual cost)
+    num_orders = orders['total_orders'] or 0
+    stripe_actual_cost = (gross_revenue * 0.029) + (num_orders * 0.30)
+    
+    # Your profit from processing fee (you charge 3%, Stripe takes ~3%)
+    processing_fee_profit = processing_fees_collected - stripe_actual_cost
+    
+    # Operating profit before taxes
+    # Revenue kept = net product revenue + shipping + processing fee profit
+    # (Sales tax is pass-through, not revenue)
+    revenue_kept = net_product_revenue + shipping_collected + processing_fee_profit
+    operating_profit = revenue_kept - total_cogs
+    
+    # Adjusted for credit liability
+    adjusted_profit = operating_profit - credits_given_amount
+    
+    # Tax estimates
+    taxable_income = max(0, adjusted_profit)
+    income_tax = taxable_income * (income_tax_rate / 100)
+    se_tax = taxable_income * (se_tax_rate / 100)
+    total_tax = income_tax + se_tax
+    
+    # Net take-home
+    net_take_home = adjusted_profit - total_tax
+    
+    # Inventory projections
+    inventory_cost = float(inventory['inventory_cost'] or 0)
+    potential_revenue = float(inventory['potential_revenue'] or 0)
+    
+    # Project earnings from current inventory
+    if product_revenue > 0 and net_product_revenue > 0:
+        # Use current margin to project
+        margin_rate = operating_profit / net_product_revenue if net_product_revenue > 0 else 0.5
+        projected_gross = potential_revenue * margin_rate
+        projected_credits = potential_revenue * (credits_given_amount / product_revenue) if product_revenue > 0 else 0
+        projected_operating = projected_gross - projected_credits
+        projected_tax = projected_operating * ((income_tax_rate + se_tax_rate) / 100)
+        projected_take_home = projected_operating - projected_tax
+    else:
+        projected_gross = potential_revenue - inventory_cost
+        projected_credits = 0
+        projected_operating = projected_gross
+        projected_tax = projected_operating * ((income_tax_rate + se_tax_rate) / 100)
+        projected_take_home = projected_operating - projected_tax
     
     return jsonify({
-        'summary': {
-            'total_orders': orders['total_orders'] or 0,
+        'period': {
+            'start_date': start_date,
+            'end_date': end_date,
+            'total_orders': num_orders
+        },
+        'revenue': {
             'gross_revenue': gross_revenue,
-            'total_discounts': float(orders['total_discounts'] or 0),
-            'shipping_collected': float(orders['shipping_collected'] or 0),
+            'product_revenue': product_revenue,
+            'discounts_given': total_discounts,
+            'net_product_revenue': net_product_revenue,
+            'shipping_collected': shipping_collected,
+            'sales_tax_collected': sales_tax_collected,
+            'processing_fees_collected': processing_fees_collected
+        },
+        'costs': {
             'cogs': total_cogs,
-            'gross_profit': gross_profit,
-            'gross_margin_pct': (gross_profit / gross_revenue * 100) if gross_revenue > 0 else 0
+            'stripe_fees_estimated': round(stripe_actual_cost, 2),
+            'credits_given_period': credits_given_amount,
+            'outstanding_credit_liability': outstanding_credits
         },
-        'inventory': {
-            'total_value': float(inventory['inventory_value'] or 0),
-            'total_units': inventory['total_units'] or 0
+        'profit': {
+            'operating_profit': round(operating_profit, 2),
+            'adjusted_profit': round(adjusted_profit, 2),
+            'operating_margin_pct': round((operating_profit / net_product_revenue * 100) if net_product_revenue > 0 else 0, 1),
+            'adjusted_margin_pct': round((adjusted_profit / net_product_revenue * 100) if net_product_revenue > 0 else 0, 1)
         },
-        'products': [dict(p) for p in products],
-        'start_date': start_date,
-        'end_date': end_date
+        'taxes': {
+            'income_tax_rate': income_tax_rate,
+            'se_tax_rate': se_tax_rate,
+            'estimated_income_tax': round(income_tax, 2),
+            'estimated_se_tax': round(se_tax, 2),
+            'total_estimated_tax': round(total_tax, 2)
+        },
+        'take_home': {
+            'net_take_home': round(net_take_home, 2),
+            'take_home_pct': round((net_take_home / gross_revenue * 100) if gross_revenue > 0 else 0, 1)
+        },
+        'inventory_projection': {
+            'inventory_cost': round(inventory_cost, 2),
+            'potential_revenue': round(potential_revenue, 2),
+            'projected_operating_profit': round(projected_operating, 2),
+            'projected_tax': round(projected_tax, 2),
+            'projected_take_home': round(projected_take_home, 2),
+            'projected_take_home_pct': round((projected_take_home / potential_revenue * 100) if potential_revenue > 0 else 0, 1)
+        }
     })
 
 @app.route('/api/admin/reports/inventory', methods=['GET'])
@@ -4657,10 +4837,14 @@ def get_shipping_cost():
     shipping_cost = get_setting('shipping_cost', '20.00')
     sales_tax_rate = get_setting('sales_tax_rate', '7.00')
     sales_tax_enabled = get_setting('sales_tax_enabled', 'true')
+    processing_fee_rate = get_setting('processing_fee_rate', '3.00')
+    processing_fee_enabled = get_setting('processing_fee_enabled', 'true')
     return jsonify({
         'shipping_cost': float(shipping_cost),
         'sales_tax_rate': float(sales_tax_rate),
-        'sales_tax_enabled': sales_tax_enabled.lower() == 'true'
+        'sales_tax_enabled': sales_tax_enabled.lower() == 'true',
+        'processing_fee_rate': float(processing_fee_rate),
+        'processing_fee_enabled': processing_fee_enabled.lower() == 'true'
     })
 
 

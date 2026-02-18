@@ -210,6 +210,8 @@
                 state.shippingCost = shippingRes.shipping_cost || 20.00;
                 state.salesTaxRate = shippingRes.sales_tax_rate || 7.00;
                 state.salesTaxEnabled = shippingRes.sales_tax_enabled !== false;
+                state.processingFeeRate = shippingRes.processing_fee_rate || 3.00;
+                state.processingFeeEnabled = shippingRes.processing_fee_enabled !== false;
             } catch (e) { console.error('Settings error:', e); }
 
             try {
@@ -976,13 +978,17 @@
                                     <span>Sales Tax (${state.salesTaxRate || 7}%):</span>
                                     <span id="salesTaxAmount">$${(state.salesTaxEnabled ? ((subtotal - discountAmount) * (state.salesTaxRate / 100)) : 0).toFixed(2)}</span>
                                 </div>
+                                <div id="processingFeeLine" style="display: flex; justify-content: space-between; margin-bottom: 5px; ${state.processingFeeEnabled ? '' : 'display: none;'}">
+                                    <span>Processing Fee (${state.processingFeeRate || 3}%):</span>
+                                    <span id="processingFeeAmount">$${(state.processingFeeEnabled ? ((subtotal - discountAmount) * (state.processingFeeRate / 100)) : 0).toFixed(2)}</span>
+                                </div>
                                 <div id="creditLine" style="display: none; justify-content: space-between; margin-bottom: 5px; color: #805ad5;">
                                     <span>Credit Applied:</span>
                                     <span id="creditAppliedAmount">$0.00</span>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; font-weight: 600; font-size: 1.1rem; border-top: 1px solid #e2e8f0; padding-top: 10px; margin-top: 10px;">
                                     <span>Total:</span>
-                                    <span id="checkoutTotal">$${(subtotal - discountAmount + state.shippingCost + (state.salesTaxEnabled ? ((subtotal - discountAmount) * (state.salesTaxRate / 100)) : 0)).toFixed(2)}</span>
+                                    <span id="checkoutTotal">$${(subtotal - discountAmount + state.shippingCost + (state.salesTaxEnabled ? ((subtotal - discountAmount) * (state.salesTaxRate / 100)) : 0) + (state.processingFeeEnabled ? ((subtotal - discountAmount) * (state.processingFeeRate / 100)) : 0)).toFixed(2)}</span>
                                 </div>
                             </div>
                             <div id="creditSection" style="display: none; background: #faf5ff; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
@@ -1017,6 +1023,7 @@
             const shippingCost = state.shippingCost;
             const taxableAmount = subtotal - discountAmount;
             const salesTax = state.salesTaxEnabled ? (taxableAmount * (state.salesTaxRate / 100)) : 0;
+            const processingFee = state.processingFeeEnabled ? (taxableAmount * (state.processingFeeRate / 100)) : 0;
             
             // Update tax display
             const taxLine = document.getElementById('taxLine');
@@ -1026,11 +1033,19 @@
                 taxAmount.textContent = '$' + salesTax.toFixed(2);
             }
             
+            // Update processing fee display
+            const feeLine = document.getElementById('processingFeeLine');
+            const feeAmount = document.getElementById('processingFeeAmount');
+            if (feeLine && feeAmount) {
+                feeLine.style.display = state.processingFeeEnabled ? 'flex' : 'none';
+                feeAmount.textContent = '$' + processingFee.toFixed(2);
+            }
+            
             // Handle credit application
             let creditApplied = 0;
             const applyCreditCheckbox = document.getElementById('applyCredit');
             if (applyCreditCheckbox && applyCreditCheckbox.checked && state.userCredit > 0) {
-                const maxCredit = subtotal - discountAmount + shippingCost + salesTax;
+                const maxCredit = subtotal - discountAmount + shippingCost + salesTax + processingFee;
                 creditApplied = Math.min(state.userCredit, maxCredit);
                 document.getElementById('creditLine').style.display = 'flex';
                 document.getElementById('creditAppliedAmount').textContent = '-$' + creditApplied.toFixed(2);
@@ -1038,7 +1053,7 @@
                 document.getElementById('creditLine').style.display = 'none';
             }
             
-            const total = Math.max(0, subtotal - discountAmount + shippingCost + salesTax - creditApplied);
+            const total = Math.max(0, subtotal - discountAmount + shippingCost + salesTax + processingFee - creditApplied);
             
             document.getElementById('checkoutTotal').textContent = '$' + total.toFixed(2);
         }
@@ -1220,6 +1235,7 @@
                                 ${parseFloat(order.credit_applied || 0) > 0 ? `<p style="color: #805ad5;">Credit Applied: -$${parseFloat(order.credit_applied).toFixed(2)}</p>` : ''}
                                 ${parseFloat(order.shipping_cost || 0) > 0 ? `<p>Shipping: $${parseFloat(order.shipping_cost).toFixed(2)}</p>` : ''}
                                 ${parseFloat(order.sales_tax || 0) > 0 ? `<p>Sales Tax: $${parseFloat(order.sales_tax).toFixed(2)}</p>` : ''}
+                                ${parseFloat(order.processing_fee || 0) > 0 ? `<p>Processing Fee: $${parseFloat(order.processing_fee).toFixed(2)}</p>` : ''}
                                 <p style="font-size: 1.2rem; font-weight: 600;">Total: $${parseFloat(order.total).toFixed(2)}</p>
                             </div>
                             
