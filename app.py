@@ -2769,8 +2769,9 @@ def admin_profitability_report():
     """Get true profitability report accounting for credits, fees, and taxes"""
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
-    income_tax_rate = float(request.args.get('income_tax_rate', 25))
-    se_tax_rate = float(request.args.get('se_tax_rate', 15.3))
+    income_tax_rate = float(request.args.get('income_tax_rate', 24))
+    se_tax_rate = float(request.args.get('se_tax_rate', 14))
+    testing_cost_per_lot = float(request.args.get('testing_cost', 0))
     
     conn = get_db()
     
@@ -2832,6 +2833,22 @@ def admin_profitability_report():
         WHERE active = 1
     ''').fetchone()
     
+    # Calculate testing expense (if testing cost provided)
+    # Count unique products sold in period for testing estimate
+    testing_expense = 0
+    unique_products_sold = 0
+    if testing_cost_per_lot > 0:
+        unique_query = f'''
+            SELECT COUNT(DISTINCT oi.product_id) as unique_products
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            WHERE o.status NOT IN ('cancelled', 'refunded')
+            AND {date_filter}
+        '''
+        unique_result = conn.execute(unique_query).fetchone()
+        unique_products_sold = unique_result['unique_products'] or 0
+        testing_expense = unique_products_sold * testing_cost_per_lot
+    
     conn.close()
     
     # Calculate metrics
@@ -2858,7 +2875,7 @@ def admin_profitability_report():
     # Revenue kept = net product revenue + shipping + processing fee profit
     # (Sales tax is pass-through, not revenue)
     revenue_kept = net_product_revenue + shipping_collected + processing_fee_profit
-    operating_profit = revenue_kept - total_cogs
+    operating_profit = revenue_kept - total_cogs - testing_expense
     
     # Adjusted for credit liability
     adjusted_profit = operating_profit - credits_given_amount
@@ -2871,6 +2888,14 @@ def admin_profitability_report():
     
     # Net take-home
     net_take_home = adjusted_profit - total_tax
+    
+    # Quarterly tax set-aside recommendation
+    # Set aside enough for taxes + a small buffer
+    quarterly_tax_rate = (income_tax_rate + se_tax_rate) / 100
+    quarterly_set_aside = round(adjusted_profit * quarterly_tax_rate * 1.1, 2)  # 10% buffer
+    
+    # Sales tax to remit (this is separate - money you collected for Indiana)
+    sales_tax_to_remit = sales_tax_collected
     
     # Inventory projections
     inventory_cost = float(inventory['inventory_cost'] or 0)
@@ -2910,6 +2935,9 @@ def admin_profitability_report():
         'costs': {
             'cogs': total_cogs,
             'stripe_fees_estimated': round(stripe_actual_cost, 2),
+            'testing_expense': round(testing_expense, 2),
+            'testing_cost_per_lot': testing_cost_per_lot,
+            'unique_products_sold': unique_products_sold,
             'credits_given_period': credits_given_amount,
             'outstanding_credit_liability': outstanding_credits
         },
@@ -2924,11 +2952,17 @@ def admin_profitability_report():
             'se_tax_rate': se_tax_rate,
             'estimated_income_tax': round(income_tax, 2),
             'estimated_se_tax': round(se_tax, 2),
-            'total_estimated_tax': round(total_tax, 2)
+            'total_estimated_tax': round(total_tax, 2),
+            'sales_tax_to_remit': round(sales_tax_to_remit, 2)
         },
         'take_home': {
             'net_take_home': round(net_take_home, 2),
             'take_home_pct': round((net_take_home / gross_revenue * 100) if gross_revenue > 0 else 0, 1)
+        },
+        'quarterly_set_aside': {
+            'estimated_tax_payment': quarterly_set_aside,
+            'sales_tax_to_remit': round(sales_tax_to_remit, 2),
+            'total_to_set_aside': round(quarterly_set_aside + sales_tax_to_remit, 2)
         },
         'inventory_projection': {
             'inventory_cost': round(inventory_cost, 2),

@@ -4367,11 +4367,18 @@ The Peptide Wizard Team"></textarea>
                         <div class="form-row" style="margin-bottom: 15px;">
                             <div class="form-group" style="margin-bottom: 0;">
                                 <label style="font-size: 0.8rem;">Income Tax %</label>
-                                <input type="number" id="incomeTaxRate" value="25" min="0" max="50" style="width: 70px;">
+                                <input type="number" id="incomeTaxRate" value="24" min="0" max="50" style="width: 70px;">
                             </div>
                             <div class="form-group" style="margin-bottom: 0;">
                                 <label style="font-size: 0.8rem;">SE Tax %</label>
-                                <input type="number" id="seTaxRate" value="15.3" step="0.1" min="0" max="20" style="width: 70px;">
+                                <input type="number" id="seTaxRate" value="14" step="0.1" min="0" max="20" style="width: 70px;">
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 15px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 0.8rem;">🧪 Testing $/Lot</label>
+                                <input type="number" id="testingCostPerLot" value="0" min="0" step="10" style="width: 80px;">
+                                <small style="color: #718096; display: block;">Purdue testing cost</small>
                             </div>
                         </div>
                         <button class="btn btn-success" onclick="loadProfitabilityReport()">Calculate True Profit</button>
@@ -4592,12 +4599,13 @@ The Peptide Wizard Team"></textarea>
             const endDate = document.getElementById('profitEndDate').value;
             const incomeTaxRate = document.getElementById('incomeTaxRate').value;
             const seTaxRate = document.getElementById('seTaxRate').value;
+            const testingCost = document.getElementById('testingCostPerLot').value || 0;
             const container = document.getElementById('profitabilityReportContent');
             
             container.innerHTML = '<p style="color: #718096;">Calculating...</p>';
             
             try {
-                const r = await api(`/api/admin/reports/profitability?start_date=${startDate}&end_date=${endDate}&income_tax_rate=${incomeTaxRate}&se_tax_rate=${seTaxRate}`);
+                const r = await api(`/api/admin/reports/profitability?start_date=${startDate}&end_date=${endDate}&income_tax_rate=${incomeTaxRate}&se_tax_rate=${seTaxRate}&testing_cost=${testingCost}`);
                 
                 // Store for printing
                 window.lastProfitReport = r;
@@ -4624,6 +4632,7 @@ The Peptide Wizard Team"></textarea>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9rem;">
                             <div>Cost of Goods Sold:</div><div style="text-align: right; color: #e53e3e;">$${r.costs.cogs.toFixed(2)}</div>
                             <div>Stripe Fees (est.):</div><div style="text-align: right; color: #e53e3e;">$${r.costs.stripe_fees_estimated.toFixed(2)}</div>
+                            ${r.costs.testing_expense > 0 ? `<div>🧪 Testing (${r.costs.unique_products_sold} lots × $${r.costs.testing_cost_per_lot}):</div><div style="text-align: right; color: #e53e3e;">$${r.costs.testing_expense.toFixed(2)}</div>` : ''}
                             <div>Credits Given (period):</div><div style="text-align: right; color: #e53e3e;">$${r.costs.credits_given_period.toFixed(2)}</div>
                             <div style="color: #805ad5;">Outstanding Credit Liability:</div><div style="text-align: right; color: #805ad5;">$${r.costs.outstanding_credit_liability.toFixed(2)}</div>
                         </div>
@@ -4651,6 +4660,16 @@ The Peptide Wizard Team"></textarea>
                         <h4 style="margin: 0 0 10px 0;">💰 Net Take-Home</h4>
                         <div style="font-size: 2rem; font-weight: 700;">$${r.take_home.net_take_home.toFixed(2)}</div>
                         <div style="opacity: 0.9;">${r.take_home.take_home_pct}% of gross revenue</div>
+                    </div>
+                    
+                    <div style="background: linear-gradient(135deg, #ed8936 0%, #dd6b20 100%); padding: 20px; border-radius: 8px; margin-bottom: 15px; color: white;">
+                        <h4 style="margin: 0 0 15px 0;">💵 Set Aside for Quarterly Taxes</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.95rem;">
+                            <div>Federal/State Est. (w/ buffer):</div><div style="text-align: right;">$${r.quarterly_set_aside.estimated_tax_payment.toFixed(2)}</div>
+                            <div>Sales Tax to Remit (Indiana):</div><div style="text-align: right;">$${r.quarterly_set_aside.sales_tax_to_remit.toFixed(2)}</div>
+                            <div style="font-weight: 700; font-size: 1.2rem; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.3);">TOTAL TO SET ASIDE:</div>
+                            <div style="text-align: right; font-weight: 700; font-size: 1.2rem; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.3);">$${r.quarterly_set_aside.total_to_set_aside.toFixed(2)}</div>
+                        </div>
                     </div>
                     
                     <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; border: 1px solid #90cdf4;">
@@ -4713,6 +4732,7 @@ The Peptide Wizard Team"></textarea>
                     <div class="section">
                         <div class="row"><span>Cost of Goods Sold:</span><span>$${r.costs.cogs.toFixed(2)}</span></div>
                         <div class="row"><span>Stripe Fees (est.):</span><span>$${r.costs.stripe_fees_estimated.toFixed(2)}</span></div>
+                        ${r.costs.testing_expense > 0 ? `<div class="row"><span>Testing (${r.costs.unique_products_sold} lots):</span><span>$${r.costs.testing_expense.toFixed(2)}</span></div>` : ''}
                         <div class="row"><span>Credits Given:</span><span>$${r.costs.credits_given_period.toFixed(2)}</span></div>
                         <div class="row" style="color: #805ad5;"><span>Outstanding Credits:</span><span>$${r.costs.outstanding_credit_liability.toFixed(2)}</span></div>
                     </div>
@@ -4733,6 +4753,13 @@ The Peptide Wizard Team"></textarea>
                     <div class="big-number">
                         Net Take-Home: $${r.take_home.net_take_home.toFixed(2)}<br>
                         <span style="font-size: 1rem; color: #718096;">(${r.take_home.take_home_pct}% of gross)</span>
+                    </div>
+                    
+                    <h2>💵 Quarterly Tax Set-Aside</h2>
+                    <div class="section" style="background: #fef3c7; border: 1px solid #f6e05e;">
+                        <div class="row"><span>Federal/State Est.:</span><span>$${r.quarterly_set_aside.estimated_tax_payment.toFixed(2)}</span></div>
+                        <div class="row"><span>Sales Tax to Remit:</span><span>$${r.quarterly_set_aside.sales_tax_to_remit.toFixed(2)}</span></div>
+                        <div class="row"><span><strong>TOTAL TO SET ASIDE:</strong></span><strong style="color: #d97706;">$${r.quarterly_set_aside.total_to_set_aside.toFixed(2)}</strong></div>
                     </div>
                     
                     <h2>📦 Inventory Projection</h2>
