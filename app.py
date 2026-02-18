@@ -349,6 +349,14 @@ def init_po_tables(c, using_postgres, auto_id):
         result = c.execute("SELECT key FROM app_settings WHERE key = 'shipping_cost'").fetchone()
         if not result:
             c.execute("INSERT INTO app_settings (key, value) VALUES ('shipping_cost', '20.00')")
+        # Check if sales_tax_rate exists (Indiana = 7%)
+        result = c.execute("SELECT key FROM app_settings WHERE key = 'sales_tax_rate'").fetchone()
+        if not result:
+            c.execute("INSERT INTO app_settings (key, value) VALUES ('sales_tax_rate', '7.00')")
+        # Check if sales_tax_enabled exists
+        result = c.execute("SELECT key FROM app_settings WHERE key = 'sales_tax_enabled'").fetchone()
+        if not result:
+            c.execute("INSERT INTO app_settings (key, value) VALUES ('sales_tax_enabled', 'true')")
     except:
         pass  # Already exists or error
     
@@ -432,6 +440,7 @@ def init_db():
         discount_amount REAL DEFAULT 0,
         discount_code_id INTEGER DEFAULT NULL,
         shipping_cost REAL DEFAULT 0,
+        sales_tax REAL DEFAULT 0,
         delivery_method TEXT DEFAULT 'pickup',
         credit_applied REAL DEFAULT 0,
         total REAL NOT NULL,
@@ -454,6 +463,7 @@ def init_db():
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS stripe_payment_intent TEXT")
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP")
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS sales_tax REAL DEFAULT 0")
     else:
         # SQLite - need try/except
         try:
@@ -470,6 +480,10 @@ def init_db():
             pass
         try:
             c.execute("ALTER TABLE orders ADD COLUMN credit_applied REAL DEFAULT 0")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN sales_tax REAL DEFAULT 0")
         except:
             pass
     
@@ -1947,23 +1961,31 @@ def create_order():
     delivery_method = data.get('delivery_method', 'pickup')
     shipping_cost = float(get_setting('shipping_cost', '20.00')) if delivery_method == 'ship' else 0.0
     
+    # Calculate sales tax (Indiana 7% - only on product subtotal after discounts, not shipping)
+    sales_tax = 0
+    if get_setting('sales_tax_enabled', 'true').lower() == 'true':
+        tax_rate = float(get_setting('sales_tax_rate', '7.00'))
+        taxable_amount = subtotal - discount_amount
+        if taxable_amount > 0:
+            sales_tax = round(taxable_amount * (tax_rate / 100), 2)
+    
     # Handle credit application
     credit_applied = 0
     if data.get('apply_credit'):
         user = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
         available_credit = float(user['referral_credit'] or 0) if user else 0
         if available_credit > 0:
-            # Calculate how much credit can be applied (up to subtotal after discount + shipping)
-            max_credit = subtotal - discount_amount + shipping_cost
+            # Calculate how much credit can be applied (up to subtotal after discount + shipping + tax)
+            max_credit = subtotal - discount_amount + shipping_cost + sales_tax
             credit_applied = min(available_credit, max_credit)
     
-    total = subtotal - discount_amount + shipping_cost - credit_applied
+    total = subtotal - discount_amount + shipping_cost + sales_tax - credit_applied
     if total < 0:
         total = 0
     order_number = gen_order_num()
     
-    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,delivery_method,credit_applied,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', '')))
+    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,delivery_method,credit_applied,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', '')))
     order_id = c.lastrowid
     
     for item in order_items:
@@ -2005,7 +2027,7 @@ def create_order():
     send_order_confirmation(order_id)
     check_low_stock()
     
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
 
 
 # ============================================
@@ -2621,7 +2643,8 @@ def admin_financial_report():
             COUNT(*) as total_orders,
             COALESCE(SUM(o.total), 0) as gross_revenue,
             COALESCE(SUM(o.discount_amount), 0) as total_discounts,
-            COALESCE(SUM(o.shipping_cost), 0) as shipping_collected
+            COALESCE(SUM(o.shipping_cost), 0) as shipping_collected,
+            COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected
         FROM orders o
         WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
@@ -2644,6 +2667,7 @@ def admin_financial_report():
         SELECT 
             p.sku,
             p.name,
+            p.category,
             p.cost,
             p.price_single,
             SUM(oi.quantity) as units_sold,
@@ -2655,13 +2679,61 @@ def admin_financial_report():
         JOIN products p ON oi.product_id = p.id
         WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
-        GROUP BY p.id, p.sku, p.name, p.cost, p.price_single
+        GROUP BY p.id, p.sku, p.name, p.category, p.cost, p.price_single
         ORDER BY gross_profit DESC
     '''
     products = conn.execute(product_query).fetchall()
     
+    # Get category-level breakdown
+    category_query = f'''
+        SELECT 
+            COALESCE(p.category, 'Uncategorized') as category,
+            SUM(oi.quantity) as units_sold,
+            SUM(oi.quantity * oi.unit_price) as revenue,
+            SUM(oi.quantity * p.cost) as cost_of_goods,
+            SUM(oi.quantity * (oi.unit_price - p.cost)) as gross_profit
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.id
+        JOIN products p ON oi.product_id = p.id
+        WHERE o.status NOT IN ('cancelled', 'refunded')
+        AND {date_filter}
+        GROUP BY p.category
+        ORDER BY gross_profit DESC
+    '''
+    categories = conn.execute(category_query).fetchall()
+    
     # Get current inventory value
     inventory = conn.execute('SELECT SUM(stock * cost) as inventory_value, SUM(stock) as total_units FROM products WHERE active = 1').fetchone()
+    
+    conn.close()
+    
+    gross_revenue = float(orders['gross_revenue'] or 0)
+    total_cogs = float(cogs['cogs'] or 0)
+    shipping_collected = float(orders['shipping_collected'] or 0)
+    sales_tax = float(orders['sales_tax_collected'] or 0)
+    # Net revenue excludes shipping and tax (which are pass-throughs)
+    net_revenue = gross_revenue - shipping_collected - sales_tax
+    gross_profit = net_revenue - total_cogs
+    
+    return jsonify({
+        'summary': {
+            'total_orders': orders['total_orders'] or 0,
+            'gross_revenue': gross_revenue,
+            'total_discounts': float(orders['total_discounts'] or 0),
+            'shipping_collected': shipping_collected,
+            'sales_tax_collected': sales_tax,
+            'net_revenue': net_revenue,
+            'cogs': total_cogs,
+            'gross_profit': gross_profit,
+            'gross_margin_pct': (gross_profit / net_revenue * 100) if net_revenue > 0 else 0
+        },
+        'inventory': {
+            'total_value': float(inventory['inventory_value'] or 0),
+            'total_units': inventory['total_units'] or 0
+        },
+        'products': [dict(p) for p in products],
+        'categories': [dict(c) for c in categories]
+    })
     
     conn.close()
     
@@ -4581,9 +4653,15 @@ def get_all_settings():
 
 @app.route('/api/settings/shipping', methods=['GET'])
 def get_shipping_cost():
-    """Get shipping cost (public endpoint)"""
-    cost = get_setting('shipping_cost', '20.00')
-    return jsonify({'shipping_cost': float(cost)})
+    """Get shipping cost and tax settings (public endpoint)"""
+    shipping_cost = get_setting('shipping_cost', '20.00')
+    sales_tax_rate = get_setting('sales_tax_rate', '7.00')
+    sales_tax_enabled = get_setting('sales_tax_enabled', 'true')
+    return jsonify({
+        'shipping_cost': float(shipping_cost),
+        'sales_tax_rate': float(sales_tax_rate),
+        'sales_tax_enabled': sales_tax_enabled.lower() == 'true'
+    })
 
 
 @app.route('/api/admin/settings', methods=['PUT'])

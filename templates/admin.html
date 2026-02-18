@@ -2890,6 +2890,8 @@ The Peptide Wizard Team"></textarea>
 
         function renderSettings() {
             const shippingCost = state.settings.shipping_cost || '20.00';
+            const salesTaxRate = state.settings.sales_tax_rate || '7.00';
+            const salesTaxEnabled = state.settings.sales_tax_enabled !== 'false';
             
             document.getElementById('tabContent').innerHTML = `
                 <h3 style="margin-bottom: 15px;">⚙️ App Settings</h3>
@@ -2904,6 +2906,24 @@ The Peptide Wizard Team"></textarea>
                                 <label><strong>Shipping Cost ($)</strong></label>
                                 <input type="number" id="settingShippingCost" value="${shippingCost}" step="0.01" min="0" style="max-width: 150px;">
                                 <small style="color: #718096; display: block; margin-top: 5px;">Cost charged when customer selects "Ship" delivery</small>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f7fafc; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                            <h4 style="margin-bottom: 15px; color: #38a169;">🧾 Sales Tax (Indiana)</h4>
+                            
+                            <div class="form-group">
+                                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                    <input type="checkbox" id="settingSalesTaxEnabled" ${salesTaxEnabled ? 'checked' : ''} style="width: 18px; height: 18px;">
+                                    <strong>Collect Sales Tax</strong>
+                                </label>
+                                <small style="color: #718096; display: block; margin-top: 5px;">Enable to charge Indiana sales tax on orders</small>
+                            </div>
+                            
+                            <div class="form-group" style="margin-top: 15px;">
+                                <label><strong>Tax Rate (%)</strong></label>
+                                <input type="number" id="settingSalesTaxRate" value="${salesTaxRate}" step="0.01" min="0" max="20" style="max-width: 100px;">
+                                <small style="color: #718096; display: block; margin-top: 5px;">Indiana state rate is 7%</small>
                             </div>
                         </div>
                         
@@ -2922,7 +2942,9 @@ The Peptide Wizard Team"></textarea>
             e.preventDefault();
             
             const settings = {
-                shipping_cost: document.getElementById('settingShippingCost').value
+                shipping_cost: document.getElementById('settingShippingCost').value,
+                sales_tax_rate: document.getElementById('settingSalesTaxRate').value,
+                sales_tax_enabled: document.getElementById('settingSalesTaxEnabled').checked ? 'true' : 'false'
             };
             
             try {
@@ -4321,7 +4343,13 @@ The Peptide Wizard Team"></textarea>
                 const s = report.summary;
                 const inv = report.inventory;
                 
+                // Store for printing
+                window.lastFinancialReport = { report, startDate, endDate };
+                
                 container.innerHTML = `
+                    <div style="margin-bottom: 15px; text-align: right;">
+                        <button class="btn btn-small" onclick="printFinancialReport()">🖨️ Print Report</button>
+                    </div>
                     <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
                         <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;">
                             <div style="text-align: center; padding: 10px; background: white; border-radius: 6px;">
@@ -4343,20 +4371,44 @@ The Peptide Wizard Team"></textarea>
                         </div>
                         <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e2e8f0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; font-size: 0.9rem;">
                             <div><span style="color: #718096;">Orders:</span> <strong>${s.total_orders}</strong></div>
-                            <div><span style="color: #718096;">Discounts:</span> <strong>$${s.total_discounts.toFixed(2)}</strong></div>
+                            <div><span style="color: #718096;">Discounts Given:</span> <strong>$${s.total_discounts.toFixed(2)}</strong></div>
+                            <div><span style="color: #718096;">Shipping Collected:</span> <strong>$${(s.shipping_collected || 0).toFixed(2)}</strong></div>
+                            <div><span style="color: #718096;">Sales Tax Collected:</span> <strong style="color: #805ad5;">$${(s.sales_tax_collected || 0).toFixed(2)}</strong></div>
                             <div><span style="color: #718096;">Inventory Value:</span> <strong>$${inv.total_value.toFixed(2)}</strong></div>
                             <div><span style="color: #718096;">Units in Stock:</span> <strong>${inv.total_units}</strong></div>
                         </div>
                     </div>
+                    
+                    ${report.categories && report.categories.length > 0 ? `
+                        <h4 style="margin: 20px 0 10px 0;">📊 Sales by Category</h4>
+                        <div style="max-height: 150px; overflow-y: auto; margin-bottom: 20px;">
+                            <table style="font-size: 0.85rem;">
+                                <thead><tr><th>Category</th><th>Units</th><th>Revenue</th><th>COGS</th><th>Profit</th></tr></thead>
+                                <tbody>
+                                    ${report.categories.map(c => `
+                                        <tr>
+                                            <td><strong>${c.category || 'Uncategorized'}</strong></td>
+                                            <td>${c.units_sold}</td>
+                                            <td>$${parseFloat(c.revenue || 0).toFixed(2)}</td>
+                                            <td>$${parseFloat(c.cost_of_goods || 0).toFixed(2)}</td>
+                                            <td style="color: ${c.gross_profit >= 0 ? '#38a169' : '#e53e3e'};">$${parseFloat(c.gross_profit || 0).toFixed(2)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    ` : ''}
+                    
                     ${report.products.length > 0 ? `
-                        <h4 style="margin-bottom: 10px;">Top Products by Profit</h4>
+                        <h4 style="margin-bottom: 10px;">🏆 Top Products by Profit</h4>
                         <div style="max-height: 200px; overflow-y: auto;">
                             <table style="font-size: 0.85rem;">
-                                <thead><tr><th>Product</th><th>Units</th><th>Revenue</th><th>COGS</th><th>Profit</th></tr></thead>
+                                <thead><tr><th>Product</th><th>Category</th><th>Units</th><th>Revenue</th><th>COGS</th><th>Profit</th></tr></thead>
                                 <tbody>
-                                    ${report.products.slice(0, 10).map(p => `
+                                    ${report.products.slice(0, 15).map(p => `
                                         <tr>
                                             <td>${p.sku}</td>
+                                            <td style="color: #718096;">${p.category || '-'}</td>
                                             <td>${p.units_sold}</td>
                                             <td>$${parseFloat(p.revenue || 0).toFixed(2)}</td>
                                             <td>$${parseFloat(p.cost_of_goods || 0).toFixed(2)}</td>
@@ -4371,6 +4423,118 @@ The Peptide Wizard Team"></textarea>
             } catch (err) {
                 container.innerHTML = '<p style="color: #e53e3e;">Error loading report: ' + err.message + '</p>';
             }
+        }
+        
+        function printFinancialReport() {
+            if (!window.lastFinancialReport) {
+                showAlert('Generate report first');
+                return;
+            }
+            const { report, startDate, endDate } = window.lastFinancialReport;
+            const s = report.summary;
+            const inv = report.inventory;
+            
+            const printWindow = window.open('', '_blank');
+            printWindow.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Financial Report - The Peptide Wizard</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+                        h1 { color: #2d3748; border-bottom: 2px solid #4299e1; padding-bottom: 10px; }
+                        h2 { color: #4a5568; margin-top: 25px; }
+                        .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+                        .summary-box { text-align: center; padding: 15px; background: #f7fafc; border-radius: 8px; }
+                        .summary-box .value { font-size: 1.5rem; font-weight: bold; }
+                        .summary-box .label { font-size: 0.8rem; color: #718096; }
+                        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+                        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+                        th { background: #f7fafc; font-weight: 600; }
+                        .detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 15px 0; }
+                        .detail-item { padding: 8px; background: #f7fafc; border-radius: 4px; }
+                        .profit { color: #38a169; }
+                        .loss { color: #e53e3e; }
+                        @media print { body { padding: 0; } }
+                    </style>
+                </head>
+                <body>
+                    <h1>📊 Financial Report</h1>
+                    <p><strong>Period:</strong> ${startDate} to ${endDate}</p>
+                    <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+                    
+                    <div class="summary-grid">
+                        <div class="summary-box">
+                            <div class="value" style="color: #38a169;">$${s.gross_revenue.toFixed(2)}</div>
+                            <div class="label">Gross Revenue</div>
+                        </div>
+                        <div class="summary-box">
+                            <div class="value" style="color: #e53e3e;">$${s.cogs.toFixed(2)}</div>
+                            <div class="label">Cost of Goods</div>
+                        </div>
+                        <div class="summary-box">
+                            <div class="value" style="color: #2b6cb0;">$${s.gross_profit.toFixed(2)}</div>
+                            <div class="label">Gross Profit</div>
+                        </div>
+                        <div class="summary-box">
+                            <div class="value" style="color: #805ad5;">${s.gross_margin_pct.toFixed(1)}%</div>
+                            <div class="label">Gross Margin</div>
+                        </div>
+                    </div>
+                    
+                    <div class="detail-grid">
+                        <div class="detail-item"><strong>Orders:</strong> ${s.total_orders}</div>
+                        <div class="detail-item"><strong>Discounts Given:</strong> $${s.total_discounts.toFixed(2)}</div>
+                        <div class="detail-item"><strong>Shipping Collected:</strong> $${(s.shipping_collected || 0).toFixed(2)}</div>
+                        <div class="detail-item"><strong>Sales Tax Collected:</strong> $${(s.sales_tax_collected || 0).toFixed(2)}</div>
+                        <div class="detail-item"><strong>Inventory Value:</strong> $${inv.total_value.toFixed(2)}</div>
+                        <div class="detail-item"><strong>Units in Stock:</strong> ${inv.total_units}</div>
+                    </div>
+                    
+                    ${report.categories && report.categories.length > 0 ? `
+                        <h2>Sales by Category</h2>
+                        <table>
+                            <thead><tr><th>Category</th><th>Units</th><th>Revenue</th><th>COGS</th><th>Profit</th></tr></thead>
+                            <tbody>
+                                ${report.categories.map(c => `
+                                    <tr>
+                                        <td><strong>${c.category || 'Uncategorized'}</strong></td>
+                                        <td>${c.units_sold}</td>
+                                        <td>$${parseFloat(c.revenue || 0).toFixed(2)}</td>
+                                        <td>$${parseFloat(c.cost_of_goods || 0).toFixed(2)}</td>
+                                        <td class="${c.gross_profit >= 0 ? 'profit' : 'loss'}">$${parseFloat(c.gross_profit || 0).toFixed(2)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    ` : ''}
+                    
+                    ${report.products.length > 0 ? `
+                        <h2>Product Breakdown</h2>
+                        <table>
+                            <thead><tr><th>SKU</th><th>Category</th><th>Units</th><th>Revenue</th><th>COGS</th><th>Profit</th></tr></thead>
+                            <tbody>
+                                ${report.products.map(p => `
+                                    <tr>
+                                        <td>${p.sku}</td>
+                                        <td>${p.category || '-'}</td>
+                                        <td>${p.units_sold}</td>
+                                        <td>$${parseFloat(p.revenue || 0).toFixed(2)}</td>
+                                        <td>$${parseFloat(p.cost_of_goods || 0).toFixed(2)}</td>
+                                        <td class="${p.gross_profit >= 0 ? 'profit' : 'loss'}">$${parseFloat(p.gross_profit || 0).toFixed(2)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    ` : ''}
+                    
+                    <hr style="margin-top: 30px;">
+                    <p style="color: #718096; font-size: 0.8rem;">The Peptide Wizard - NH Chemicals LLC</p>
+                </body>
+                </html>
+            `);
+            printWindow.document.close();
+            printWindow.print();
         }
 
         async function loadInventoryReport() {
