@@ -31,6 +31,7 @@ def add_cache_headers(response):
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
     return response
+    
 
 # ============================================
 # CONFIGURATION
