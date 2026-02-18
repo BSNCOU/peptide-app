@@ -251,18 +251,27 @@ def get_setting(key, default=None):
 
 def set_setting(key, value):
     """Set a setting value in app_settings table"""
-    conn = get_db()
+    # Use raw connection to avoid wrapper adding RETURNING id
+    raw_conn = get_raw_db()
+    c = raw_conn.cursor()
     
-    # Check if key exists
-    existing = conn.execute('SELECT key FROM app_settings WHERE key = ?', (key,)).fetchone()
-    
-    if existing:
-        conn.execute('UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?', (str(value), key))
+    if is_postgres():
+        # PostgreSQL - use upsert
+        c.execute(
+            'INSERT INTO app_settings (key, value, updated_at) VALUES (%s, %s, CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP',
+            (key, str(value))
+        )
     else:
-        conn.execute('INSERT INTO app_settings (key, value) VALUES (?, ?)', (key, str(value)))
+        # SQLite - check and insert/update
+        c.execute('SELECT key FROM app_settings WHERE key = ?', (key,))
+        existing = c.fetchone()
+        if existing:
+            c.execute('UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?', (str(value), key))
+        else:
+            c.execute('INSERT INTO app_settings (key, value) VALUES (?, ?)', (key, str(value)))
     
-    conn.commit()
-    conn.close()
+    raw_conn.commit()
+    raw_conn.close()
 
 
 def init_returns_table(c, using_postgres, auto_id):
@@ -4678,4 +4687,3 @@ else:
         import_products()
     except Exception as e:
         print(f"Product import error: {e}")
-
