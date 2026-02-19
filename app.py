@@ -1001,7 +1001,11 @@ def send_order_confirmation(order_id):
         </table>
         <div style="text-align:right;margin-top:20px;padding-top:20px;border-top:2px solid #333;">
             <p><strong>Subtotal:</strong> ${order['subtotal']:.2f}</p>
-            {"<p><strong>Discount:</strong> -$" + f"{order['discount_amount']:.2f}</p>" if order['discount_amount'] else ""}
+            {"<p><strong>Discount:</strong> -$" + f"{order['discount_amount']:.2f}</p>" if order.get('discount_amount') else ""}
+            {"<p><strong>Shipping:</strong> $" + f"{order['shipping_cost']:.2f}</p>" if order.get('shipping_cost') else ""}
+            {"<p><strong>Sales Tax:</strong> $" + f"{order['sales_tax']:.2f}</p>" if order.get('sales_tax') else ""}
+            {"<p><strong>Processing Fee:</strong> $" + f"{order['processing_fee']:.2f}</p>" if order.get('processing_fee') else ""}
+            {"<p style='color:#805ad5;'><strong>Credit Applied:</strong> -$" + f"{order['credit_applied']:.2f}</p>" if order.get('credit_applied') else ""}
             <p style="font-size:18px;"><strong>Total:</strong> ${order['total']:.2f}</p>
         </div>
         <div style="background:#e8f4fd;border:1px solid #3b82f6;padding:15px;border-radius:8px;margin-top:20px;">
@@ -1068,6 +1072,9 @@ def send_new_order_admin_notification(order, items):
             <p style="margin:5px 0;"><strong>Subtotal:</strong> ${order['subtotal']:.2f}</p>
             {f"<p style='margin:5px 0;color:#38a169;'><strong>Discount:</strong> -${order['discount_amount']:.2f}</p>" if order.get('discount_amount') else ""}
             {f"<p style='margin:5px 0;'><strong>Shipping:</strong> ${order.get('shipping_cost', 0):.2f}</p>" if order.get('shipping_cost') else ""}
+            {f"<p style='margin:5px 0;'><strong>Sales Tax:</strong> ${order.get('sales_tax', 0):.2f}</p>" if order.get('sales_tax') else ""}
+            {f"<p style='margin:5px 0;'><strong>Processing Fee:</strong> ${order.get('processing_fee', 0):.2f}</p>" if order.get('processing_fee') else ""}
+            {f"<p style='margin:5px 0;color:#805ad5;'><strong>Credit Applied:</strong> -${order.get('credit_applied', 0):.2f}</p>" if order.get('credit_applied') else ""}
             <p style="margin:10px 0 0 0;font-size:20px;"><strong>Total: ${order['total']:.2f}</strong></p>
         </div>
         
