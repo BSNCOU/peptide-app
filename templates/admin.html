@@ -1292,7 +1292,7 @@ BC10,8.00</pre>
                             ${state.orders.map(o => `
                                 <tr>
                                     <td><strong>${o.order_number}</strong>${o.tracking_number ? '<br><small style="color:#38a169;">📦 ' + escapeHtml(o.tracking_number) + '</small>' : ''}</td>
-                                    <td>${escapeHtml(o.full_name || o.customer_name || 'Unknown')}<br><small style="color:#718096;">${escapeHtml(o.email || o.customer_email || '')}</small></td>
+                                    <td><a href="#" onclick="showUserDetailModal(${o.user_id}); return false;" style="color:#3182ce; text-decoration:none; font-weight:500;">${escapeHtml(o.full_name || o.customer_name || 'Unknown')}</a><br><small style="color:#718096;">${escapeHtml(o.email || o.customer_email || '')}</small></td>
                                     <td>${o.items ? o.items.length : 0} items</td>
                                     <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
                                     <td><span class="status-badge status-${o.status}">${o.status}</span></td>
@@ -2315,27 +2315,97 @@ BC10,8.00</pre>
             `;
         }
 
-        function showUserDetailModal(id) {
-            const u = state.users.find(x => x.id === id);
-            if (!u) return;
+        async function showUserDetailModal(id) {
+            // Try to get user from state first, otherwise fetch
+            let u = state.users.find(x => x.id === id);
+            
+            if (!u) {
+                // Fetch user data
+                try {
+                    u = await api('/api/admin/users/' + id);
+                } catch (err) {
+                    showAlert('Could not load user: ' + err.message);
+                    return;
+                }
+            }
+            
+            if (!u) {
+                showAlert('User not found');
+                return;
+            }
+            
+            // Get user's orders
+            const userOrders = state.orders.filter(o => o.user_id === id);
+            const totalSpent = userOrders.filter(o => !['cancelled', 'refunded'].includes(o.status)).reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
+            const orderCount = userOrders.filter(o => !['cancelled', 'refunded'].includes(o.status)).length;
+            
+            const ordersHtml = userOrders.length > 0 ? `
+                <div style="max-height: 200px; overflow-y: auto; margin-top: 15px;">
+                    <table style="font-size: 0.85rem;">
+                        <thead>
+                            <tr><th>Order #</th><th>Date</th><th>Status</th><th>Total</th></tr>
+                        </thead>
+                        <tbody>
+                            ${userOrders.slice(0, 10).map(o => `
+                                <tr style="cursor: pointer;" onclick="closeModal(); setTimeout(() => showOrderDetailModal(${o.id}), 100);">
+                                    <td>${o.order_number}</td>
+                                    <td>${new Date(o.created_at).toLocaleDateString()}</td>
+                                    <td><span class="status-badge status-${o.status}">${o.status}</span></td>
+                                    <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            ` : '<p style="color: #718096; margin-top: 15px;">No orders yet.</p>';
+            
+            const credit = parseFloat(u.referral_credit) || 0;
             
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
-                    <div class="modal-content">
-                        <h3>User Details: ${u.full_name}</h3>
-                        <div style="display: grid; gap: 10px; margin: 20px 0;">
-                            <p><strong>Email:</strong> ${u.email}</p>
-                            <p><strong>Phone:</strong> ${u.phone || '-'}</p>
-                            <p><strong>Organization:</strong> ${u.organization || '-'}</p>
-                            <p><strong>Country:</strong> ${u.country || '-'}</p>
-                            <p><strong>Email Verified:</strong> ${u.email_verified ? 'Yes ✅' : 'No ❌'}</p>
-                            <p><strong>Admin:</strong> ${u.is_admin ? 'Yes 👑' : 'No'}</p>
-                            <p><strong>Joined:</strong> ${new Date(u.created_at).toLocaleString()}</p>
+                    <div class="modal-content" style="max-width: 600px;">
+                        <h3>👤 ${escapeHtml(u.full_name)}</h3>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0;">
+                            <div style="background: #f7fafc; padding: 15px; border-radius: 8px;">
+                                <h4 style="margin: 0 0 10px 0; color: #4a5568;">Contact</h4>
+                                <p style="margin: 5px 0;"><strong>Email:</strong> ${escapeHtml(u.email)}</p>
+                                <p style="margin: 5px 0;"><strong>Phone:</strong> ${u.phone || '-'}</p>
+                                <p style="margin: 5px 0;"><strong>Organization:</strong> ${u.organization || '-'}</p>
+                                <p style="margin: 5px 0;"><strong>Country:</strong> ${u.country || '-'}</p>
+                            </div>
+                            <div style="background: #f0fff4; padding: 15px; border-radius: 8px;">
+                                <h4 style="margin: 0 0 10px 0; color: #276749;">Stats</h4>
+                                <p style="margin: 5px 0;"><strong>Orders:</strong> ${orderCount}</p>
+                                <p style="margin: 5px 0;"><strong>Total Spent:</strong> $${totalSpent.toFixed(2)}</p>
+                                <p style="margin: 5px 0;"><strong>Credit Balance:</strong> <span style="color: #805ad5;">$${credit.toFixed(2)}</span></p>
+                                <p style="margin: 5px 0;"><strong>Joined:</strong> ${new Date(u.created_at).toLocaleDateString()}</p>
+                            </div>
                         </div>
-                        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                        
+                        <div style="margin-top: 15px;">
+                            <p style="margin: 5px 0;"><strong>Email Verified:</strong> ${u.email_verified ? '✅ Yes' : '❌ No'}</p>
+                            ${u.is_admin ? '<p style="margin: 5px 0;"><strong>Admin:</strong> 👑 Yes</p>' : ''}
+                        </div>
+                        
+                        <h4 style="margin: 20px 0 10px 0; color: #4a5568;">📦 Recent Orders</h4>
+                        ${ordersHtml}
+                        
+                        <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            <button class="btn" onclick="closeModal(); showEditUserModal(${id})">✏️ Edit User</button>
+                            <button class="btn btn-success" onclick="composeEmailToUser(${id})">📧 Email</button>
+                        </div>
                     </div>
                 </div>
             `;
+        }
+        
+        function composeEmailToUser(userId) {
+            const u = state.users.find(x => x.id === userId);
+            if (u && u.email) {
+                window.location.href = 'mailto:' + u.email;
+            }
         }
 
         function showEditUserModal(id) {
@@ -3075,7 +3145,7 @@ The Peptide Wizard Team"></textarea>
                                     <tr>
                                         <td><input type="checkbox" class="order-checkbox" data-order-id="${o.id}" ${state.selectedOrders.has(o.id) ? 'checked' : ''} onchange="toggleOrderSelection(${o.id}, this.checked)"></td>
                                         <td><strong>${escapeHtml(o.order_number)}</strong>${o.tracking_number ? '<br><small style="color:#38a169;">📦 ' + escapeHtml(o.tracking_number) + '</small>' : ''}</td>
-                                        <td>${escapeHtml(o.full_name || o.customer_name || 'Unknown')}<br><small style="color:#718096;">${escapeHtml(o.email || o.customer_email || '')}</small></td>
+                                        <td><a href="#" onclick="showUserDetailModal(${o.user_id}); return false;" style="color:#3182ce; text-decoration:none; font-weight:500;">${escapeHtml(o.full_name || o.customer_name || 'Unknown')}</a><br><small style="color:#718096;">${escapeHtml(o.email || o.customer_email || '')}</small></td>
                                         <td>${o.items ? o.items.length : 0} items</td>
                                         <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
                                         <td><span class="status-badge status-${o.status}">${o.status}</span></td>
