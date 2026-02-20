@@ -3776,6 +3776,19 @@ def admin_resend_verification(uid):
     
     return jsonify({'message': 'Verification email sent'})
 
+@app.route('/api/admin/users/<int:uid>', methods=['GET'])
+@admin_required
+def admin_get_user(uid):
+    """Get a single user's details"""
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+    conn.close()
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    return jsonify(dict(user))
+
 @app.route('/api/admin/users/<int:uid>', methods=['PUT'])
 @admin_required
 def admin_update_user(uid):
