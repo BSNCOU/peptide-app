@@ -2130,6 +2130,34 @@ def create_checkout_session():
             'quantity': 1,
         })
     
+    # Add sales tax as a line item if applicable
+    if float(order.get('sales_tax') or 0) > 0:
+        line_items.append({
+            'price_data': {
+                'currency': 'usd',
+                'product_data': {
+                    'name': 'Sales Tax',
+                    'description': 'Indiana State Sales Tax (7%)',
+                },
+                'unit_amount': int(float(order['sales_tax']) * 100),
+            },
+            'quantity': 1,
+        })
+    
+    # Add processing fee as a line item if applicable
+    if float(order.get('processing_fee') or 0) > 0:
+        line_items.append({
+            'price_data': {
+                'currency': 'usd',
+                'product_data': {
+                    'name': 'Processing Fee',
+                    'description': 'Credit card processing fee',
+                },
+                'unit_amount': int(float(order['processing_fee']) * 100),
+            },
+            'quantity': 1,
+        })
+    
     # Calculate discount for Stripe (if any)
     discounts = []
     if float(order['discount_amount'] or 0) > 0:
@@ -2144,6 +2172,8 @@ def create_checkout_session():
             discounts = [{'coupon': coupon.id}]
         except Exception as e:
             print(f"[STRIPE] Could not create coupon: {e}")
+            # If coupon creation fails, return error instead of charging full price
+            return jsonify({'error': 'Could not apply discount. Please try again or contact support.'}), 400
     
     # Handle store credit as a discount too
     if float(order['credit_applied'] or 0) > 0:
@@ -2157,6 +2187,8 @@ def create_checkout_session():
             discounts.append({'coupon': credit_coupon.id})
         except Exception as e:
             print(f"[STRIPE] Could not create credit coupon: {e}")
+            # If credit coupon creation fails, return error
+            return jsonify({'error': 'Could not apply store credit. Please try again or contact support.'}), 400
     
     try:
         # Get the base URL from request
