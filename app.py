@@ -3527,13 +3527,23 @@ def admin_update_order_status(oid):
     if status not in valid:
         return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
     
-    # If changing TO cancelled/refunded, restore inventory
+    # If changing TO cancelled/refunded, restore inventory AND store credit
     if status in ['cancelled', 'refunded'] and current_dict['status'] not in ['cancelled', 'refunded']:
         # Get order items and restore stock
         items = conn.execute('SELECT product_id, quantity FROM order_items WHERE order_id = ?', (oid,)).fetchall()
         for item in items:
             conn.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (item['quantity'], item['product_id']))
         print(f"[INVENTORY] Restored stock for cancelled/refunded order {oid}")
+        
+        # Restore store credit if any was applied
+        credit_applied = float(current_dict.get('credit_applied') or 0)
+        if credit_applied > 0:
+            user_id = current_dict['user_id']
+            order_number = current_dict['order_number']
+            conn.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id = ?', (credit_applied, user_id))
+            conn.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
+                        (user_id, oid, 'refund', credit_applied, f'Credit restored - order {order_number} {status}'))
+            print(f"[CREDIT] Restored ${credit_applied:.2f} credit to user {user_id} for {status} order {oid}")
     
     # If changing FROM cancelled/refunded back to active, deduct inventory again
     elif current_dict['status'] in ['cancelled', 'refunded'] and status not in ['cancelled', 'refunded']:
