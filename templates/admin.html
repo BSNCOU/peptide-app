@@ -54,6 +54,7 @@
         .status-pending { background: #fefcbf; color: #975a16; }
         .status-paid { background: #c6f6d5; color: #276749; }
         .status-processing { background: #bee3f8; color: #2b6cb0; }
+        .status-ready_to_ship { background: #fbd38d; color: #744210; }
         .status-shipped { background: #e9d8fd; color: #6b46c1; }
         .status-delivered { background: #c6f6d5; color: #276749; }
         .status-fulfilled { background: #c6f6d5; color: #276749; }
@@ -115,6 +116,7 @@
                 <button onclick="showTab('inventory')">Inventory</button>
                 <button onclick="showTab('orders')">All Orders</button>
                 <button onclick="showTab('openOrders')">Open Orders</button>
+                <button onclick="showTab('readyToShip')">🚚 Ready to Ship</button>
                 <button onclick="showTab('purchaseOrders')">📦 Purchase Orders</button>
                 <button onclick="showTab('returns')">🔄 Returns</button>
                 <button onclick="showTab('discounts')">Discount Codes</button>
@@ -243,7 +245,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','settings'];
+            const tabList = ['products','inventory','orders','openOrders','readyToShip','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','settings'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -251,6 +253,7 @@
                 case 'inventory': loadInventory(); break;
                 case 'orders': loadOrders(); break;
                 case 'openOrders': loadOpenOrders(); break;
+                case 'readyToShip': loadReadyToShip(); break;
                 case 'purchaseOrders': loadPurchaseOrders(); break;
                 case 'returns': loadReturns(); break;
                 case 'discounts': loadDiscounts(); break;
@@ -2964,6 +2967,7 @@ The Peptide Wizard Team"></textarea>
             const salesTaxEnabled = state.settings.sales_tax_enabled !== 'false';
             const processingFeeRate = state.settings.processing_fee_rate || '3.00';
             const processingFeeEnabled = state.settings.processing_fee_enabled !== 'false';
+            const googlePlacesApiKey = state.settings.google_places_api_key || '';
             
             document.getElementById('tabContent').innerHTML = `
                 <h3 style="margin-bottom: 15px;">⚙️ App Settings</h3>
@@ -3018,6 +3022,20 @@ The Peptide Wizard Team"></textarea>
                             </div>
                         </div>
                         
+                        <div style="background: #ebf8ff; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #90cdf4;">
+                            <h4 style="margin-bottom: 15px; color: #2b6cb0;">📍 Address Autocomplete</h4>
+                            <p style="color: #2c5282; font-size: 0.85rem; margin-bottom: 15px;">Enable Google Places autocomplete for shipping addresses. This helps customers enter valid addresses.</p>
+                            
+                            <div class="form-group">
+                                <label><strong>Google Places API Key</strong></label>
+                                <input type="text" id="settingGooglePlacesApiKey" value="${escapeHtml(googlePlacesApiKey)}" placeholder="Enter your Google API key" style="width: 100%;">
+                                <small style="color: #718096; display: block; margin-top: 5px;">
+                                    Get a key at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color: #3182ce;">Google Cloud Console</a>. 
+                                    Enable "Places API" and "Maps JavaScript API". Free tier: ~28,000 calls/month.
+                                </small>
+                            </div>
+                        </div>
+                        
                         <button type="submit" class="btn btn-success">💾 Save Settings</button>
                     </div>
                 </form>
@@ -3037,7 +3055,8 @@ The Peptide Wizard Team"></textarea>
                 sales_tax_rate: document.getElementById('settingSalesTaxRate').value,
                 sales_tax_enabled: document.getElementById('settingSalesTaxEnabled').checked ? 'true' : 'false',
                 processing_fee_rate: document.getElementById('settingProcessingFeeRate').value,
-                processing_fee_enabled: document.getElementById('settingProcessingFeeEnabled').checked ? 'true' : 'false'
+                processing_fee_enabled: document.getElementById('settingProcessingFeeEnabled').checked ? 'true' : 'false',
+                google_places_api_key: document.getElementById('settingGooglePlacesApiKey').value.trim()
             };
             
             try {
@@ -3153,6 +3172,7 @@ The Peptide Wizard Team"></textarea>
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOpenOrderDetailModal(${o.id})">View</button>
                                             <button class="btn btn-secondary btn-small" onclick="showUpdateStatusModal(${o.id})">Status</button>
+                                            ${['paid', 'processing'].includes(o.status) && o.delivery_method === 'ship' ? `<button class="btn btn-small" style="background:#3182ce;" onclick="markOrderReadyToShip(${o.id})">📦 Ready</button>` : ''}
                                             <button class="btn btn-success btn-small" onclick="markOrderFulfilled(${o.id})">✓ Complete</button>
                                             <button class="btn btn-danger btn-small" onclick="cancelOrder(${o.id})">✗ Cancel</button>
                                         </td>
@@ -3277,6 +3297,179 @@ The Peptide Wizard Team"></textarea>
             printWindow.document.write(html);
             printWindow.document.close();
             printWindow.print();
+        }
+
+        // ============================================
+        // READY TO SHIP - Orders ready for labels
+        // ============================================
+        
+        async function loadReadyToShip() {
+            try {
+                state.orders = await api('/api/admin/orders');
+                renderReadyToShip();
+            } catch (e) {
+                showAlert('Failed to load orders');
+            }
+        }
+
+        function renderReadyToShip() {
+            const readyOrders = state.orders.filter(o => o.status === 'ready_to_ship');
+            
+            const content = document.getElementById('tabContent');
+            content.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <div>
+                        <h3 style="color: #2d3748; margin: 0;">🚚 Ready to Ship (${readyOrders.length})</h3>
+                        <p style="color: #718096; font-size: 0.9rem; margin: 5px 0 0 0;">Orders picked and ready for shipping labels</p>
+                    </div>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        ${readyOrders.length > 0 ? `
+                            <button class="btn btn-success" onclick="exportReadyToShipPirateship()">📦 Export to Pirate Ship</button>
+                            <button class="btn" onclick="showImportTrackingModal()">📥 Import Tracking</button>
+                        ` : ''}
+                    </div>
+                </div>
+                
+                ${readyOrders.length === 0 ? `
+                    <div style="text-align: center; padding: 60px 20px; background: #f7fafc; border-radius: 12px;">
+                        <div style="font-size: 3rem; margin-bottom: 15px;">📦</div>
+                        <h3 style="color: #4a5568; margin: 0 0 10px 0;">No Orders Ready to Ship</h3>
+                        <p style="color: #718096; margin: 0;">Mark orders as "Ready to Ship" from Open Orders when they've been picked and packed.</p>
+                    </div>
+                ` : `
+                    <div style="background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                        <h4 style="margin: 0 0 10px 0; color: #276749;">📋 Workflow</h4>
+                        <ol style="margin: 0; padding-left: 20px; color: #2f855a;">
+                            <li><strong>Export</strong> → Downloads CSV for Pirate Ship</li>
+                            <li><strong>Upload to Pirate Ship</strong> → Buy labels</li>
+                            <li><strong>Export from Pirate Ship</strong> → Get tracking CSV</li>
+                            <li><strong>Import Tracking</strong> → Updates orders, emails customers, marks shipped</li>
+                        </ol>
+                    </div>
+                    
+                    <div style="overflow-x: auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Order #</th>
+                                    <th>Customer</th>
+                                    <th>Address</th>
+                                    <th>Items</th>
+                                    <th>Total</th>
+                                    <th>Date</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${readyOrders.map(o => `
+                                    <tr>
+                                        <td><strong>${escapeHtml(o.order_number)}</strong></td>
+                                        <td>
+                                            <a href="#" onclick="showUserDetailModal(${o.user_id}); return false;" style="color:#3182ce; text-decoration:none; font-weight:500;">
+                                                ${escapeHtml(o.full_name || o.customer_name || 'Unknown')}
+                                            </a>
+                                            <br><small style="color:#718096;">${escapeHtml(o.email || '')}</small>
+                                        </td>
+                                        <td style="max-width: 200px; font-size: 0.85rem;">
+                                            ${o.delivery_method === 'ship' ? escapeHtml(o.shipping_address || '').replace(/\\n/g, '<br>').substring(0, 100) : '🏪 Pickup'}
+                                        </td>
+                                        <td>
+                                            ${o.items ? o.items.map(i => `<div style="font-size: 0.85rem;">${i.quantity}x ${escapeHtml(i.sku || i.name)}</div>`).join('') : '0 items'}
+                                        </td>
+                                        <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
+                                        <td>${new Date(o.created_at).toLocaleDateString()}</td>
+                                        <td class="actions">
+                                            <button class="btn btn-small" onclick="showOrderDetailModal(${o.id})">View</button>
+                                            <button class="btn btn-secondary btn-small" onclick="moveBackToProcessing(${o.id})">← Back</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <div style="margin-top: 20px; padding: 15px; background: #fef3c7; border-radius: 8px; border: 1px solid #f6e05e;">
+                        <strong style="color: #92400e;">💡 Tip:</strong>
+                        <span style="color: #78350f;">After importing tracking numbers, orders will automatically move to "Shipped" and customers will be emailed.</span>
+                    </div>
+                `}
+            `;
+        }
+        
+        async function exportReadyToShipPirateship() {
+            const readyOrders = state.orders.filter(o => o.status === 'ready_to_ship' && o.delivery_method === 'ship');
+            
+            if (readyOrders.length === 0) {
+                showAlert('No orders ready to ship');
+                return;
+            }
+            
+            // Pirate Ship CSV format
+            const headers = ['Order ID', 'Name', 'Company', 'Street 1', 'Street 2', 'City', 'State', 'Zip', 'Country', 'Phone', 'Email', 'Weight (oz)'];
+            
+            const rows = readyOrders.map(o => {
+                const addr = parseShippingAddress(o.shipping_address || '');
+                
+                return [
+                    o.order_number,
+                    o.full_name || o.customer_name || '',
+                    '', // Company
+                    addr.street1,
+                    addr.street2,
+                    addr.city,
+                    addr.state,
+                    addr.zip,
+                    'US',
+                    o.phone || '',
+                    o.email || '',
+                    '8' // Default weight
+                ];
+            });
+
+            // Create CSV
+            const csvContent = [headers, ...rows]
+                .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+                .join('\n');
+
+            // Download
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', `pirateship_ready_${new Date().toISOString().split('T')[0]}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            showAlert(`Exported ${readyOrders.length} orders for Pirate Ship`, 'success');
+        }
+        
+        async function moveBackToProcessing(orderId) {
+            if (!confirm('Move this order back to Processing?')) return;
+            
+            try {
+                await api(`/api/admin/orders/${orderId}/status`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ status: 'processing' })
+                });
+                showAlert('Order moved back to Processing', 'success');
+                loadReadyToShip();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+        
+        async function markOrderReadyToShip(orderId) {
+            try {
+                await api(`/api/admin/orders/${orderId}/status`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ status: 'ready_to_ship' })
+                });
+                showAlert('Order marked Ready to Ship', 'success');
+                loadOpenOrders();
+            } catch (err) {
+                showAlert(err.message);
+            }
         }
 
         // ============================================

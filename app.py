@@ -3,7 +3,7 @@ Research Materials Ordering Platform - Production Ready
 Flask Backend with Admin Dashboard, Notifications, Security, PDF Invoices
 """
 
-from flask import Flask, request, jsonify, render_template, session, make_response, redirect
+from flask import Flask, request, jsonify, render_template, session, make_response, redirect, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 import hashlib
 import secrets
@@ -365,6 +365,10 @@ def init_po_tables(c, using_postgres, auto_id):
         result = c.execute("SELECT key FROM app_settings WHERE key = 'processing_fee_enabled'").fetchone()
         if not result:
             c.execute("INSERT INTO app_settings (key, value) VALUES ('processing_fee_enabled', 'true')")
+        # Check if google_places_api_key exists
+        result = c.execute("SELECT key FROM app_settings WHERE key = 'google_places_api_key'").fetchone()
+        if not result:
+            c.execute("INSERT INTO app_settings (key, value) VALUES ('google_places_api_key', '')")
     except:
         pass  # Already exists or error
     
@@ -3688,6 +3692,192 @@ def admin_edit_order(oid):
         'shipping_cost': new_shipping
     })
 
+@app.route('/api/admin/orders/export-pirateship', methods=['GET'])
+@admin_required
+def export_pirateship_csv():
+    """Export ready_to_ship orders as CSV for Pirate Ship import"""
+    import csv
+    import io
+    
+    conn = get_db()
+    
+    # Get all ready_to_ship orders with shipping addresses
+    orders = conn.execute('''
+        SELECT o.id, o.order_number, o.shipping_address, o.total,
+               u.full_name, u.email, u.phone
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.status = 'ready_to_ship'
+        AND o.delivery_method = 'ship'
+        ORDER BY o.created_at ASC
+    ''').fetchall()
+    
+    conn.close()
+    
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header row - Pirate Ship will map these
+    writer.writerow(['OrderNumber', 'Name', 'Address1', 'Address2', 'City', 'State', 'Zip', 'Country', 'Email', 'Phone'])
+    
+    for order in orders:
+        order_dict = dict(order)
+        
+        # Parse shipping address (stored as text, format varies)
+        # Expected format: "123 Main St, City, State ZIP" or JSON
+        address = order_dict.get('shipping_address', '') or ''
+        
+        # Try to parse address
+        address1 = ''
+        address2 = ''
+        city = ''
+        state = ''
+        zipcode = ''
+        
+        # Try JSON first
+        try:
+            import json
+            addr_data = json.loads(address)
+            address1 = addr_data.get('address1', addr_data.get('street', ''))
+            address2 = addr_data.get('address2', '')
+            city = addr_data.get('city', '')
+            state = addr_data.get('state', '')
+            zipcode = addr_data.get('zip', addr_data.get('zipcode', ''))
+        except:
+            # Fallback: treat as single line address
+            address1 = address
+        
+        writer.writerow([
+            order_dict['order_number'],
+            order_dict['full_name'] or '',
+            address1,
+            address2,
+            city,
+            state,
+            zipcode,
+            'US',  # Default to US
+            order_dict['email'] or '',
+            order_dict['phone'] or ''
+        ])
+    
+    # Create response
+    output.seek(0)
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': 'attachment; filename=pirateship_export.csv'}
+    )
+
+@app.route('/api/admin/orders/import-tracking', methods=['POST'])
+@admin_required
+def import_tracking_csv():
+    """Import tracking numbers from Pirate Ship CSV, update orders, and send emails"""
+    import csv
+    import io
+    
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if not file.filename.endswith('.csv'):
+        return jsonify({'error': 'File must be a CSV'}), 400
+    
+    # Read CSV
+    content = file.read().decode('utf-8')
+    reader = csv.DictReader(io.StringIO(content))
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    updated = []
+    errors = []
+    
+    for row in reader:
+        # Look for order number column (flexible naming)
+        order_number = None
+        tracking = None
+        
+        for key in row.keys():
+            key_lower = key.lower().strip()
+            if 'order' in key_lower and ('number' in key_lower or 'id' in key_lower or key_lower == 'order'):
+                order_number = row[key].strip()
+            if 'track' in key_lower:
+                tracking = row[key].strip()
+        
+        if not order_number or not tracking:
+            continue
+        
+        # Find order by order_number
+        order = c.execute('''
+            SELECT o.id, o.user_id, o.status, u.email, u.full_name
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            WHERE o.order_number = ?
+        ''', (order_number,)).fetchone()
+        
+        if not order:
+            errors.append(f"Order {order_number} not found")
+            continue
+        
+        order_dict = dict(order)
+        
+        # Update order with tracking and status
+        c.execute('''
+            UPDATE orders 
+            SET tracking_number = ?, status = 'shipped', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (tracking, order_dict['id']))
+        
+        updated.append({
+            'order_number': order_number,
+            'tracking': tracking,
+            'email': order_dict['email']
+        })
+        
+        # Send shipping notification email
+        try:
+            send_tracking_notification(order_dict['id'], tracking)
+        except Exception as e:
+            print(f"[ERROR] Failed to send shipping email for {order_number}: {e}")
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        'message': f'Updated {len(updated)} orders',
+        'updated': updated,
+        'errors': errors
+    })
+
+@app.route('/api/admin/orders/bulk-status', methods=['POST'])
+@admin_required  
+def bulk_update_order_status():
+    """Update status for multiple orders at once"""
+    data = request.json
+    order_ids = data.get('order_ids', [])
+    new_status = data.get('status')
+    
+    if not order_ids or not new_status:
+        return jsonify({'error': 'Missing order_ids or status'}), 400
+    
+    valid_statuses = ['pending', 'pending_payment', 'paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
+    if new_status not in valid_statuses:
+        return jsonify({'error': f'Invalid status. Must be one of: {valid_statuses}'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    updated = 0
+    for oid in order_ids:
+        c.execute('UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (new_status, oid))
+        updated += c.rowcount
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'message': f'Updated {updated} orders to {new_status}'})
+
 @app.route('/api/admin/users', methods=['GET'])
 @admin_required
 def admin_get_users():
@@ -4893,12 +5083,14 @@ def get_shipping_cost():
     sales_tax_enabled = get_setting('sales_tax_enabled', 'true')
     processing_fee_rate = get_setting('processing_fee_rate', '3.00')
     processing_fee_enabled = get_setting('processing_fee_enabled', 'true')
+    google_places_api_key = get_setting('google_places_api_key', '')
     return jsonify({
         'shipping_cost': float(shipping_cost),
         'sales_tax_rate': float(sales_tax_rate),
         'sales_tax_enabled': sales_tax_enabled.lower() == 'true',
         'processing_fee_rate': float(processing_fee_rate),
-        'processing_fee_enabled': processing_fee_enabled.lower() == 'true'
+        'processing_fee_enabled': processing_fee_enabled.lower() == 'true',
+        'google_places_api_key': google_places_api_key
     })
 
 

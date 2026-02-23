@@ -117,7 +117,16 @@
         .return-item-check input[type="checkbox"] { width: 18px; height: 18px; }
         .return-item-check .item-info { flex: 1; }
         .return-item-check .qty-input { width: 60px; padding: 5px; border: 1px solid #e2e8f0; border-radius: 4px; }
+        .pac-container { z-index: 100001 !important; }
     </style>
+    <!-- Google Places API - Add your API key in Settings -->
+    <script>
+        // Will be loaded dynamically if API key is configured
+        window.initGooglePlaces = function() {
+            if (window.googlePlacesInitialized) return;
+            window.googlePlacesInitialized = true;
+        };
+    </script>
 </head>
 <body>
     <header>
@@ -181,6 +190,18 @@
         function saveCart() {
             localStorage.setItem('cart', JSON.stringify(state.cart));
         }
+        
+        // Load Google Places API dynamically
+        function loadGooglePlacesAPI(apiKey) {
+            if (window.googlePlacesLoaded || !apiKey) return;
+            window.googlePlacesLoaded = true;
+            
+            const script = document.createElement('script');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=initGooglePlaces`;
+            script.async = true;
+            script.defer = true;
+            document.head.appendChild(script);
+        }
 
         // Initialize
         async function init() {
@@ -212,6 +233,11 @@
                 state.salesTaxEnabled = shippingRes.sales_tax_enabled !== false;
                 state.processingFeeRate = shippingRes.processing_fee_rate || 3.00;
                 state.processingFeeEnabled = shippingRes.processing_fee_enabled !== false;
+                
+                // Load Google Places API if key is configured
+                if (shippingRes.google_places_api_key) {
+                    loadGooglePlacesAPI(shippingRes.google_places_api_key);
+                }
             } catch (e) { console.error('Settings error:', e); }
 
             try {
@@ -937,7 +963,17 @@
                         <form id="checkoutForm">
                             <div class="form-group">
                                 <label><strong>Shipping Address *</strong></label>
-                                <textarea id="shippingAddress" rows="3" placeholder="Enter full shipping address" required></textarea>
+                                <input type="text" id="addressAutocomplete" placeholder="Start typing your address..." autocomplete="off" style="margin-bottom: 10px;">
+                                <div id="addressFields" style="display: grid; gap: 10px;">
+                                    <input type="text" id="addrStreet1" placeholder="Street Address" required>
+                                    <input type="text" id="addrStreet2" placeholder="Apt, Suite, Unit (optional)">
+                                    <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px;">
+                                        <input type="text" id="addrCity" placeholder="City" required>
+                                        <input type="text" id="addrState" placeholder="State" required maxlength="2" style="text-transform: uppercase;">
+                                        <input type="text" id="addrZip" placeholder="ZIP" required maxlength="10">
+                                    </div>
+                                </div>
+                                <input type="hidden" id="shippingAddressJson">
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="ack1">
@@ -1017,6 +1053,71 @@
                 document.getElementById('creditSection').style.display = 'block';
                 document.getElementById('availableCreditDisplay').textContent = '$' + userCredit.toFixed(2);
             }
+            
+            // Initialize Google Places autocomplete if available
+            initAddressAutocomplete();
+        }
+        
+        function initAddressAutocomplete() {
+            const input = document.getElementById('addressAutocomplete');
+            if (!input) return;
+            
+            // Check if Google Places API is available
+            if (typeof google !== 'undefined' && google.maps && google.maps.places) {
+                const autocomplete = new google.maps.places.Autocomplete(input, {
+                    componentRestrictions: { country: 'us' },
+                    fields: ['address_components', 'formatted_address'],
+                    types: ['address']
+                });
+                
+                autocomplete.addListener('place_changed', function() {
+                    const place = autocomplete.getPlace();
+                    if (!place.address_components) return;
+                    
+                    // Parse address components
+                    let streetNumber = '';
+                    let streetName = '';
+                    let city = '';
+                    let state = '';
+                    let zip = '';
+                    
+                    place.address_components.forEach(component => {
+                        const type = component.types[0];
+                        switch(type) {
+                            case 'street_number':
+                                streetNumber = component.long_name;
+                                break;
+                            case 'route':
+                                streetName = component.long_name;
+                                break;
+                            case 'locality':
+                            case 'sublocality_level_1':
+                                city = component.long_name;
+                                break;
+                            case 'administrative_area_level_1':
+                                state = component.short_name;
+                                break;
+                            case 'postal_code':
+                                zip = component.long_name;
+                                break;
+                        }
+                    });
+                    
+                    // Fill in the fields
+                    document.getElementById('addrStreet1').value = `${streetNumber} ${streetName}`.trim();
+                    document.getElementById('addrCity').value = city;
+                    document.getElementById('addrState').value = state;
+                    document.getElementById('addrZip').value = zip;
+                    
+                    // Clear autocomplete field and focus on street2 for apt/suite
+                    input.value = '';
+                    document.getElementById('addrStreet2').focus();
+                });
+            } else {
+                // Hide autocomplete field if Google Places not available
+                input.placeholder = 'Enter address manually below';
+                input.style.display = 'none';
+            }
         }
         
         function updateCheckoutTotal(subtotal, discountAmount) {
@@ -1071,13 +1172,31 @@
                 return;
             }
             
-            const shippingAddressEl = document.getElementById('shippingAddress');
-            const shippingAddress = shippingAddressEl ? shippingAddressEl.value : '';
+            // Get structured address fields
+            const street1 = document.getElementById('addrStreet1')?.value?.trim() || '';
+            const street2 = document.getElementById('addrStreet2')?.value?.trim() || '';
+            const city = document.getElementById('addrCity')?.value?.trim() || '';
+            const addrState = document.getElementById('addrState')?.value?.trim().toUpperCase() || '';
+            const zip = document.getElementById('addrZip')?.value?.trim() || '';
             
-            if (!shippingAddress.trim()) {
-                showAlert('Please enter a shipping address');
+            if (!street1 || !city || !addrState || !zip) {
+                showAlert('Please enter a complete shipping address');
                 return;
             }
+            
+            // Build shipping address as JSON for better parsing later
+            const addressData = {
+                street1: street1,
+                street2: street2,
+                city: city,
+                state: addrState,
+                zip: zip
+            };
+            
+            // Also create formatted string for display
+            const shippingAddress = street2 
+                ? `${street1}\n${street2}\n${city}, ${addrState} ${zip}`
+                : `${street1}\n${city}, ${addrState} ${zip}`;
             
             // Check if applying credit
             const applyCreditCheckbox = document.getElementById('applyCredit');
@@ -1098,6 +1217,7 @@
                         referrer_choice: state.referrerChoice || null,
                         delivery_method: 'ship',
                         shipping_address: shippingAddress,
+                        shipping_address_data: addressData,
                         apply_credit: applyCredit,
                         final_attestation: true,
                         acknowledgments: {
