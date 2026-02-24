@@ -3527,7 +3527,7 @@ def admin_update_order_status(oid):
     if status not in valid:
         return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
     
-    # If changing TO cancelled/refunded, restore inventory AND store credit
+    # If changing TO cancelled/refunded, restore inventory AND store credit AND claw back commission
     if status in ['cancelled', 'refunded'] and current_dict['status'] not in ['cancelled', 'refunded']:
         # Get order items and restore stock
         items = conn.execute('SELECT product_id, quantity FROM order_items WHERE order_id = ?', (oid,)).fetchall()
@@ -3544,6 +3544,25 @@ def admin_update_order_status(oid):
             conn.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
                         (user_id, oid, 'refund', credit_applied, f'Credit restored - order {order_number} {status}'))
             print(f"[CREDIT] Restored ${credit_applied:.2f} credit to user {user_id} for {status} order {oid}")
+        
+        # Claw back any referral commission earned from this order
+        earned_transactions = conn.execute(
+            "SELECT * FROM referral_transactions WHERE order_id = ? AND type = 'earned'", (oid,)
+        ).fetchall()
+        
+        for txn in earned_transactions:
+            txn_dict = dict(txn)
+            referrer_id = txn_dict['user_id']
+            commission_amount = float(txn_dict['amount'] or 0)
+            order_number = current_dict['order_number']
+            
+            if commission_amount > 0:
+                # Deduct the commission from referrer's credit
+                conn.execute('UPDATE users SET referral_credit = referral_credit - ? WHERE id = ?', (commission_amount, referrer_id))
+                # Log the clawback
+                conn.execute('INSERT INTO referral_transactions (user_id, order_id, type, amount, description) VALUES (?,?,?,?,?)',
+                            (referrer_id, oid, 'clawback', -commission_amount, f'Commission reversed - order {order_number} {status}'))
+                print(f"[COMMISSION] Clawed back ${commission_amount:.2f} from user {referrer_id} for {status} order {oid}")
     
     # If changing FROM cancelled/refunded back to active, deduct inventory again
     elif current_dict['status'] in ['cancelled', 'refunded'] and status not in ['cancelled', 'refunded']:
