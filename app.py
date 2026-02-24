@@ -2158,37 +2158,47 @@ def create_checkout_session():
             'quantity': 1,
         })
     
-    # Calculate discount for Stripe (if any)
+    # Calculate total discount (discount + credit) to apply
+    total_discount = float(order['discount_amount'] or 0) + float(order['credit_applied'] or 0)
+    
+    # Calculate what Stripe line items total to
+    line_items_total = sum(
+        item['quantity'] * float(item['unit_price']) for item in items
+    ) + float(order['shipping_cost'] or 0) + float(order.get('sales_tax') or 0) + float(order.get('processing_fee') or 0)
+    
+    # The order total we expect to charge
+    expected_total = float(order['total'])
+    
+    # If there's a discount, we need to apply it via Stripe coupon
     discounts = []
-    if float(order['discount_amount'] or 0) > 0:
-        # Create a coupon for the discount amount
+    if total_discount > 0:
         try:
+            # Create a single coupon for total discount (discount + credit combined)
             coupon = stripe.Coupon.create(
-                amount_off=int(float(order['discount_amount']) * 100),
+                amount_off=int(total_discount * 100),
                 currency='usd',
                 duration='once',
                 name=f"Discount for Order {order['order_number']}"
             )
             discounts = [{'coupon': coupon.id}]
-        except Exception as e:
-            print(f"[STRIPE] Could not create coupon: {e}")
-            # If coupon creation fails, return error instead of charging full price
-            return jsonify({'error': 'Could not apply discount. Please try again or contact support.'}), 400
-    
-    # Handle store credit as a discount too
-    if float(order['credit_applied'] or 0) > 0:
-        try:
-            credit_coupon = stripe.Coupon.create(
-                amount_off=int(float(order['credit_applied']) * 100),
-                currency='usd',
-                duration='once',
-                name=f"Store Credit for Order {order['order_number']}"
-            )
-            discounts.append({'coupon': credit_coupon.id})
-        except Exception as e:
-            print(f"[STRIPE] Could not create credit coupon: {e}")
-            # If credit coupon creation fails, return error
-            return jsonify({'error': 'Could not apply store credit. Please try again or contact support.'}), 400
+            print(f"[STRIPE] Created coupon for ${total_discount:.2f} discount")
+        except stripe.error.StripeError as e:
+            print(f"[STRIPE] Coupon creation failed: {e}")
+            # Fallback: Rebuild line items to equal exact order total
+            # This loses itemization but ensures correct charge
+            line_items = [{
+                'price_data': {
+                    'currency': 'usd',
+                    'product_data': {
+                        'name': f'Order {order["order_number"]}',
+                        'description': f'Research materials order - {len(items)} item(s). Discount of ${total_discount:.2f} applied.',
+                    },
+                    'unit_amount': int(expected_total * 100),
+                },
+                'quantity': 1,
+            }]
+            discounts = []  # No coupon needed since we're charging exact total
+            print(f"[STRIPE] Using fallback single line item for ${expected_total:.2f}")
     
     try:
         # Get the base URL from request
