@@ -3533,7 +3533,7 @@ def admin_update_order_status(oid):
     if not status:
         status = current_dict['status']
     
-    valid = ['pending', 'pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
+    valid = ['pending', 'pending_payment', 'paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
     if status not in valid:
         return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
     
