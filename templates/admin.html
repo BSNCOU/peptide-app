@@ -3489,7 +3489,7 @@ The Peptide Wizard Team"></textarea>
 
         function renderPickMode() {
             const openOrders = state.orders.filter(o => 
-                !['fulfilled', 'delivered', 'cancelled', 'refunded'].includes(o.status)
+                !['fulfilled', 'delivered', 'cancelled', 'refunded', 'shipped', 'ready_to_ship'].includes(o.status)
             );
             
             const content = document.getElementById('tabContent');
