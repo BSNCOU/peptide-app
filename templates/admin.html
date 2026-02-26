@@ -3554,7 +3554,7 @@ The Peptide Wizard Team"></textarea>
                                         </div>
                                         ${allPicked ? `
                                             <button class="btn btn-small" style="background: white; color: #38a169;" onclick="markOrderFulfilledFromPick(${o.id})">
-                                                ✓ Mark Fulfilled
+                                                📦 Ready to Ship
                                             </button>
                                         ` : ''}
                                     </div>
@@ -3695,13 +3695,13 @@ The Peptide Wizard Team"></textarea>
                 </div>
                 
                 <div style="padding: 15px; background: #f7fafc; border-radius: 8px; margin-top: 10px;">
-                    <strong>Ready to fulfill:</strong>
+                    <strong>📦 Ready to ship:</strong>
                     ${openOrders.filter(o => {
                         const orderItems = o.items || [];
                         return orderItems.length > 0 && orderItems.every(item => pickState.pickedItems[`${o.id}_${item.id}`]);
                     }).map(o => `
                         <button class="btn btn-success btn-small" style="margin: 5px;" onclick="markOrderFulfilledFromPick(${o.id})">
-                            ✓ ${escapeHtml(o.order_number)}
+                            📦 ${escapeHtml(o.order_number)}
                         </button>
                     `).join('') || '<span style="color: #718096;">No orders fully picked yet</span>'}
                 </div>
@@ -3726,7 +3726,7 @@ The Peptide Wizard Team"></textarea>
             try {
                 await api(`/api/admin/orders/${orderId}/status`, {
                     method: 'PUT',
-                    body: JSON.stringify({ status: 'fulfilled' })
+                    body: JSON.stringify({ status: 'ready_to_ship' })
                 });
                 
                 // Remove picked items for this order
@@ -3736,7 +3736,7 @@ The Peptide Wizard Team"></textarea>
                     }
                 });
                 
-                showAlert('Order marked as fulfilled!', 'success');
+                showAlert('Order moved to Ready to Ship!', 'success');
                 
                 // Reload orders and re-render
                 await loadOpenOrders();
