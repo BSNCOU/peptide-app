@@ -1618,13 +1618,41 @@ BC10,8.00</pre>
                 
                 // Parse headers
                 const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().trim());
+                console.log('CSV Headers:', headers);
                 
-                // Find column indices
-                const orderIdIdx = headers.findIndex(h => h.includes('order') && h.includes('id'));
-                const trackingIdx = headers.findIndex(h => h.includes('tracking'));
+                // Find Order ID column - Pirate Ship uses "Order ID" in column AA
+                let orderIdIdx = -1;
+                for (let i = 0; i < headers.length; i++) {
+                    const h = headers[i];
+                    if (h === 'order id' || h === 'orderid' || h === 'order_id') {
+                        orderIdIdx = i;
+                        break;
+                    }
+                }
+                // Fallback: look for column containing both 'order' and 'id'
+                if (orderIdIdx === -1) {
+                    orderIdIdx = headers.findIndex(h => h.includes('order') && h.includes('id'));
+                }
+                
+                // Find Tracking Number column - Pirate Ship uses "Tracking Number" in column D
+                let trackingIdx = -1;
+                for (let i = 0; i < headers.length; i++) {
+                    const h = headers[i];
+                    if (h === 'tracking number' || h === 'trackingnumber' || h === 'tracking_number') {
+                        trackingIdx = i;
+                        break;
+                    }
+                }
+                // Fallback: look for 'tracking' but not status/info/date
+                if (trackingIdx === -1) {
+                    trackingIdx = headers.findIndex(h => h.includes('tracking') && !h.includes('status') && !h.includes('info') && !h.includes('date'));
+                }
+                
+                console.log('Order ID column index:', orderIdIdx, '=', headers[orderIdIdx]);
+                console.log('Tracking column index:', trackingIdx, '=', headers[trackingIdx]);
                 
                 if (orderIdIdx === -1 || trackingIdx === -1) {
-                    showAlert('Could not find Order ID and Tracking columns in CSV. Expected columns: "Order ID" and "Tracking Number" or similar.');
+                    showAlert(`Could not find columns. Headers: ${headers.join(', ')}. Order ID found: ${orderIdIdx !== -1}, Tracking found: ${trackingIdx !== -1}`);
                     return;
                 }
                 
@@ -3403,8 +3431,8 @@ The Peptide Wizard Team"></textarea>
             const rows = readyOrders.map(o => {
                 const addr = parseShippingAddress(o.shipping_address || '');
                 
-                // Calculate package size based on order contents
-                const pkg = calculatePackageSize(o.items || []);
+                // Calculate weight based on items (all use 4x4x3 box for now)
+                const pkg = calculatePackageWeight(o.items || []);
                 
                 return [
                     o.order_number,
@@ -3419,9 +3447,9 @@ The Peptide Wizard Team"></textarea>
                     o.phone || '',
                     o.email || '',
                     pkg.weight,
-                    pkg.length,
-                    pkg.width,
-                    pkg.height
+                    6, // Length - all 6x4x3 for now
+                    4, // Width
+                    3  // Height
                 ];
             });
 
@@ -3443,13 +3471,9 @@ The Peptide Wizard Team"></textarea>
             showAlert(`Exported ${readyOrders.length} orders for Pirate Ship`, 'success');
         }
         
-        // Calculate package size based on order items
-        // Logic: 
-        //   - Singles only (no ten-packs) → Padded Mailer 6x10x1, 5oz
-        //   - 1 ten-pack → Small Box 3x3x2, 8oz
-        //   - 2-3 ten-packs → Medium Box 4x4x3, 12oz
-        //   - 4+ ten-packs → Large (4x4x3, 16oz - adjust as needed)
-        function calculatePackageSize(items) {
+        // Calculate weight based on order items
+        // All packages use 4x4x3 box for now, just vary weight
+        function calculatePackageWeight(items) {
             let tenPackCount = 0;
             let singleCount = 0;
             
@@ -3457,7 +3481,7 @@ The Peptide Wizard Team"></textarea>
                 const name = (item.name || '').toLowerCase();
                 const qty = item.quantity || 1;
                 
-                // Check if it's a ten-pack (name contains "10vial" or "10 vial")
+                // Check if it's a ten-pack (name contains "10vial" or "10 vial" or "/10")
                 if (name.includes('10vial') || name.includes('10 vial') || name.includes('/10')) {
                     tenPackCount += qty;
                 } else {
@@ -3465,20 +3489,13 @@ The Peptide Wizard Team"></textarea>
                 }
             });
             
-            // Determine package based on ten-pack count
-            if (tenPackCount === 0) {
-                // Singles only - Padded Mailer
-                return { length: 10, width: 6, height: 1, weight: 5, type: 'mailer' };
-            } else if (tenPackCount === 1) {
-                // 1 ten-pack - Small Box 3x3x2
-                return { length: 3, width: 3, height: 2, weight: 8, type: 'small' };
-            } else if (tenPackCount <= 3) {
-                // 2-3 ten-packs - Medium Box 4x4x3
-                return { length: 4, width: 4, height: 3, weight: 12, type: 'medium' };
-            } else {
-                // 4+ ten-packs - Larger package (using 4x4x3 with more weight for now)
-                return { length: 4, width: 4, height: 3, weight: 16 + (tenPackCount - 4) * 3, type: 'large' };
-            }
+            // Base weight for box + items
+            // Singles: ~1oz each, Ten-packs: ~3oz each
+            let weight = 5; // Base box weight in oz
+            weight += singleCount * 1;
+            weight += tenPackCount * 3;
+            
+            return { weight: Math.max(weight, 5) };
         }
         
         async function moveBackToProcessing(orderId) {
