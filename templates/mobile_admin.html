@@ -511,6 +511,9 @@
             <div class="menu-item" onclick="window.location.href='/admin'">
                 <span class="menu-item-icon">💻</span> Full Admin
             </div>
+            <div class="menu-item" onclick="lockScreen(); toggleMenu();">
+                <span class="menu-item-icon">🔒</span> Lock Screen
+            </div>
             <div class="menu-item" onclick="logout()">
                 <span class="menu-item-icon">🚪</span> Logout
             </div>
@@ -565,6 +568,31 @@
         };
         let selectedProduct = null;
         let pickState = { pickedItems: {} };
+        
+        // Idle Lock Timer
+        let idleTimer;
+        const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+        
+        function resetIdleTimer() {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(lockScreen, IDLE_TIMEOUT);
+        }
+        
+        function lockScreen() {
+            // Don't fully log out, just show PIN screen again
+            document.getElementById('app').classList.remove('active');
+            document.getElementById('pinScreen').style.display = 'flex';
+            document.querySelector('.pin-logo').textContent = '🔒';
+            document.querySelector('.pin-title').textContent = 'Locked';
+            document.getElementById('pinError').textContent = 'Enter PIN to unlock';
+            pin = '';
+            updatePinDisplay();
+        }
+        
+        // Reset timer on any activity
+        ['click', 'touchstart', 'keypress', 'scroll'].forEach(event => {
+            document.addEventListener(event, resetIdleTimer, { passive: true });
+        });
         
         // Check existing session
         async function checkSession() {
@@ -638,6 +666,11 @@
             document.getElementById('pinScreen').style.display = 'none';
             document.getElementById('app').classList.add('active');
             document.getElementById('userName').textContent = state.userName;
+            document.getElementById('pinError').textContent = '';
+            // Reset PIN screen for next time
+            document.querySelector('.pin-logo').textContent = '🧪';
+            document.querySelector('.pin-title').textContent = 'Enter PIN';
+            resetIdleTimer(); // Start idle timer
             refreshData();
         }
         
@@ -991,6 +1024,7 @@
         }
         
         function logout() {
+            clearTimeout(idleTimer);
             fetch('/api/logout', { method: 'POST' }).then(() => {
                 window.location.reload();
             });
