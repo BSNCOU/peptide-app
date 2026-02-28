@@ -665,6 +665,35 @@ def init_db():
     except Exception as e:
         print(f"Note: Referral transactions table: {e}")
     
+    # Mobile Admin PIN table
+    try:
+        c.execute(f'''CREATE TABLE IF NOT EXISTS admin_pins (
+            id {auto_id},
+            user_id INTEGER NOT NULL UNIQUE,
+            pin_hash TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used TIMESTAMP
+        )''')
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Admin pins table: {e}")
+    
+    # Inventory Adjustments table (for tracking removals)
+    try:
+        c.execute(f'''CREATE TABLE IF NOT EXISTS inventory_adjustments (
+            id {auto_id},
+            product_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            notes TEXT,
+            unit_cost REAL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Inventory adjustments table: {e}")
+    
     # Add referral columns to discount_codes and users
     try:
         if using_postgres:
@@ -1364,6 +1393,102 @@ def index():
 @app.route('/admin')
 def admin_page():
     return render_template('admin.html')
+
+# ============================================
+# MOBILE ADMIN - PIN BASED ACCESS
+# ============================================
+
+@app.route('/m')
+def mobile_admin_page():
+    """Mobile-optimized admin interface"""
+    return render_template('mobile_admin.html')
+
+@app.route('/api/mobile/pin-login', methods=['POST'])
+@rate_limit('login')
+def mobile_pin_login():
+    """Login to mobile admin with PIN"""
+    data = request.json
+    pin = data.get('pin', '')
+    
+    if not pin or len(pin) < 4:
+        return jsonify({'error': 'Invalid PIN'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Find admin with matching PIN
+    pins = c.execute('''
+        SELECT ap.user_id, ap.pin_hash, u.full_name, u.is_admin 
+        FROM admin_pins ap 
+        JOIN users u ON ap.user_id = u.id 
+        WHERE u.is_admin = 1
+    ''').fetchall()
+    
+    for p in pins:
+        if check_password_hash(p['pin_hash'], pin):
+            # Update last used
+            c.execute('UPDATE admin_pins SET last_used = CURRENT_TIMESTAMP WHERE user_id = ?', (p['user_id'],))
+            conn.commit()
+            
+            # Set session
+            session['user_id'] = p['user_id']
+            session['mobile_admin'] = True
+            session.permanent = True
+            
+            conn.close()
+            return jsonify({'success': True, 'name': p['full_name']})
+    
+    conn.close()
+    return jsonify({'error': 'Invalid PIN'}), 401
+
+@app.route('/api/mobile/set-pin', methods=['POST'])
+@admin_required
+def mobile_set_pin():
+    """Set or update mobile admin PIN"""
+    data = request.json
+    pin = data.get('pin', '')
+    
+    if not pin or len(pin) < 4 or len(pin) > 8:
+        return jsonify({'error': 'PIN must be 4-8 digits'}), 400
+    
+    if not pin.isdigit():
+        return jsonify({'error': 'PIN must be numbers only'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    pin_hash = generate_password_hash(pin)
+    
+    # Check if PIN already exists for this user
+    existing = c.execute('SELECT id FROM admin_pins WHERE user_id = ?', (session['user_id'],)).fetchone()
+    
+    if existing:
+        c.execute('UPDATE admin_pins SET pin_hash = ? WHERE user_id = ?', (pin_hash, session['user_id']))
+    else:
+        c.execute('INSERT INTO admin_pins (user_id, pin_hash) VALUES (?, ?)', (session['user_id'], pin_hash))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True, 'message': 'PIN set successfully'})
+
+@app.route('/api/mobile/check-session', methods=['GET'])
+def mobile_check_session():
+    """Check if mobile admin session is valid"""
+    if 'user_id' not in session:
+        return jsonify({'authenticated': False})
+    
+    conn = get_db()
+    user = conn.execute('SELECT id, full_name, is_admin FROM users WHERE id = ?', (session['user_id'],)).fetchone()
+    conn.close()
+    
+    if not user or not user['is_admin']:
+        return jsonify({'authenticated': False})
+    
+    return jsonify({
+        'authenticated': True,
+        'name': user['full_name']
+    })
 
 @app.route('/policies')
 def policies_page():
@@ -3493,6 +3618,123 @@ def admin_delete_inventory_receipt(receipt_id):
     
     return jsonify({'message': 'Receipt deleted and stock adjusted'})
 
+# ============================================
+# INVENTORY ADJUSTMENTS (Removals/Shrinkage)
+# ============================================
+
+@app.route('/api/admin/inventory-adjustments', methods=['GET'])
+@admin_required
+def admin_get_inventory_adjustments():
+    """Get all inventory adjustments"""
+    conn = get_db()
+    adjustments = conn.execute('''
+        SELECT ia.*, p.name as product_name, p.sku, u.full_name as adjusted_by
+        FROM inventory_adjustments ia
+        JOIN products p ON ia.product_id = p.id
+        JOIN users u ON ia.user_id = u.id
+        ORDER BY ia.created_at DESC
+    ''').fetchall()
+    conn.close()
+    return jsonify([dict(a) for a in adjustments])
+
+@app.route('/api/admin/inventory-adjustments', methods=['POST'])
+@admin_required
+def admin_create_inventory_adjustment():
+    """Remove stock with reason tracking"""
+    data = request.json
+    product_id = data.get('product_id')
+    quantity = int(data.get('quantity', 0))
+    reason = data.get('reason', '')
+    notes = data.get('notes', '')
+    
+    if not product_id or quantity <= 0:
+        return jsonify({'error': 'Product and quantity required'}), 400
+    
+    valid_reasons = ['Gift', 'Personal Use', 'Testing', 'Expired', 'Damaged', 'Other']
+    if reason not in valid_reasons:
+        return jsonify({'error': f'Invalid reason. Must be one of: {valid_reasons}'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Get product info
+    product = c.execute('SELECT * FROM products WHERE id = ?', (product_id,)).fetchone()
+    if not product:
+        conn.close()
+        return jsonify({'error': 'Product not found'}), 404
+    
+    product = dict(product)
+    
+    if product['stock'] < quantity:
+        conn.close()
+        return jsonify({'error': f"Insufficient stock. Only {product['stock']} available."}), 400
+    
+    # Get unit cost for tracking loss value
+    unit_cost = float(product.get('cost') or 0)
+    
+    # Remove from stock
+    c.execute('UPDATE products SET stock = stock - ? WHERE id = ?', (quantity, product_id))
+    
+    # Log the adjustment
+    c.execute('''
+        INSERT INTO inventory_adjustments (product_id, user_id, quantity, reason, notes, unit_cost)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (product_id, session['user_id'], quantity, reason, notes, unit_cost))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"[INVENTORY] Adjustment: removed {quantity}x {product['name']} - Reason: {reason}")
+    
+    return jsonify({
+        'success': True,
+        'message': f"Removed {quantity}x {product['name']}",
+        'new_stock': product['stock'] - quantity
+    })
+
+@app.route('/api/admin/inventory-adjustments/summary', methods=['GET'])
+@admin_required
+def admin_inventory_adjustments_summary():
+    """Get summary of inventory adjustments for reporting"""
+    conn = get_db()
+    
+    # Summary by reason
+    by_reason = conn.execute('''
+        SELECT reason, 
+               SUM(quantity) as total_quantity,
+               SUM(quantity * unit_cost) as total_value,
+               COUNT(*) as count
+        FROM inventory_adjustments
+        GROUP BY reason
+    ''').fetchall()
+    
+    # Summary by product
+    by_product = conn.execute('''
+        SELECT p.name, p.sku, 
+               SUM(ia.quantity) as total_quantity,
+               SUM(ia.quantity * ia.unit_cost) as total_value
+        FROM inventory_adjustments ia
+        JOIN products p ON ia.product_id = p.id
+        GROUP BY ia.product_id
+        ORDER BY total_value DESC
+    ''').fetchall()
+    
+    # Total loss value
+    totals = conn.execute('''
+        SELECT SUM(quantity) as total_units,
+               SUM(quantity * unit_cost) as total_value
+        FROM inventory_adjustments
+    ''').fetchone()
+    
+    conn.close()
+    
+    return jsonify({
+        'by_reason': [dict(r) for r in by_reason],
+        'by_product': [dict(p) for p in by_product],
+        'total_units': totals['total_units'] or 0,
+        'total_value': totals['total_value'] or 0
+    })
+
 @app.route('/api/admin/orders', methods=['GET'])
 @admin_required
 def admin_get_orders():
@@ -3533,7 +3775,7 @@ def admin_update_order_status(oid):
     if not status:
         status = current_dict['status']
     
-    valid = ['pending', 'pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
+    valid = ['pending', 'pending_payment', 'paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
     if status not in valid:
         return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
     

@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mobile Admin - The Peptide Wizard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="/static/icon.png">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a202c;
+            color: white;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        
+        /* PIN Login Screen */
+        .pin-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .pin-logo { font-size: 3rem; margin-bottom: 20px; }
+        .pin-title { font-size: 1.5rem; margin-bottom: 30px; color: #a0aec0; }
+        .pin-display {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+        .pin-dot {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #2d3748;
+            border: 2px solid #4a5568;
+            transition: all 0.2s;
+        }
+        .pin-dot.filled { background: #48bb78; border-color: #48bb78; }
+        .pin-pad {
+            display: grid;
+            grid-template-columns: repeat(3, 80px);
+            gap: 15px;
+        }
+        .pin-btn {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            border: none;
+            background: #2d3748;
+            color: white;
+            font-size: 2rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .pin-btn:active { background: #4a5568; transform: scale(0.95); }
+        .pin-btn.delete { font-size: 1.5rem; background: #e53e3e; }
+        .pin-error {
+            color: #fc8181;
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        /* Main App */
+        .app { display: none; }
+        .app.active { display: block; }
+        
+        /* Header */
+        .header {
+            background: #2d3748;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-title { font-size: 1.2rem; font-weight: 600; }
+        .header-user { color: #a0aec0; font-size: 0.85rem; }
+        .menu-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 5px;
+        }
+        
+        /* Stats Bar */
+        .stats-bar {
+            display: flex;
+            background: #2d3748;
+            padding: 10px 15px;
+            gap: 10px;
+            overflow-x: auto;
+            border-bottom: 1px solid #4a5568;
+        }
+        .stat-item {
+            background: #1a202c;
+            padding: 10px 15px;
+            border-radius: 8px;
+            text-align: center;
+            min-width: 80px;
+            flex-shrink: 0;
+        }
+        .stat-number { font-size: 1.5rem; font-weight: 700; color: #48bb78; }
+        .stat-label { font-size: 0.7rem; color: #a0aec0; text-transform: uppercase; }
+        
+        /* Main Buttons */
+        .main-buttons {
+            padding: 20px;
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+        .main-btn {
+            background: #2d3748;
+            border: none;
+            border-radius: 16px;
+            padding: 25px 15px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .main-btn:active { transform: scale(0.98); background: #4a5568; }
+        .main-btn-icon { font-size: 2.5rem; margin-bottom: 10px; }
+        .main-btn-label { color: white; font-size: 1rem; font-weight: 600; }
+        .main-btn-count {
+            background: #e53e3e;
+            color: white;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            margin-top: 8px;
+            display: inline-block;
+        }
+        .main-btn-count.green { background: #48bb78; }
+        
+        /* Page Views */
+        .page { display: none; padding: 15px; }
+        .page.active { display: block; }
+        .page-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .back-btn {
+            background: #4a5568;
+            border: none;
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            font-size: 1.2rem;
+            cursor: pointer;
+        }
+        .page-title { font-size: 1.3rem; font-weight: 600; }
+        
+        /* Order Cards */
+        .order-card {
+            background: #2d3748;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 12px;
+        }
+        .order-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .order-number { font-weight: 600; color: #63b3ed; font-size: 0.9rem; }
+        .order-status {
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .status-paid { background: #48bb78; color: white; }
+        .status-ready_to_ship { background: #ed8936; color: white; }
+        .order-customer { color: #e2e8f0; margin-bottom: 8px; }
+        .order-items { color: #a0aec0; font-size: 0.85rem; margin-bottom: 12px; }
+        .order-actions { display: flex; gap: 10px; }
+        .order-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+        .order-btn.primary { background: #48bb78; color: white; }
+        .order-btn.secondary { background: #4a5568; color: white; }
+        
+        /* Inventory List */
+        .inventory-item {
+            background: #2d3748;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .inv-info {}
+        .inv-name { font-weight: 600; margin-bottom: 3px; }
+        .inv-sku { color: #a0aec0; font-size: 0.8rem; }
+        .inv-stock {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+        .inv-stock.low { color: #fc8181; }
+        .inv-stock.ok { color: #48bb78; }
+        .inv-actions { display: flex; gap: 8px; margin-top: 10px; }
+        .inv-btn {
+            padding: 8px 15px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+        .inv-btn.add { background: #48bb78; color: white; }
+        .inv-btn.remove { background: #e53e3e; color: white; }
+        
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 200;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .modal.active { display: flex; align-items: center; justify-content: center; }
+        .modal-content {
+            background: #2d3748;
+            border-radius: 16px;
+            padding: 25px;
+            width: 100%;
+            max-width: 400px;
+        }
+        .modal-title { font-size: 1.2rem; font-weight: 600; margin-bottom: 20px; }
+        .form-group { margin-bottom: 15px; }
+        .form-label { display: block; color: #a0aec0; margin-bottom: 5px; font-size: 0.9rem; }
+        .form-input, .form-select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #4a5568;
+            border-radius: 8px;
+            background: #1a202c;
+            color: white;
+            font-size: 1rem;
+        }
+        .form-select option { background: #1a202c; }
+        .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+        .modal-btn {
+            flex: 1;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+        .modal-btn.cancel { background: #4a5568; color: white; }
+        .modal-btn.confirm { background: #48bb78; color: white; }
+        .modal-btn.danger { background: #e53e3e; color: white; }
+        
+        /* Side Menu */
+        .side-menu {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 150;
+        }
+        .side-menu.active { display: block; }
+        .menu-panel {
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            width: 280px;
+            background: #2d3748;
+            padding: 20px;
+            animation: slideIn 0.2s ease-out;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(-100%); }
+            to { transform: translateX(0); }
+        }
+        .menu-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #4a5568;
+        }
+        .menu-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px 10px;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            margin-bottom: 5px;
+            cursor: pointer;
+        }
+        .menu-item:hover { background: #4a5568; }
+        .menu-item-icon { font-size: 1.3rem; }
+        
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #48bb78;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 30px;
+            font-weight: 600;
+            z-index: 300;
+            display: none;
+        }
+        .toast.error { background: #e53e3e; }
+        .toast.active { display: block; animation: fadeInUp 0.3s; }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+            to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+        
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #a0aec0;
+        }
+        
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #a0aec0;
+        }
+        .empty-icon { font-size: 4rem; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+    <!-- PIN Login Screen -->
+    <div id="pinScreen" class="pin-screen">
+        <div class="pin-logo">🧪</div>
+        <div class="pin-title">Enter PIN</div>
+        <div class="pin-display">
+            <div class="pin-dot" id="dot1"></div>
+            <div class="pin-dot" id="dot2"></div>
+            <div class="pin-dot" id="dot3"></div>
+            <div class="pin-dot" id="dot4"></div>
+            <div class="pin-dot" id="dot5"></div>
+            <div class="pin-dot" id="dot6"></div>
+        </div>
+        <div class="pin-pad">
+            <button class="pin-btn" onclick="enterPin('1')">1</button>
+            <button class="pin-btn" onclick="enterPin('2')">2</button>
+            <button class="pin-btn" onclick="enterPin('3')">3</button>
+            <button class="pin-btn" onclick="enterPin('4')">4</button>
+            <button class="pin-btn" onclick="enterPin('5')">5</button>
+            <button class="pin-btn" onclick="enterPin('6')">6</button>
+            <button class="pin-btn" onclick="enterPin('7')">7</button>
+            <button class="pin-btn" onclick="enterPin('8')">8</button>
+            <button class="pin-btn" onclick="enterPin('9')">9</button>
+            <div></div>
+            <button class="pin-btn" onclick="enterPin('0')">0</button>
+            <button class="pin-btn delete" onclick="deletePin()">⌫</button>
+        </div>
+        <div id="pinError" class="pin-error"></div>
+    </div>
+    
+    <!-- Main App -->
+    <div id="app" class="app">
+        <!-- Header -->
+        <div class="header">
+            <button class="menu-btn" onclick="toggleMenu()">☰</button>
+            <div>
+                <div class="header-title">Mobile Admin</div>
+                <div class="header-user" id="userName"></div>
+            </div>
+            <button class="menu-btn" onclick="refreshData()">↻</button>
+        </div>
+        
+        <!-- Stats Bar -->
+        <div class="stats-bar">
+            <div class="stat-item">
+                <div class="stat-number" id="statOpen">-</div>
+                <div class="stat-label">Open</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number" id="statReady">-</div>
+                <div class="stat-label">Ready</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number" id="statToday">-</div>
+                <div class="stat-label">Today</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number" id="statLowStock">-</div>
+                <div class="stat-label">Low Stock</div>
+            </div>
+        </div>
+        
+        <!-- Home Page -->
+        <div id="homePage" class="page active">
+            <div class="main-buttons">
+                <button class="main-btn" onclick="showPage('openOrders')">
+                    <div class="main-btn-icon">📦</div>
+                    <div class="main-btn-label">Open Orders</div>
+                    <div class="main-btn-count" id="btnOpenCount">0</div>
+                </button>
+                <button class="main-btn" onclick="showPage('readyToShip')">
+                    <div class="main-btn-icon">🚚</div>
+                    <div class="main-btn-label">Ready to Ship</div>
+                    <div class="main-btn-count green" id="btnReadyCount">0</div>
+                </button>
+                <button class="main-btn" onclick="showPage('pickMode')">
+                    <div class="main-btn-icon">📱</div>
+                    <div class="main-btn-label">Pick Mode</div>
+                </button>
+                <button class="main-btn" onclick="showPage('inventory')">
+                    <div class="main-btn-icon">📊</div>
+                    <div class="main-btn-label">Inventory</div>
+                </button>
+            </div>
+        </div>
+        
+        <!-- Open Orders Page -->
+        <div id="openOrdersPage" class="page">
+            <div class="page-header">
+                <button class="back-btn" onclick="showPage('home')">←</button>
+                <div class="page-title">Open Orders</div>
+            </div>
+            <div id="openOrdersList"></div>
+        </div>
+        
+        <!-- Ready to Ship Page -->
+        <div id="readyToShipPage" class="page">
+            <div class="page-header">
+                <button class="back-btn" onclick="showPage('home')">←</button>
+                <div class="page-title">Ready to Ship</div>
+            </div>
+            <div id="readyToShipList"></div>
+        </div>
+        
+        <!-- Pick Mode Page -->
+        <div id="pickModePage" class="page">
+            <div class="page-header">
+                <button class="back-btn" onclick="showPage('home')">←</button>
+                <div class="page-title">Pick Mode</div>
+            </div>
+            <div id="pickModeContent"></div>
+        </div>
+        
+        <!-- Inventory Page -->
+        <div id="inventoryPage" class="page">
+            <div class="page-header">
+                <button class="back-btn" onclick="showPage('home')">←</button>
+                <div class="page-title">Inventory</div>
+            </div>
+            <div id="inventoryList"></div>
+        </div>
+    </div>
+    
+    <!-- Side Menu -->
+    <div id="sideMenu" class="side-menu" onclick="if(event.target===this)toggleMenu()">
+        <div class="menu-panel">
+            <div class="menu-header">
+                <span style="font-weight: 600;">Menu</span>
+                <button class="menu-btn" onclick="toggleMenu()">✕</button>
+            </div>
+            <div class="menu-item" onclick="showPage('home'); toggleMenu();">
+                <span class="menu-item-icon">🏠</span> Home
+            </div>
+            <div class="menu-item" onclick="showPage('openOrders'); toggleMenu();">
+                <span class="menu-item-icon">📦</span> Open Orders
+            </div>
+            <div class="menu-item" onclick="showPage('readyToShip'); toggleMenu();">
+                <span class="menu-item-icon">🚚</span> Ready to Ship
+            </div>
+            <div class="menu-item" onclick="showPage('pickMode'); toggleMenu();">
+                <span class="menu-item-icon">📱</span> Pick Mode
+            </div>
+            <div class="menu-item" onclick="showPage('inventory'); toggleMenu();">
+                <span class="menu-item-icon">📊</span> Inventory
+            </div>
+            <div style="border-top: 1px solid #4a5568; margin: 20px 0;"></div>
+            <div class="menu-item" onclick="window.location.href='/admin'">
+                <span class="menu-item-icon">💻</span> Full Admin
+            </div>
+            <div class="menu-item" onclick="logout()">
+                <span class="menu-item-icon">🚪</span> Logout
+            </div>
+        </div>
+    </div>
+    
+    <!-- Remove Stock Modal -->
+    <div id="removeStockModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-title">Remove Stock</div>
+            <div class="form-group">
+                <label class="form-label">Product</label>
+                <div id="removeProductName" style="font-weight: 600;"></div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Quantity to Remove</label>
+                <input type="number" id="removeQuantity" class="form-input" min="1" value="1">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Reason</label>
+                <select id="removeReason" class="form-select">
+                    <option value="">Select reason...</option>
+                    <option value="Personal Use">Personal Use</option>
+                    <option value="Gift">Gift</option>
+                    <option value="Testing">Testing</option>
+                    <option value="Expired">Expired</option>
+                    <option value="Damaged">Damaged</option>
+                    <option value="Other">Other</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notes (optional)</label>
+                <input type="text" id="removeNotes" class="form-input" placeholder="Additional details...">
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" onclick="closeModal()">Cancel</button>
+                <button class="modal-btn danger" onclick="confirmRemoveStock()">Remove Stock</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
+    
+    <script>
+        // State
+        let pin = '';
+        let state = {
+            orders: [],
+            products: [],
+            userName: ''
+        };
+        let selectedProduct = null;
+        let pickState = { pickedItems: {} };
+        
+        // Check existing session
+        async function checkSession() {
+            try {
+                const res = await fetch('/api/mobile/check-session');
+                const data = await res.json();
+                if (data.authenticated) {
+                    state.userName = data.name;
+                    showApp();
+                }
+            } catch(e) {
+                console.log('No existing session');
+            }
+        }
+        
+        // PIN Entry
+        function enterPin(num) {
+            if (pin.length >= 6) return;
+            pin += num;
+            updatePinDisplay();
+            
+            if (pin.length >= 4) {
+                // Auto-submit after 4+ digits
+                setTimeout(() => {
+                    if (pin.length >= 4) submitPin();
+                }, 300);
+            }
+        }
+        
+        function deletePin() {
+            pin = pin.slice(0, -1);
+            updatePinDisplay();
+        }
+        
+        function updatePinDisplay() {
+            for (let i = 1; i <= 6; i++) {
+                const dot = document.getElementById('dot' + i);
+                dot.classList.toggle('filled', i <= pin.length);
+            }
+        }
+        
+        async function submitPin() {
+            try {
+                const res = await fetch('/api/mobile/pin-login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pin })
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    state.userName = data.name;
+                    showApp();
+                } else {
+                    document.getElementById('pinError').textContent = data.error || 'Invalid PIN';
+                    pin = '';
+                    updatePinDisplay();
+                    // Shake animation
+                    const display = document.querySelector('.pin-display');
+                    display.style.animation = 'shake 0.3s';
+                    setTimeout(() => display.style.animation = '', 300);
+                }
+            } catch(e) {
+                document.getElementById('pinError').textContent = 'Connection error';
+                pin = '';
+                updatePinDisplay();
+            }
+        }
+        
+        function showApp() {
+            document.getElementById('pinScreen').style.display = 'none';
+            document.getElementById('app').classList.add('active');
+            document.getElementById('userName').textContent = state.userName;
+            refreshData();
+        }
+        
+        // Data Loading
+        async function refreshData() {
+            try {
+                // Load orders
+                const ordersRes = await fetch('/api/admin/orders');
+                state.orders = await ordersRes.json();
+                
+                // Load products
+                const productsRes = await fetch('/api/admin/products');
+                state.products = await productsRes.json();
+                
+                updateStats();
+                renderCurrentPage();
+            } catch(e) {
+                showToast('Error loading data', true);
+            }
+        }
+        
+        function updateStats() {
+            const openOrders = state.orders.filter(o => 
+                ['paid', 'processing'].includes(o.status)
+            );
+            const readyOrders = state.orders.filter(o => o.status === 'ready_to_ship');
+            const today = new Date().toDateString();
+            const todayOrders = state.orders.filter(o => 
+                new Date(o.created_at).toDateString() === today
+            );
+            const lowStock = state.products.filter(p => p.stock <= 20 && p.active);
+            
+            document.getElementById('statOpen').textContent = openOrders.length;
+            document.getElementById('statReady').textContent = readyOrders.length;
+            document.getElementById('statToday').textContent = todayOrders.length;
+            document.getElementById('statLowStock').textContent = lowStock.length;
+            
+            document.getElementById('btnOpenCount').textContent = openOrders.length;
+            document.getElementById('btnReadyCount').textContent = readyOrders.length;
+        }
+        
+        // Page Navigation
+        function showPage(page) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            
+            switch(page) {
+                case 'home':
+                    document.getElementById('homePage').classList.add('active');
+                    break;
+                case 'openOrders':
+                    document.getElementById('openOrdersPage').classList.add('active');
+                    renderOpenOrders();
+                    break;
+                case 'readyToShip':
+                    document.getElementById('readyToShipPage').classList.add('active');
+                    renderReadyToShip();
+                    break;
+                case 'pickMode':
+                    document.getElementById('pickModePage').classList.add('active');
+                    renderPickMode();
+                    break;
+                case 'inventory':
+                    document.getElementById('inventoryPage').classList.add('active');
+                    renderInventory();
+                    break;
+            }
+        }
+        
+        function renderCurrentPage() {
+            const activePage = document.querySelector('.page.active');
+            if (activePage) {
+                const id = activePage.id.replace('Page', '');
+                if (id !== 'home') showPage(id.charAt(0).toLowerCase() + id.slice(1));
+            }
+        }
+        
+        // Render Functions
+        function renderOpenOrders() {
+            const orders = state.orders.filter(o => 
+                ['paid', 'processing'].includes(o.status) && o.delivery_method === 'ship'
+            );
+            
+            const container = document.getElementById('openOrdersList');
+            
+            if (orders.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🎉</div>
+                        <div>No open orders!</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = orders.map(o => `
+                <div class="order-card">
+                    <div class="order-header">
+                        <span class="order-number">${o.order_number}</span>
+                        <span class="order-status status-${o.status}">${o.status}</span>
+                    </div>
+                    <div class="order-customer">${o.full_name || o.customer_name}</div>
+                    <div class="order-items">${o.items ? o.items.length : 0} item(s) • $${parseFloat(o.total).toFixed(2)}</div>
+                    <div class="order-actions">
+                        <button class="order-btn secondary" onclick="viewOrder(${o.id})">View</button>
+                        <button class="order-btn primary" onclick="markReadyToShip(${o.id})">📦 Ready</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function renderReadyToShip() {
+            const orders = state.orders.filter(o => o.status === 'ready_to_ship');
+            
+            const container = document.getElementById('readyToShipList');
+            
+            if (orders.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <div>No orders ready to ship</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = orders.map(o => `
+                <div class="order-card">
+                    <div class="order-header">
+                        <span class="order-number">${o.order_number}</span>
+                        <span class="order-status status-ready_to_ship">Ready</span>
+                    </div>
+                    <div class="order-customer">${o.full_name || o.customer_name}</div>
+                    <div class="order-items">${o.items ? o.items.length : 0} item(s) • $${parseFloat(o.total).toFixed(2)}</div>
+                    <div class="order-actions">
+                        <button class="order-btn secondary" onclick="moveBack(${o.id})">← Back</button>
+                        <button class="order-btn primary" onclick="markShipped(${o.id})">✓ Shipped</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function renderPickMode() {
+            const orders = state.orders.filter(o => 
+                ['paid', 'processing'].includes(o.status) && o.delivery_method === 'ship'
+            );
+            
+            const container = document.getElementById('pickModeContent');
+            
+            if (orders.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">✅</div>
+                        <div>All orders picked!</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = orders.map(o => {
+                const items = o.items || [];
+                const allPicked = items.length > 0 && items.every(item => 
+                    pickState.pickedItems[`${o.id}_${item.id}`]
+                );
+                
+                return `
+                    <div class="order-card" style="border-left: 4px solid ${allPicked ? '#48bb78' : '#ed8936'}">
+                        <div class="order-header">
+                            <span class="order-number">${o.order_number}</span>
+                            ${allPicked ? `<button class="order-btn primary" style="padding: 8px 15px;" onclick="markReadyToShip(${o.id})">📦 Ready</button>` : ''}
+                        </div>
+                        <div class="order-customer">${o.full_name}</div>
+                        <div style="margin-top: 10px;">
+                            ${items.map(item => {
+                                const key = `${o.id}_${item.id}`;
+                                const picked = pickState.pickedItems[key];
+                                return `
+                                    <div onclick="togglePick('${key}')" style="
+                                        display: flex;
+                                        justify-content: space-between;
+                                        align-items: center;
+                                        padding: 12px;
+                                        margin: 5px 0;
+                                        background: ${picked ? '#276749' : '#4a5568'};
+                                        border-radius: 8px;
+                                        cursor: pointer;
+                                    ">
+                                        <div>
+                                            <div style="font-weight: 600;">${item.name}</div>
+                                            <div style="color: #a0aec0; font-size: 0.85rem;">SKU: ${item.sku || 'N/A'}</div>
+                                        </div>
+                                        <div style="font-size: 1.5rem; font-weight: 700;">
+                                            ${picked ? '✓' : ''} ${item.quantity}
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function togglePick(key) {
+            pickState.pickedItems[key] = !pickState.pickedItems[key];
+            renderPickMode();
+        }
+        
+        function renderInventory() {
+            const products = state.products.filter(p => p.active).sort((a, b) => a.stock - b.stock);
+            
+            const container = document.getElementById('inventoryList');
+            
+            container.innerHTML = products.map(p => `
+                <div class="inventory-item">
+                    <div class="inv-info">
+                        <div class="inv-name">${p.name}</div>
+                        <div class="inv-sku">${p.sku}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div class="inv-stock ${p.stock <= 20 ? 'low' : 'ok'}">${p.stock}</div>
+                        <div class="inv-actions">
+                            <button class="inv-btn remove" onclick="showRemoveModal(${p.id})">- Remove</button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        // Actions
+        async function markReadyToShip(orderId) {
+            try {
+                await fetch(`/api/admin/orders/${orderId}/status`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: 'ready_to_ship' })
+                });
+                showToast('Moved to Ready to Ship');
+                
+                // Clear pick state for this order
+                Object.keys(pickState.pickedItems).forEach(key => {
+                    if (key.startsWith(`${orderId}_`)) delete pickState.pickedItems[key];
+                });
+                
+                refreshData();
+            } catch(e) {
+                showToast('Error updating order', true);
+            }
+        }
+        
+        async function moveBack(orderId) {
+            try {
+                await fetch(`/api/admin/orders/${orderId}/status`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: 'processing' })
+                });
+                showToast('Moved back to Processing');
+                refreshData();
+            } catch(e) {
+                showToast('Error updating order', true);
+            }
+        }
+        
+        async function markShipped(orderId) {
+            const tracking = prompt('Enter tracking number (optional):');
+            try {
+                await fetch(`/api/admin/orders/${orderId}/status`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: 'shipped', tracking_number: tracking || null })
+                });
+                showToast('Order marked as shipped');
+                refreshData();
+            } catch(e) {
+                showToast('Error updating order', true);
+            }
+        }
+        
+        function viewOrder(orderId) {
+            const order = state.orders.find(o => o.id === orderId);
+            if (!order) return;
+            
+            const items = (order.items || []).map(i => `${i.quantity}x ${i.name}`).join('\n');
+            alert(`Order: ${order.order_number}\nCustomer: ${order.full_name}\nTotal: $${parseFloat(order.total).toFixed(2)}\n\nItems:\n${items}\n\nAddress:\n${order.shipping_address || 'N/A'}`);
+        }
+        
+        // Inventory Modal
+        function showRemoveModal(productId) {
+            selectedProduct = state.products.find(p => p.id === productId);
+            if (!selectedProduct) return;
+            
+            document.getElementById('removeProductName').textContent = 
+                `${selectedProduct.name} (${selectedProduct.stock} in stock)`;
+            document.getElementById('removeQuantity').value = 1;
+            document.getElementById('removeQuantity').max = selectedProduct.stock;
+            document.getElementById('removeReason').value = '';
+            document.getElementById('removeNotes').value = '';
+            
+            document.getElementById('removeStockModal').classList.add('active');
+        }
+        
+        function closeModal() {
+            document.getElementById('removeStockModal').classList.remove('active');
+            selectedProduct = null;
+        }
+        
+        async function confirmRemoveStock() {
+            const quantity = parseInt(document.getElementById('removeQuantity').value);
+            const reason = document.getElementById('removeReason').value;
+            const notes = document.getElementById('removeNotes').value;
+            
+            if (!reason) {
+                showToast('Please select a reason', true);
+                return;
+            }
+            
+            if (quantity <= 0 || quantity > selectedProduct.stock) {
+                showToast('Invalid quantity', true);
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/admin/inventory-adjustments', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        product_id: selectedProduct.id,
+                        quantity,
+                        reason,
+                        notes
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    showToast(`Removed ${quantity}x ${selectedProduct.name}`);
+                    closeModal();
+                    refreshData();
+                } else {
+                    showToast(data.error || 'Error removing stock', true);
+                }
+            } catch(e) {
+                showToast('Error removing stock', true);
+            }
+        }
+        
+        // Menu
+        function toggleMenu() {
+            document.getElementById('sideMenu').classList.toggle('active');
+        }
+        
+        function logout() {
+            fetch('/api/logout', { method: 'POST' }).then(() => {
+                window.location.reload();
+            });
+        }
+        
+        // Toast
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.toggle('error', isError);
+            toast.classList.add('active');
+            setTimeout(() => toast.classList.remove('active'), 3000);
+        }
+        
+        // Add shake animation
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes shake {
+                0%, 100% { transform: translateX(0); }
+                25% { transform: translateX(-10px); }
+                75% { transform: translateX(10px); }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        // Init
+        checkSession();
+    </script>
+</body>
+</html>
