@@ -18,6 +18,31 @@ import json
 # Initialize Stripe
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
+# Initialize EasyPost
+easypost_client = None
+EASYPOST_API_KEY = os.environ.get('EASYPOST_API_KEY')
+if EASYPOST_API_KEY:
+    try:
+        import easypost
+        easypost_client = easypost.EasyPostClient(EASYPOST_API_KEY)
+        print("[EASYPOST] Client initialized successfully")
+    except ImportError:
+        print("[EASYPOST] easypost package not installed - run: pip install easypost")
+    except Exception as e:
+        print(f"[EASYPOST] Error initializing: {e}")
+
+# Company shipping info
+COMPANY_SHIPPING_ADDRESS = {
+    'company': 'NH Chemicals LLC',
+    'name': 'The Peptide Wizard',
+    'street1': '530 North St.',
+    'city': 'Auburn',
+    'state': 'IN',
+    'zip': '46706',
+    'country': 'US',
+    'phone': ''  # Add your phone if needed
+}
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -504,6 +529,25 @@ def init_db():
             c.execute("ALTER TABLE orders ADD COLUMN processing_fee REAL DEFAULT 0")
         except:
             pass
+        # EasyPost shipping columns
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN shipping_label_url TEXT")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN shipping_label_zpl_url TEXT")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN easypost_shipment_id TEXT")
+        except:
+            pass
+    
+    # Add EasyPost columns for PostgreSQL
+    if using_postgres:
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_label_url TEXT")
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_label_zpl_url TEXT")
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS easypost_shipment_id TEXT")
     
     c.execute(f'''CREATE TABLE IF NOT EXISTS order_items (
         id {auto_id},
@@ -3911,6 +3955,345 @@ def admin_update_order_status(oid):
     
     conn.close()
     return jsonify({'message': 'Status updated'})
+
+# ============================================
+# EASYPOST SHIPPING INTEGRATION
+# ============================================
+
+@app.route('/api/admin/shipping/rates/<int:oid>', methods=['GET'])
+@admin_required
+def get_shipping_rates(oid):
+    """Get shipping rates for an order"""
+    if not easypost_client:
+        return jsonify({'error': 'EasyPost not configured. Add EASYPOST_API_KEY to environment.'}), 500
+    
+    conn = get_db()
+    order = conn.execute('''
+        SELECT o.*, u.full_name, u.email, u.phone 
+        FROM orders o 
+        JOIN users u ON o.user_id = u.id 
+        WHERE o.id = ?
+    ''', (oid,)).fetchone()
+    
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    
+    order_dict = dict(order)
+    
+    # Parse shipping address
+    shipping_addr = order_dict.get('shipping_address', '')
+    addr_parts = parse_shipping_address(shipping_addr)
+    
+    # Get order items for weight calculation
+    items = conn.execute('''
+        SELECT oi.quantity, p.name 
+        FROM order_items oi 
+        JOIN products p ON oi.product_id = p.id 
+        WHERE oi.order_id = ?
+    ''', (oid,)).fetchall()
+    conn.close()
+    
+    # Calculate weight (base 5oz + 1oz per item)
+    total_weight = 5.0
+    for item in items:
+        # Check if it's a 10-pack
+        if '10vial' in item['name'].lower() or '10 vial' in item['name'].lower() or '/10' in item['name']:
+            total_weight += 3.0 * item['quantity']
+        else:
+            total_weight += 1.0 * item['quantity']
+    
+    try:
+        # Create shipment to get rates
+        shipment = easypost_client.shipment.create(
+            to_address={
+                'name': order_dict['full_name'],
+                'street1': addr_parts.get('street1', ''),
+                'street2': addr_parts.get('street2', ''),
+                'city': addr_parts.get('city', ''),
+                'state': addr_parts.get('state', ''),
+                'zip': addr_parts.get('zip', ''),
+                'country': 'US',
+                'phone': order_dict.get('phone', ''),
+                'email': order_dict.get('email', '')
+            },
+            from_address=COMPANY_SHIPPING_ADDRESS,
+            parcel={
+                'length': 6,
+                'width': 4,
+                'height': 3,
+                'weight': total_weight
+            }
+        )
+        
+        # Format rates for response
+        rates = []
+        for rate in shipment.rates:
+            rates.append({
+                'id': rate.id,
+                'carrier': rate.carrier,
+                'service': rate.service,
+                'rate': float(rate.rate),
+                'delivery_days': rate.delivery_days,
+                'delivery_date': rate.delivery_date
+            })
+        
+        # Sort by price
+        rates.sort(key=lambda x: x['rate'])
+        
+        return jsonify({
+            'shipment_id': shipment.id,
+            'rates': rates,
+            'weight_oz': total_weight
+        })
+        
+    except Exception as e:
+        print(f"[EASYPOST] Error getting rates: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/shipping/buy/<int:oid>', methods=['POST'])
+@admin_required
+def buy_shipping_label(oid):
+    """Buy a shipping label for an order"""
+    if not easypost_client:
+        return jsonify({'error': 'EasyPost not configured'}), 500
+    
+    data = request.json
+    shipment_id = data.get('shipment_id')
+    rate_id = data.get('rate_id')
+    
+    if not shipment_id or not rate_id:
+        return jsonify({'error': 'shipment_id and rate_id required'}), 400
+    
+    conn = get_db()
+    order = conn.execute('SELECT * FROM orders WHERE id = ?', (oid,)).fetchone()
+    
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    
+    try:
+        # Retrieve shipment and buy label
+        shipment = easypost_client.shipment.retrieve(shipment_id)
+        
+        # Buy with ZPL format for Zebra printer
+        purchased = easypost_client.shipment.buy(
+            shipment_id,
+            rate={'id': rate_id},
+            label_format='ZPL'
+        )
+        
+        # Get label URLs
+        label_url = purchased.postage_label.label_url
+        label_zpl_url = purchased.postage_label.label_zpl_url
+        tracking_number = purchased.tracking_code
+        
+        # Update order with tracking number and mark as shipped
+        conn.execute('''
+            UPDATE orders 
+            SET tracking_number = ?, 
+                status = 'shipped',
+                shipping_label_url = ?,
+                shipping_label_zpl_url = ?,
+                easypost_shipment_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (tracking_number, label_url, label_zpl_url, shipment_id, oid))
+        conn.commit()
+        
+        # Send tracking email to customer
+        send_tracking_notification(oid, tracking_number)
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'tracking_number': tracking_number,
+            'label_url': label_url,
+            'label_zpl_url': label_zpl_url or label_url,
+            'rate': float(purchased.selected_rate.rate),
+            'carrier': purchased.selected_rate.carrier,
+            'service': purchased.selected_rate.service
+        })
+        
+    except Exception as e:
+        conn.close()
+        print(f"[EASYPOST] Error buying label: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/shipping/label/<int:oid>', methods=['GET'])
+@admin_required  
+def get_shipping_label(oid):
+    """Get the shipping label for an order (redirect to label URL)"""
+    conn = get_db()
+    order = conn.execute('SELECT shipping_label_url, shipping_label_zpl_url FROM orders WHERE id = ?', (oid,)).fetchone()
+    conn.close()
+    
+    if not order:
+        return jsonify({'error': 'Order not found'}), 404
+    
+    label_type = request.args.get('type', 'zpl')
+    
+    if label_type == 'zpl' and order['shipping_label_zpl_url']:
+        return redirect(order['shipping_label_zpl_url'])
+    elif order['shipping_label_url']:
+        return redirect(order['shipping_label_url'])
+    else:
+        return jsonify({'error': 'No label found for this order'}), 404
+
+
+@app.route('/api/admin/shipping/packing-slip/<int:oid>', methods=['GET'])
+@admin_required
+def get_packing_slip(oid):
+    """Generate a 4x6 packing slip for Zebra printer"""
+    conn = get_db()
+    
+    order = conn.execute('''
+        SELECT o.*, u.full_name, u.email 
+        FROM orders o 
+        JOIN users u ON o.user_id = u.id 
+        WHERE o.id = ?
+    ''', (oid,)).fetchone()
+    
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    
+    order_dict = dict(order)
+    
+    items = conn.execute('''
+        SELECT oi.quantity, p.name, p.sku 
+        FROM order_items oi 
+        JOIN products p ON oi.product_id = p.id 
+        WHERE oi.order_id = ?
+    ''', (oid,)).fetchall()
+    conn.close()
+    
+    # Generate ZPL for 4x6 label
+    zpl = generate_packing_slip_zpl(order_dict, items)
+    
+    response = make_response(zpl)
+    response.headers['Content-Type'] = 'application/x-zpl'
+    response.headers['Content-Disposition'] = f'attachment; filename=packing_slip_{order_dict["order_number"]}.zpl'
+    return response
+
+
+def generate_packing_slip_zpl(order, items):
+    """Generate ZPL code for 4x6 packing slip"""
+    # ZPL for 4x6 label (203 DPI = 812 x 1218 dots)
+    zpl_lines = [
+        '^XA',  # Start format
+        '^CF0,30',  # Default font
+        '^PW812',  # Print width (4 inches at 203 DPI)
+        '^LL1218',  # Label length (6 inches at 203 DPI)
+        
+        # Company header
+        '^FO30,30^A0N,45,45^FDThe Peptide Wizard^FS',
+        '^FO30,80^A0N,25,25^FDNH Chemicals LLC^FS',
+        
+        # Divider line
+        '^FO30,120^GB750,2,2^FS',
+        
+        # PACKING SLIP title
+        '^FO30,140^A0N,35,35^FDPACKING SLIP^FS',
+        
+        # Order number
+        f'^FO30,190^A0N,28,28^FDOrder: {order["order_number"]}^FS',
+        
+        # Date
+        f'^FO30,230^A0N,24,24^FDDate: {datetime.now().strftime("%m/%d/%Y")}^FS',
+        
+        # Divider line
+        '^FO30,270^GB750,2,2^FS',
+        
+        # Ship To header
+        '^FO30,290^A0N,28,28^FDSHIP TO:^FS',
+        
+        # Customer name
+        f'^FO30,330^A0N,30,30^FD{order["full_name"][:35]}^FS',
+    ]
+    
+    # Items section
+    y_pos = 400
+    zpl_lines.append('^FO30,380^GB750,2,2^FS')
+    zpl_lines.append(f'^FO30,{y_pos}^A0N,26,26^FDITEMS:^FS')
+    y_pos += 40
+    
+    for item in items:
+        # Truncate name if too long
+        item_name = item['name'][:30]
+        zpl_lines.append(f'^FO50,{y_pos}^A0N,24,24^FD{item["quantity"]}x {item_name}^FS')
+        y_pos += 35
+        
+        if y_pos > 900:  # Don't overflow the label
+            zpl_lines.append(f'^FO50,{y_pos}^A0N,24,24^FD... and more^FS')
+            break
+    
+    # Thank you message at bottom
+    y_pos = 1050
+    zpl_lines.append(f'^FO30,{y_pos}^GB750,2,2^FS')
+    zpl_lines.append(f'^FO30,{y_pos + 20}^A0N,28,28^FDThank you for your order!^FS')
+    zpl_lines.append(f'^FO30,{y_pos + 55}^A0N,22,22^FDwww.thepeptidewizard.com^FS')
+    zpl_lines.append(f'^FO30,{y_pos + 85}^A0N,20,20^FDFor Research Use Only^FS')
+    
+    # End format and print
+    zpl_lines.append('^XZ')
+    
+    return '\n'.join(zpl_lines)
+
+
+def parse_shipping_address(address_str):
+    """Parse shipping address string into components"""
+    parts = {
+        'street1': '',
+        'street2': '',
+        'city': '',
+        'state': '',
+        'zip': ''
+    }
+    
+    if not address_str:
+        return parts
+    
+    # Try to parse structured format: "Street1|Street2|City|State|Zip"
+    if '|' in address_str:
+        segments = address_str.split('|')
+        if len(segments) >= 4:
+            parts['street1'] = segments[0].strip()
+            parts['street2'] = segments[1].strip() if len(segments) > 4 else ''
+            parts['city'] = segments[-3].strip() if len(segments) > 4 else segments[1].strip()
+            parts['state'] = segments[-2].strip()
+            parts['zip'] = segments[-1].strip()
+            return parts
+    
+    # Try line-by-line parsing
+    lines = [l.strip() for l in address_str.split('\n') if l.strip()]
+    
+    if len(lines) >= 3:
+        parts['street1'] = lines[0]
+        if len(lines) > 3:
+            parts['street2'] = lines[1]
+            city_state_zip = lines[2]
+        else:
+            city_state_zip = lines[1]
+        
+        # Parse "City, State Zip"
+        if ',' in city_state_zip:
+            city_part, state_zip = city_state_zip.rsplit(',', 1)
+            parts['city'] = city_part.strip()
+            state_zip_parts = state_zip.strip().split()
+            if len(state_zip_parts) >= 2:
+                parts['state'] = state_zip_parts[0]
+                parts['zip'] = state_zip_parts[1]
+            elif len(state_zip_parts) == 1:
+                parts['state'] = state_zip_parts[0]
+    elif len(lines) == 1:
+        # Single line - try to parse
+        parts['street1'] = lines[0]
+    
+    return parts
 
 
 @app.route('/api/admin/orders/<int:oid>/edit', methods=['PUT'])

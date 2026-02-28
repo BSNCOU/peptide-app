@@ -858,12 +858,81 @@
                     </div>
                     <div class="order-customer">${o.full_name || o.customer_name}</div>
                     <div class="order-items">${o.items ? o.items.length : 0} item(s) • $${parseFloat(o.total).toFixed(2)}</div>
-                    <div class="order-actions">
-                        <button class="order-btn secondary" onclick="moveBack(${o.id})">← Back</button>
-                        <button class="order-btn primary" onclick="markShipped(${o.id})">✓ Shipped</button>
-                    </div>
+                    ${o.tracking_number ? `
+                        <div style="background: #276749; padding: 8px; border-radius: 6px; margin: 10px 0; text-align: center;">
+                            <div style="font-size: 0.8rem; color: #9ae6b4;">Tracking</div>
+                            <div style="font-weight: 600;">${o.tracking_number}</div>
+                        </div>
+                        <div class="order-actions">
+                            <button class="order-btn secondary" onclick="printLabelMobile(${o.id})">🏷️ Label</button>
+                            <button class="order-btn secondary" onclick="printSlipMobile(${o.id})">📄 Slip</button>
+                        </div>
+                    ` : `
+                        <div class="order-actions">
+                            <button class="order-btn secondary" onclick="printSlipMobile(${o.id})">📄 Slip</button>
+                            <button class="order-btn primary" id="buyBtn-${o.id}" onclick="buyLabelMobile(${o.id})">🏷️ Buy Label</button>
+                        </div>
+                    `}
                 </div>
             `).join('');
+        }
+        
+        async function buyLabelMobile(orderId) {
+            const btn = document.getElementById('buyBtn-' + orderId);
+            if (btn) {
+                btn.innerHTML = '⏳...';
+                btn.disabled = true;
+            }
+            
+            try {
+                // Get rates
+                const ratesRes = await fetch(`/api/admin/shipping/rates/${orderId}`);
+                const ratesData = await ratesRes.json();
+                
+                if (!ratesRes.ok) throw new Error(ratesData.error);
+                if (!ratesData.rates || ratesData.rates.length === 0) throw new Error('No rates available');
+                
+                const cheapestRate = ratesData.rates[0];
+                
+                if (!confirm(`Buy ${cheapestRate.carrier} ${cheapestRate.service} for $${cheapestRate.rate.toFixed(2)}?`)) {
+                    if (btn) {
+                        btn.innerHTML = '🏷️ Buy Label';
+                        btn.disabled = false;
+                    }
+                    return;
+                }
+                
+                // Buy label
+                const buyRes = await fetch(`/api/admin/shipping/buy/${orderId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        shipment_id: ratesData.shipment_id,
+                        rate_id: cheapestRate.id
+                    })
+                });
+                const buyData = await buyRes.json();
+                
+                if (!buyRes.ok) throw new Error(buyData.error);
+                
+                showToast(`Label bought! ${buyData.tracking_number}`);
+                refreshData();
+                
+            } catch (e) {
+                showToast(e.message || 'Error buying label', true);
+                if (btn) {
+                    btn.innerHTML = '🏷️ Buy Label';
+                    btn.disabled = false;
+                }
+            }
+        }
+        
+        function printLabelMobile(orderId) {
+            window.open(`/api/admin/shipping/label/${orderId}?type=zpl`, '_blank');
+        }
+        
+        function printSlipMobile(orderId) {
+            window.open(`/api/admin/shipping/packing-slip/${orderId}`, '_blank');
         }
         
         function renderPickMode() {

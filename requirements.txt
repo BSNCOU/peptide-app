@@ -4,3 +4,4 @@ psycopg2-binary
 stripe
 reportlab
 requests
+easypost
