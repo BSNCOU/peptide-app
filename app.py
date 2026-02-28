@@ -3735,6 +3735,75 @@ def admin_inventory_adjustments_summary():
         'total_value': totals['total_value'] or 0
     })
 
+@app.route('/api/admin/inventory-adjustments/physical-count', methods=['POST'])
+@admin_required
+def admin_physical_count():
+    """Apply physical inventory count adjustments"""
+    data = request.json
+    adjustments = data.get('adjustments', [])
+    notes = data.get('notes', '')
+    
+    if not adjustments:
+        return jsonify({'error': 'No adjustments provided'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    count_date = datetime.now().strftime('%Y-%m-%d')
+    adjustments_made = 0
+    
+    for adj in adjustments:
+        product_id = adj.get('product_id')
+        system_count = adj.get('system_count', 0)
+        physical_count = adj.get('physical_count', 0)
+        variance = adj.get('variance', 0)
+        
+        if variance == 0:
+            continue
+            
+        # Get product info
+        product = c.execute('SELECT * FROM products WHERE id = ?', (product_id,)).fetchone()
+        if not product:
+            continue
+            
+        product = dict(product)
+        unit_cost = float(product.get('cost') or 0)
+        
+        # Determine reason based on variance direction
+        if variance < 0:
+            # Shortage - log as adjustment removal
+            reason = 'Physical Count - Short'
+            quantity = abs(variance)
+            c.execute('''
+                INSERT INTO inventory_adjustments (product_id, user_id, quantity, reason, notes, unit_cost)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (product_id, session['user_id'], quantity, reason, 
+                  f"Physical count {count_date}: System {system_count}, Actual {physical_count}. {notes}", unit_cost))
+        else:
+            # Overage - log as positive adjustment
+            reason = 'Physical Count - Over'
+            quantity = variance
+            c.execute('''
+                INSERT INTO inventory_adjustments (product_id, user_id, quantity, reason, notes, unit_cost)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (product_id, session['user_id'], -quantity, reason,  # Negative qty for overage (found more)
+                  f"Physical count {count_date}: System {system_count}, Actual {physical_count}. {notes}", unit_cost))
+        
+        # Update actual stock to match physical count
+        c.execute('UPDATE products SET stock = ? WHERE id = ?', (physical_count, product_id))
+        adjustments_made += 1
+        
+        print(f"[PHYSICAL COUNT] Product {product['name']}: {system_count} -> {physical_count} (variance: {variance})")
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        'success': True,
+        'adjustments_made': adjustments_made,
+        'message': f'Physical count completed. {adjustments_made} products adjusted.'
+    })
+
 @app.route('/api/admin/orders', methods=['GET'])
 @admin_required
 def admin_get_orders():

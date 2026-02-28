@@ -1012,9 +1012,10 @@ BC10,8.00</pre>
             content.innerHTML = `
                 <div class="toolbar">
                     <h3 style="color: #2d3748;">Inventory Management</h3>
-                    <div style="display: flex; gap: 10px;">
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                         <button class="btn" onclick="showReceiveInventoryModal()">📦 Receive Inventory</button>
                         <button class="btn btn-secondary" onclick="showRemoveStockModal()">📤 Remove Stock</button>
+                        <button class="btn" style="background: #805ad5;" onclick="showPhysicalCountModal()">📋 Physical Count</button>
                     </div>
                 </div>
                 
@@ -1093,19 +1094,31 @@ BC10,8.00</pre>
                 const adjustments = await api('/api/admin/inventory-adjustments');
                 const summary = await api('/api/admin/inventory-adjustments/summary');
                 
+                // Calculate shortages (positive qty = stock removed) and overages (negative qty = stock found)
+                const shortages = summary.by_reason.filter(r => !r.reason.includes('Over'));
+                const overages = summary.by_reason.filter(r => r.reason.includes('Over'));
+                
+                const totalShortageValue = shortages.reduce((sum, r) => sum + (r.total_value || 0), 0);
+                const totalShortageUnits = shortages.reduce((sum, r) => sum + (r.total_quantity || 0), 0);
+                
                 // Render summary
                 document.getElementById('shrinkageSummary').innerHTML = `
                     <div style="font-size: 1.5rem; font-weight: 700; color: #e53e3e; margin-bottom: 10px;">
-                        $${parseFloat(summary.total_value || 0).toFixed(2)}
+                        -$${parseFloat(totalShortageValue || 0).toFixed(2)}
                     </div>
-                    <div style="margin-bottom: 10px;">${summary.total_units || 0} units removed</div>
+                    <div style="margin-bottom: 10px;">${totalShortageUnits || 0} units lost/removed</div>
                     <div style="font-size: 0.85rem;">
-                        ${summary.by_reason.map(r => `
-                            <div style="display: flex; justify-content: space-between; margin: 3px 0;">
-                                <span>${r.reason}:</span>
-                                <span>${r.total_quantity} units ($${parseFloat(r.total_value || 0).toFixed(2)})</span>
-                            </div>
-                        `).join('')}
+                        ${summary.by_reason.map(r => {
+                            const isOver = r.reason.includes('Over');
+                            const color = isOver ? '#38a169' : '#e53e3e';
+                            const prefix = isOver ? '+' : '-';
+                            return `
+                                <div style="display: flex; justify-content: space-between; margin: 3px 0;">
+                                    <span>${r.reason}:</span>
+                                    <span style="color: ${color};">${prefix}${Math.abs(r.total_quantity)} units</span>
+                                </div>
+                            `;
+                        }).join('')}
                     </div>
                 `;
                 
@@ -1123,19 +1136,25 @@ BC10,8.00</pre>
                             </tr>
                         </thead>
                         <tbody>
-                            ${adjustments.slice(0, 20).map(a => `
-                                <tr>
-                                    <td>${new Date(a.created_at).toLocaleDateString()}</td>
-                                    <td>${escapeHtml(a.product_name)} <span style="color: #718096;">(${escapeHtml(a.sku)})</span></td>
-                                    <td style="color: #e53e3e; font-weight: 600;">-${a.quantity}</td>
-                                    <td><span style="background: #fed7d7; color: #c53030; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem;">${escapeHtml(a.reason)}</span></td>
-                                    <td>${escapeHtml(a.notes || '-')}</td>
-                                    <td>${escapeHtml(a.adjusted_by)}</td>
-                                </tr>
-                            `).join('')}
+                            ${adjustments.slice(0, 20).map(a => {
+                                const isOver = a.quantity < 0; // Negative qty means overage (found more)
+                                const displayQty = isOver ? `+${Math.abs(a.quantity)}` : `-${a.quantity}`;
+                                const qtyColor = isOver ? '#38a169' : '#e53e3e';
+                                const badgeColor = isOver ? 'background: #c6f6d5; color: #276749;' : 'background: #fed7d7; color: #c53030;';
+                                return `
+                                    <tr>
+                                        <td>${new Date(a.created_at).toLocaleDateString()}</td>
+                                        <td>${escapeHtml(a.product_name)} <span style="color: #718096;">(${escapeHtml(a.sku)})</span></td>
+                                        <td style="color: ${qtyColor}; font-weight: 600;">${displayQty}</td>
+                                        <td><span style="${badgeColor} padding: 2px 8px; border-radius: 4px; font-size: 0.85rem;">${escapeHtml(a.reason)}</span></td>
+                                        <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(a.notes || '')}">${escapeHtml(a.notes || '-')}</td>
+                                        <td>${escapeHtml(a.adjusted_by)}</td>
+                                    </tr>
+                                `;
+                            }).join('')}
                         </tbody>
                     </table>`
-                    : '<p style="color: #718096; text-align: center;">No stock removals yet</p>';
+                    : '<p style="color: #718096; text-align: center;">No stock adjustments yet</p>';
             } catch (e) {
                 console.error('Error loading adjustments:', e);
             }
@@ -1211,6 +1230,183 @@ BC10,8.00</pre>
                     body: JSON.stringify({ product_id: productId, quantity, reason, notes })
                 });
                 showAlert('Stock removed successfully', 'success');
+                closeModal();
+                loadInventory();
+                loadProducts();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+        
+        function showPhysicalCountModal() {
+            const activeProducts = state.products.filter(p => p.active).sort((a, b) => a.name.localeCompare(b.name));
+            const today = new Date().toLocaleDateString();
+            
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 800px; max-height: 90vh; overflow-y: auto;">
+                        <h3>📋 Physical Inventory Count</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Enter actual counts. Variances will be adjusted automatically.</p>
+                        <p style="color: #805ad5; font-weight: 600; margin-bottom: 20px;">Date: ${today}</p>
+                        
+                        <form onsubmit="submitPhysicalCount(event)">
+                            <table style="width: 100%;">
+                                <thead>
+                                    <tr>
+                                        <th style="text-align: left;">Product</th>
+                                        <th style="text-align: center; width: 100px;">System</th>
+                                        <th style="text-align: center; width: 120px;">Physical</th>
+                                        <th style="text-align: center; width: 100px;">Variance</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${activeProducts.map(p => `
+                                        <tr class="physical-count-row" data-product-id="${p.id}" data-system-count="${p.stock}">
+                                            <td>
+                                                <strong>${escapeHtml(p.name)}</strong>
+                                                <br><small style="color: #718096;">${escapeHtml(p.sku)}</small>
+                                            </td>
+                                            <td style="text-align: center; font-weight: 600; color: #4a5568;">${p.stock}</td>
+                                            <td style="text-align: center;">
+                                                <input type="number" 
+                                                    class="physical-count-input" 
+                                                    data-product-id="${p.id}"
+                                                    value="${p.stock}" 
+                                                    min="0" 
+                                                    style="width: 80px; text-align: center; padding: 8px;"
+                                                    onchange="updateVariance(this, ${p.stock})">
+                                            </td>
+                                            <td style="text-align: center;" id="variance-${p.id}">
+                                                <span style="color: #718096;">0</span>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                            
+                            <div style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-top: 20px;">
+                                <div class="form-group">
+                                    <label><strong>Count Notes</strong></label>
+                                    <textarea id="physicalCountNotes" rows="2" placeholder="Monthly count, discrepancy notes, etc."></textarea>
+                                </div>
+                            </div>
+                            
+                            <div id="physicalCountSummary" style="margin-top: 15px; padding: 15px; background: #ebf8ff; border-radius: 8px; display: none;">
+                                <strong>Summary:</strong>
+                                <span id="summaryText"></span>
+                            </div>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                                <button type="submit" class="btn" style="background: #805ad5; color: white;">💾 Save Count & Adjust Inventory</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function updateVariance(input, systemCount) {
+            const productId = input.dataset.productId;
+            const physicalCount = parseInt(input.value) || 0;
+            const variance = physicalCount - systemCount;
+            
+            const varianceCell = document.getElementById('variance-' + productId);
+            
+            if (variance === 0) {
+                varianceCell.innerHTML = '<span style="color: #718096;">0</span>';
+            } else if (variance > 0) {
+                varianceCell.innerHTML = `<span style="color: #38a169; font-weight: 600;">+${variance}</span>`;
+            } else {
+                varianceCell.innerHTML = `<span style="color: #e53e3e; font-weight: 600;">${variance}</span>`;
+            }
+            
+            // Update summary
+            updatePhysicalCountSummary();
+        }
+        
+        function updatePhysicalCountSummary() {
+            const inputs = document.querySelectorAll('.physical-count-input');
+            let totalOver = 0;
+            let totalShort = 0;
+            let changedCount = 0;
+            
+            inputs.forEach(input => {
+                const systemCount = parseInt(input.closest('tr').dataset.systemCount);
+                const physicalCount = parseInt(input.value) || 0;
+                const variance = physicalCount - systemCount;
+                
+                if (variance !== 0) {
+                    changedCount++;
+                    if (variance > 0) {
+                        totalOver += variance;
+                    } else {
+                        totalShort += Math.abs(variance);
+                    }
+                }
+            });
+            
+            const summaryDiv = document.getElementById('physicalCountSummary');
+            const summaryText = document.getElementById('summaryText');
+            
+            if (changedCount > 0) {
+                summaryDiv.style.display = 'block';
+                let parts = [];
+                if (totalShort > 0) parts.push(`<span style="color: #e53e3e;">${totalShort} units short</span>`);
+                if (totalOver > 0) parts.push(`<span style="color: #38a169;">${totalOver} units over</span>`);
+                summaryText.innerHTML = ` ${changedCount} product(s) adjusted: ${parts.join(', ')}`;
+            } else {
+                summaryDiv.style.display = 'none';
+            }
+        }
+        
+        async function submitPhysicalCount(e) {
+            e.preventDefault();
+            
+            const inputs = document.querySelectorAll('.physical-count-input');
+            const notes = document.getElementById('physicalCountNotes').value;
+            const adjustments = [];
+            
+            inputs.forEach(input => {
+                const productId = parseInt(input.dataset.productId);
+                const systemCount = parseInt(input.closest('tr').dataset.systemCount);
+                const physicalCount = parseInt(input.value) || 0;
+                const variance = physicalCount - systemCount;
+                
+                if (variance !== 0) {
+                    adjustments.push({
+                        product_id: productId,
+                        system_count: systemCount,
+                        physical_count: physicalCount,
+                        variance: variance
+                    });
+                }
+            });
+            
+            if (adjustments.length === 0) {
+                showAlert('No adjustments needed - all counts match!', 'success');
+                closeModal();
+                return;
+            }
+            
+            const shortages = adjustments.filter(a => a.variance < 0);
+            const overages = adjustments.filter(a => a.variance > 0);
+            
+            let confirmMsg = `Apply ${adjustments.length} adjustment(s)?\\n\\n`;
+            if (shortages.length > 0) confirmMsg += `Shortages: ${shortages.reduce((sum, a) => sum + Math.abs(a.variance), 0)} units\\n`;
+            if (overages.length > 0) confirmMsg += `Overages: ${overages.reduce((sum, a) => sum + a.variance, 0)} units`;
+            
+            if (!confirm(confirmMsg)) {
+                return;
+            }
+            
+            try {
+                const result = await api('/api/admin/inventory-adjustments/physical-count', {
+                    method: 'POST',
+                    body: JSON.stringify({ adjustments, notes })
+                });
+                
+                showAlert(`Physical count saved! ${result.adjustments_made} adjustments applied.`, 'success');
                 closeModal();
                 loadInventory();
                 loadProducts();
