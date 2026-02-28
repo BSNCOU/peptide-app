@@ -481,6 +481,10 @@
                 <button class="back-btn" onclick="showPage('home')">←</button>
                 <div class="page-title">Inventory</div>
             </div>
+            <div id="inventoryActions" style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+                <button class="order-btn primary" style="flex: 1; min-width: 100px;" onclick="showReceiveModal()">📦 Receive</button>
+                <button class="order-btn secondary" style="flex: 1; min-width: 100px;" onclick="showPhysicalCountMobile()">📋 Count</button>
+            </div>
             <div id="inventoryList"></div>
         </div>
     </div>
@@ -551,6 +555,55 @@
             <div class="modal-actions">
                 <button class="modal-btn cancel" onclick="closeModal()">Cancel</button>
                 <button class="modal-btn danger" onclick="confirmRemoveStock()">Remove Stock</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Receive Inventory Modal -->
+    <div id="receiveModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-title">📦 Receive Inventory</div>
+            <div class="form-group">
+                <label class="form-label">Product</label>
+                <select id="receiveProductId" class="form-select">
+                    <option value="">Select product...</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Quantity Received</label>
+                <input type="number" id="receiveQuantity" class="form-input" min="1" value="1">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Lot Number (optional)</label>
+                <input type="text" id="receiveLotNumber" class="form-input" placeholder="e.g. BPC-20260228-001">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notes (optional)</label>
+                <input type="text" id="receiveNotes" class="form-input" placeholder="Supplier, invoice #, etc.">
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" onclick="closeReceiveModal()">Cancel</button>
+                <button class="modal-btn confirm" onclick="confirmReceive()">+ Add Stock</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Physical Count Modal -->
+    <div id="physicalCountModal" class="modal">
+        <div class="modal-content" style="max-height: 90vh; overflow-y: auto;">
+            <div class="modal-title">📋 Physical Count</div>
+            <p style="color: #a0aec0; margin-bottom: 15px; font-size: 0.9rem;">Enter actual counts. Tap a product to adjust.</p>
+            <div id="physicalCountList"></div>
+            <div class="form-group" style="margin-top: 15px;">
+                <label class="form-label">Notes</label>
+                <input type="text" id="physicalCountNotesMobile" class="form-input" placeholder="Monthly count, etc.">
+            </div>
+            <div id="physicalCountSummaryMobile" style="background: #4a5568; padding: 10px; border-radius: 8px; margin: 15px 0; display: none;">
+                <span id="summaryTextMobile"></span>
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" onclick="closePhysicalCountModal()">Cancel</button>
+                <button class="modal-btn confirm" onclick="submitPhysicalCountMobile()">💾 Save Count</button>
             </div>
         </div>
     </div>
@@ -1015,6 +1068,196 @@
                 }
             } catch(e) {
                 showToast('Error removing stock', true);
+            }
+        }
+        
+        // Receive Inventory
+        function showReceiveModal() {
+            const select = document.getElementById('receiveProductId');
+            select.innerHTML = '<option value="">Select product...</option>' + 
+                state.products.filter(p => p.active).map(p => 
+                    `<option value="${p.id}">${p.name} (${p.sku})</option>`
+                ).join('');
+            document.getElementById('receiveQuantity').value = 1;
+            document.getElementById('receiveLotNumber').value = '';
+            document.getElementById('receiveNotes').value = '';
+            document.getElementById('receiveModal').classList.add('active');
+        }
+        
+        function closeReceiveModal() {
+            document.getElementById('receiveModal').classList.remove('active');
+        }
+        
+        async function confirmReceive() {
+            const productId = document.getElementById('receiveProductId').value;
+            const quantity = parseInt(document.getElementById('receiveQuantity').value);
+            const lotNumber = document.getElementById('receiveLotNumber').value;
+            const notes = document.getElementById('receiveNotes').value;
+            
+            if (!productId) {
+                showToast('Please select a product', true);
+                return;
+            }
+            
+            if (quantity <= 0) {
+                showToast('Invalid quantity', true);
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/admin/inventory-receipts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        product_id: productId,
+                        quantity,
+                        lot_number: lotNumber,
+                        notes,
+                        received_date: new Date().toISOString().split('T')[0]
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    showToast(`Added ${quantity} units`);
+                    closeReceiveModal();
+                    refreshData();
+                } else {
+                    showToast(data.error || 'Error receiving inventory', true);
+                }
+            } catch(e) {
+                showToast('Error receiving inventory', true);
+            }
+        }
+        
+        // Physical Count
+        let physicalCountData = {};
+        
+        function showPhysicalCountMobile() {
+            const products = state.products.filter(p => p.active).sort((a, b) => a.name.localeCompare(b.name));
+            physicalCountData = {};
+            
+            // Initialize with current stock values
+            products.forEach(p => {
+                physicalCountData[p.id] = { system: p.stock, physical: p.stock };
+            });
+            
+            const container = document.getElementById('physicalCountList');
+            container.innerHTML = products.map(p => `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #4a5568; border-radius: 8px; margin-bottom: 8px;">
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600;">${p.name}</div>
+                        <div style="color: #a0aec0; font-size: 0.8rem;">System: ${p.stock}</div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <button onclick="adjustPhysicalCount(${p.id}, -1)" style="width: 36px; height: 36px; border-radius: 50%; border: none; background: #e53e3e; color: white; font-size: 1.2rem; cursor: pointer;">−</button>
+                        <span id="count-${p.id}" style="font-size: 1.3rem; font-weight: 700; min-width: 40px; text-align: center;">${p.stock}</span>
+                        <button onclick="adjustPhysicalCount(${p.id}, 1)" style="width: 36px; height: 36px; border-radius: 50%; border: none; background: #48bb78; color: white; font-size: 1.2rem; cursor: pointer;">+</button>
+                    </div>
+                </div>
+            `).join('');
+            
+            document.getElementById('physicalCountNotesMobile').value = '';
+            document.getElementById('physicalCountSummaryMobile').style.display = 'none';
+            document.getElementById('physicalCountModal').classList.add('active');
+        }
+        
+        function adjustPhysicalCount(productId, delta) {
+            const current = physicalCountData[productId].physical;
+            const newValue = Math.max(0, current + delta);
+            physicalCountData[productId].physical = newValue;
+            
+            document.getElementById('count-' + productId).textContent = newValue;
+            
+            // Update variance display
+            const variance = newValue - physicalCountData[productId].system;
+            const countEl = document.getElementById('count-' + productId);
+            if (variance < 0) {
+                countEl.style.color = '#fc8181';
+            } else if (variance > 0) {
+                countEl.style.color = '#68d391';
+            } else {
+                countEl.style.color = 'white';
+            }
+            
+            updatePhysicalCountSummaryMobile();
+        }
+        
+        function updatePhysicalCountSummaryMobile() {
+            let totalShort = 0;
+            let totalOver = 0;
+            let changedCount = 0;
+            
+            Object.keys(physicalCountData).forEach(id => {
+                const data = physicalCountData[id];
+                const variance = data.physical - data.system;
+                if (variance !== 0) {
+                    changedCount++;
+                    if (variance > 0) totalOver += variance;
+                    else totalShort += Math.abs(variance);
+                }
+            });
+            
+            const summaryDiv = document.getElementById('physicalCountSummaryMobile');
+            const summaryText = document.getElementById('summaryTextMobile');
+            
+            if (changedCount > 0) {
+                summaryDiv.style.display = 'block';
+                let parts = [];
+                if (totalShort > 0) parts.push(`<span style="color: #fc8181;">-${totalShort} short</span>`);
+                if (totalOver > 0) parts.push(`<span style="color: #68d391;">+${totalOver} over</span>`);
+                summaryText.innerHTML = `${changedCount} changes: ${parts.join(', ')}`;
+            } else {
+                summaryDiv.style.display = 'none';
+            }
+        }
+        
+        function closePhysicalCountModal() {
+            document.getElementById('physicalCountModal').classList.remove('active');
+        }
+        
+        async function submitPhysicalCountMobile() {
+            const notes = document.getElementById('physicalCountNotesMobile').value;
+            const adjustments = [];
+            
+            Object.keys(physicalCountData).forEach(productId => {
+                const data = physicalCountData[productId];
+                const variance = data.physical - data.system;
+                if (variance !== 0) {
+                    adjustments.push({
+                        product_id: parseInt(productId),
+                        system_count: data.system,
+                        physical_count: data.physical,
+                        variance: variance
+                    });
+                }
+            });
+            
+            if (adjustments.length === 0) {
+                showToast('No adjustments needed!');
+                closePhysicalCountModal();
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/admin/inventory-adjustments/physical-count', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ adjustments, notes })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    showToast(`Count saved! ${data.adjustments_made} adjusted`);
+                    closePhysicalCountModal();
+                    refreshData();
+                } else {
+                    showToast(data.error || 'Error saving count', true);
+                }
+            } catch(e) {
+                showToast('Error saving count', true);
             }
         }
         
