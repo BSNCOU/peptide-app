@@ -541,11 +541,12 @@
                 <select id="removeReason" class="form-select">
                     <option value="">Select reason...</option>
                     <option value="Personal Use">Personal Use</option>
-                    <option value="Gift">Gift</option>
-                    <option value="Testing">Testing</option>
                     <option value="Expired">Expired</option>
+                    <option value="Gift">Gift</option>
+                    <option value="Marketing">Marketing</option>
+                    <option value="Lost">Lost</option>
                     <option value="Damaged">Damaged</option>
-                    <option value="Other">Other</option>
+                    <option value="Testing">Testing</option>
                 </select>
             </div>
             <div class="form-group">
@@ -1140,20 +1141,40 @@
             
             // Initialize with current stock values
             products.forEach(p => {
-                physicalCountData[p.id] = { system: p.stock, physical: p.stock };
+                physicalCountData[p.id] = { system: p.stock, physical: p.stock, reason: '' };
             });
             
             const container = document.getElementById('physicalCountList');
             container.innerHTML = products.map(p => `
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #4a5568; border-radius: 8px; margin-bottom: 8px;">
-                    <div style="flex: 1;">
-                        <div style="font-weight: 600;">${p.name}</div>
-                        <div style="color: #a0aec0; font-size: 0.8rem;">System: ${p.stock}</div>
+                <div style="background: #4a5568; border-radius: 8px; margin-bottom: 10px; padding: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div style="flex: 1;">
+                            <div style="font-weight: 600;">${p.name}</div>
+                            <div style="color: #a0aec0; font-size: 0.8rem;">System: ${p.stock}</div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <button onclick="adjustPhysicalCount(${p.id}, -1)" style="width: 36px; height: 36px; border-radius: 50%; border: none; background: #e53e3e; color: white; font-size: 1.2rem; cursor: pointer;">−</button>
+                            <input type="number" 
+                                id="count-${p.id}" 
+                                value="${p.stock}" 
+                                min="0"
+                                onchange="setPhysicalCount(${p.id}, this.value)"
+                                style="width: 60px; text-align: center; font-size: 1.2rem; font-weight: 700; padding: 8px; border: none; border-radius: 8px; background: #2d3748; color: white;">
+                            <button onclick="adjustPhysicalCount(${p.id}, 1)" style="width: 36px; height: 36px; border-radius: 50%; border: none; background: #48bb78; color: white; font-size: 1.2rem; cursor: pointer;">+</button>
+                        </div>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <button onclick="adjustPhysicalCount(${p.id}, -1)" style="width: 36px; height: 36px; border-radius: 50%; border: none; background: #e53e3e; color: white; font-size: 1.2rem; cursor: pointer;">−</button>
-                        <span id="count-${p.id}" style="font-size: 1.3rem; font-weight: 700; min-width: 40px; text-align: center;">${p.stock}</span>
-                        <button onclick="adjustPhysicalCount(${p.id}, 1)" style="width: 36px; height: 36px; border-radius: 50%; border: none; background: #48bb78; color: white; font-size: 1.2rem; cursor: pointer;">+</button>
+                    <div id="reason-row-${p.id}" style="display: none;">
+                        <select id="reason-${p.id}" onchange="setPhysicalCountReason(${p.id}, this.value)" style="width: 100%; padding: 8px; border: none; border-radius: 6px; background: #2d3748; color: white; font-size: 0.9rem;">
+                            <option value="">Select reason...</option>
+                            <option value="Personal Use">Personal Use</option>
+                            <option value="Expired">Expired</option>
+                            <option value="Gift">Gift</option>
+                            <option value="Marketing">Marketing</option>
+                            <option value="Lost">Lost</option>
+                            <option value="Damaged">Damaged</option>
+                            <option value="Found">Found (overage)</option>
+                            <option value="Count Correction">Count Correction</option>
+                        </select>
                     </div>
                 </div>
             `).join('');
@@ -1163,25 +1184,52 @@
             document.getElementById('physicalCountModal').classList.add('active');
         }
         
+        function setPhysicalCount(productId, value) {
+            const newValue = Math.max(0, parseInt(value) || 0);
+            physicalCountData[productId].physical = newValue;
+            document.getElementById('count-' + productId).value = newValue;
+            updateCountDisplay(productId);
+            updatePhysicalCountSummaryMobile();
+        }
+        
         function adjustPhysicalCount(productId, delta) {
             const current = physicalCountData[productId].physical;
             const newValue = Math.max(0, current + delta);
             physicalCountData[productId].physical = newValue;
-            
-            document.getElementById('count-' + productId).textContent = newValue;
-            
-            // Update variance display
-            const variance = newValue - physicalCountData[productId].system;
+            document.getElementById('count-' + productId).value = newValue;
+            updateCountDisplay(productId);
+            updatePhysicalCountSummaryMobile();
+        }
+        
+        function updateCountDisplay(productId) {
+            const data = physicalCountData[productId];
+            const variance = data.physical - data.system;
             const countEl = document.getElementById('count-' + productId);
+            const reasonRow = document.getElementById('reason-row-' + productId);
+            
+            // Color based on variance
             if (variance < 0) {
-                countEl.style.color = '#fc8181';
+                countEl.style.background = '#742a2a';
+                countEl.style.color = '#feb2b2';
             } else if (variance > 0) {
-                countEl.style.color = '#68d391';
+                countEl.style.background = '#22543d';
+                countEl.style.color = '#9ae6b4';
             } else {
+                countEl.style.background = '#2d3748';
                 countEl.style.color = 'white';
             }
             
-            updatePhysicalCountSummaryMobile();
+            // Show/hide reason dropdown
+            if (variance !== 0) {
+                reasonRow.style.display = 'block';
+            } else {
+                reasonRow.style.display = 'none';
+                physicalCountData[productId].reason = '';
+            }
+        }
+        
+        function setPhysicalCountReason(productId, reason) {
+            physicalCountData[productId].reason = reason;
         }
         
         function updatePhysicalCountSummaryMobile() {
@@ -1220,16 +1268,21 @@
         async function submitPhysicalCountMobile() {
             const notes = document.getElementById('physicalCountNotesMobile').value;
             const adjustments = [];
+            let missingReasons = false;
             
             Object.keys(physicalCountData).forEach(productId => {
                 const data = physicalCountData[productId];
                 const variance = data.physical - data.system;
                 if (variance !== 0) {
+                    if (!data.reason) {
+                        missingReasons = true;
+                    }
                     adjustments.push({
                         product_id: parseInt(productId),
                         system_count: data.system,
                         physical_count: data.physical,
-                        variance: variance
+                        variance: variance,
+                        reason: data.reason
                     });
                 }
             });
@@ -1237,6 +1290,11 @@
             if (adjustments.length === 0) {
                 showToast('No adjustments needed!');
                 closePhysicalCountModal();
+                return;
+            }
+            
+            if (missingReasons) {
+                showToast('Please select a reason for each adjustment', true);
                 return;
             }
             

@@ -3650,7 +3650,7 @@ def admin_create_inventory_adjustment():
     if not product_id or quantity <= 0:
         return jsonify({'error': 'Product and quantity required'}), 400
     
-    valid_reasons = ['Gift', 'Personal Use', 'Testing', 'Expired', 'Damaged', 'Other']
+    valid_reasons = ['Personal Use', 'Expired', 'Gift', 'Marketing', 'Lost', 'Damaged', 'Testing', 'Found', 'Count Correction']
     if reason not in valid_reasons:
         return jsonify({'error': f'Invalid reason. Must be one of: {valid_reasons}'}), 400
     
@@ -3757,6 +3757,7 @@ def admin_physical_count():
         system_count = adj.get('system_count', 0)
         physical_count = adj.get('physical_count', 0)
         variance = adj.get('variance', 0)
+        adj_reason = adj.get('reason', '')  # Individual reason per product
         
         if variance == 0:
             continue
@@ -3769,31 +3770,37 @@ def admin_physical_count():
         product = dict(product)
         unit_cost = float(product.get('cost') or 0)
         
-        # Determine reason based on variance direction
+        # Use provided reason or default based on variance direction
+        if adj_reason:
+            reason = adj_reason
+        else:
+            reason = 'Physical Count - Short' if variance < 0 else 'Physical Count - Over'
+        
+        # Build notes
+        adjustment_notes = f"Physical count {count_date}: System {system_count}, Actual {physical_count}"
+        if notes:
+            adjustment_notes += f". {notes}"
+        
         if variance < 0:
-            # Shortage - log as adjustment removal
-            reason = 'Physical Count - Short'
+            # Shortage - log as positive quantity removed
             quantity = abs(variance)
             c.execute('''
                 INSERT INTO inventory_adjustments (product_id, user_id, quantity, reason, notes, unit_cost)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (product_id, session['user_id'], quantity, reason, 
-                  f"Physical count {count_date}: System {system_count}, Actual {physical_count}. {notes}", unit_cost))
+            ''', (product_id, session['user_id'], quantity, reason, adjustment_notes, unit_cost))
         else:
-            # Overage - log as positive adjustment
-            reason = 'Physical Count - Over'
+            # Overage - log as negative quantity (found more)
             quantity = variance
             c.execute('''
                 INSERT INTO inventory_adjustments (product_id, user_id, quantity, reason, notes, unit_cost)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (product_id, session['user_id'], -quantity, reason,  # Negative qty for overage (found more)
-                  f"Physical count {count_date}: System {system_count}, Actual {physical_count}. {notes}", unit_cost))
+            ''', (product_id, session['user_id'], -quantity, reason, adjustment_notes, unit_cost))
         
         # Update actual stock to match physical count
         c.execute('UPDATE products SET stock = ? WHERE id = ?', (physical_count, product_id))
         adjustments_made += 1
         
-        print(f"[PHYSICAL COUNT] Product {product['name']}: {system_count} -> {physical_count} (variance: {variance})")
+        print(f"[PHYSICAL COUNT] Product {product['name']}: {system_count} -> {physical_count} (variance: {variance}, reason: {reason})")
     
     conn.commit()
     conn.close()

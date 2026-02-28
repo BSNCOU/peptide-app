@@ -1186,11 +1186,12 @@ BC10,8.00</pre>
                                 <select id="removeReason" required>
                                     <option value="">Select reason...</option>
                                     <option value="Personal Use">Personal Use</option>
-                                    <option value="Gift">Gift</option>
-                                    <option value="Testing">Testing</option>
                                     <option value="Expired">Expired</option>
+                                    <option value="Gift">Gift</option>
+                                    <option value="Marketing">Marketing</option>
+                                    <option value="Lost">Lost</option>
                                     <option value="Damaged">Damaged</option>
-                                    <option value="Other">Other</option>
+                                    <option value="Testing">Testing</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -1244,9 +1245,9 @@ BC10,8.00</pre>
             
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
-                    <div class="modal-content" style="max-width: 800px; max-height: 90vh; overflow-y: auto;">
+                    <div class="modal-content" style="max-width: 900px; max-height: 90vh; overflow-y: auto;">
                         <h3>📋 Physical Inventory Count</h3>
-                        <p style="color: #718096; margin-bottom: 15px;">Enter actual counts. Variances will be adjusted automatically.</p>
+                        <p style="color: #718096; margin-bottom: 15px;">Enter actual counts. Select a reason for each variance.</p>
                         <p style="color: #805ad5; font-weight: 600; margin-bottom: 20px;">Date: ${today}</p>
                         
                         <form onsubmit="submitPhysicalCount(event)">
@@ -1254,9 +1255,10 @@ BC10,8.00</pre>
                                 <thead>
                                     <tr>
                                         <th style="text-align: left;">Product</th>
-                                        <th style="text-align: center; width: 100px;">System</th>
-                                        <th style="text-align: center; width: 120px;">Physical</th>
-                                        <th style="text-align: center; width: 100px;">Variance</th>
+                                        <th style="text-align: center; width: 80px;">System</th>
+                                        <th style="text-align: center; width: 100px;">Physical</th>
+                                        <th style="text-align: center; width: 80px;">Variance</th>
+                                        <th style="text-align: center; width: 150px;">Reason</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1278,6 +1280,19 @@ BC10,8.00</pre>
                                             </td>
                                             <td style="text-align: center;" id="variance-${p.id}">
                                                 <span style="color: #718096;">0</span>
+                                            </td>
+                                            <td style="text-align: center;">
+                                                <select id="reason-${p.id}" class="physical-count-reason" data-product-id="${p.id}" style="width: 100%; padding: 6px; display: none;">
+                                                    <option value="">Reason...</option>
+                                                    <option value="Personal Use">Personal Use</option>
+                                                    <option value="Expired">Expired</option>
+                                                    <option value="Gift">Gift</option>
+                                                    <option value="Marketing">Marketing</option>
+                                                    <option value="Lost">Lost</option>
+                                                    <option value="Damaged">Damaged</option>
+                                                    <option value="Found">Found</option>
+                                                    <option value="Count Correction">Count Correction</option>
+                                                </select>
                                             </td>
                                         </tr>
                                     `).join('')}
@@ -1312,13 +1327,18 @@ BC10,8.00</pre>
             const variance = physicalCount - systemCount;
             
             const varianceCell = document.getElementById('variance-' + productId);
+            const reasonSelect = document.getElementById('reason-' + productId);
             
             if (variance === 0) {
                 varianceCell.innerHTML = '<span style="color: #718096;">0</span>';
+                reasonSelect.style.display = 'none';
+                reasonSelect.value = '';
             } else if (variance > 0) {
                 varianceCell.innerHTML = `<span style="color: #38a169; font-weight: 600;">+${variance}</span>`;
+                reasonSelect.style.display = 'block';
             } else {
                 varianceCell.innerHTML = `<span style="color: #e53e3e; font-weight: 600;">${variance}</span>`;
+                reasonSelect.style.display = 'block';
             }
             
             // Update summary
@@ -1366,19 +1386,26 @@ BC10,8.00</pre>
             const inputs = document.querySelectorAll('.physical-count-input');
             const notes = document.getElementById('physicalCountNotes').value;
             const adjustments = [];
+            let missingReasons = false;
             
             inputs.forEach(input => {
                 const productId = parseInt(input.dataset.productId);
                 const systemCount = parseInt(input.closest('tr').dataset.systemCount);
                 const physicalCount = parseInt(input.value) || 0;
                 const variance = physicalCount - systemCount;
+                const reasonSelect = document.getElementById('reason-' + productId);
+                const reason = reasonSelect ? reasonSelect.value : '';
                 
                 if (variance !== 0) {
+                    if (!reason) {
+                        missingReasons = true;
+                    }
                     adjustments.push({
                         product_id: productId,
                         system_count: systemCount,
                         physical_count: physicalCount,
-                        variance: variance
+                        variance: variance,
+                        reason: reason
                     });
                 }
             });
@@ -1386,6 +1413,11 @@ BC10,8.00</pre>
             if (adjustments.length === 0) {
                 showAlert('No adjustments needed - all counts match!', 'success');
                 closeModal();
+                return;
+            }
+            
+            if (missingReasons) {
+                showAlert('Please select a reason for each adjustment');
                 return;
             }
             
