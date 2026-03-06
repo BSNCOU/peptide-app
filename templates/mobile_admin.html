@@ -1061,13 +1061,6 @@
                 }
                 
                 showToast('Moved to Ready to Ship ✅');
-
-const orderIndex = state.orders.findIndex(o => o.id === orderId);
-if (orderIndex !== -1) {
-    state.orders[orderIndex].status = 'ready_to_ship';
-}
-renderPickMode();
-updateStats();
                 
                 // Clear pick state for this order
                 Object.keys(pickState.pickedItems).forEach(key => {
