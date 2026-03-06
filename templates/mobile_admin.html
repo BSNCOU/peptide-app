@@ -733,7 +733,9 @@
             try {
                 // Load orders
                 const ordersRes = await fetch('/api/admin/orders');
+                if (!ordersRes.ok) throw new Error(`Orders fetch failed: ${ordersRes.status}`);
                 state.orders = await ordersRes.json();
+                if (!Array.isArray(state.orders)) throw new Error('Invalid orders response');
                 
                 // Load products
                 const productsRes = await fetch('/api/admin/products');
@@ -1058,13 +1060,23 @@
                     throw new Error(data.error || 'Failed to update');
                 }
                 
-                showToast('Moved to Ready to Ship');
+                showToast('Moved to Ready to Ship ✅');
                 
                 // Clear pick state for this order
                 Object.keys(pickState.pickedItems).forEach(key => {
                     if (key.startsWith(`${orderId}_`)) delete pickState.pickedItems[key];
                 });
                 
+                // OPTIMISTIC UPDATE: immediately remove from pick list
+                // without waiting for server refresh
+                const orderIndex = state.orders.findIndex(o => o.id === orderId);
+                if (orderIndex !== -1) {
+                    state.orders[orderIndex].status = 'ready_to_ship';
+                }
+                renderPickMode();
+                updateStats();
+                
+                // Then sync with server in background
                 refreshData();
             } catch(e) {
                 showToast(e.message || 'Error updating order', true);
