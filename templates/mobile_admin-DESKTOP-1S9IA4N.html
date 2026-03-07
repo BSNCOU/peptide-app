@@ -733,7 +733,9 @@
             try {
                 // Load orders
                 const ordersRes = await fetch('/api/admin/orders');
+                if (!ordersRes.ok) throw new Error(`Orders fetch failed: ${ordersRes.status}`);
                 state.orders = await ordersRes.json();
+                if (!Array.isArray(state.orders)) throw new Error('Invalid orders response');
                 
                 // Load products
                 const productsRes = await fetch('/api/admin/products');
@@ -840,15 +842,19 @@
         
         async function markPickedUp(orderId) {
             try {
-                await fetch(`/api/admin/orders/${orderId}/status`, {
+                const res = await fetch(`/api/admin/orders/${orderId}/status`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ status: 'fulfilled' })
                 });
+                
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed');
+                
                 showToast('Order marked as picked up');
                 refreshData();
             } catch(e) {
-                showToast('Error updating order', true);
+                showToast(e.message || 'Error updating order', true);
             }
         }
         
@@ -1042,50 +1048,75 @@
         // Actions
         async function markReadyToShip(orderId) {
             try {
-                await fetch(`/api/admin/orders/${orderId}/status`, {
+                const res = await fetch(`/api/admin/orders/${orderId}/status`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ status: 'ready_to_ship' })
                 });
-                showToast('Moved to Ready to Ship');
+                
+                const data = await res.json();
+                
+                if (!res.ok) {
+                    throw new Error(data.error || 'Failed to update');
+                }
+                
+                showToast('Moved to Ready to Ship ✅');
                 
                 // Clear pick state for this order
                 Object.keys(pickState.pickedItems).forEach(key => {
                     if (key.startsWith(`${orderId}_`)) delete pickState.pickedItems[key];
                 });
                 
+                // OPTIMISTIC UPDATE: immediately remove from pick list
+                // without waiting for server refresh
+                const orderIndex = state.orders.findIndex(o => o.id === orderId);
+                if (orderIndex !== -1) {
+                    state.orders[orderIndex].status = 'ready_to_ship';
+                }
+                renderPickMode();
+                updateStats();
+                
+                // Then sync with server in background
                 refreshData();
             } catch(e) {
-                showToast('Error updating order', true);
+                showToast(e.message || 'Error updating order', true);
             }
         }
         
         async function moveBack(orderId) {
             try {
-                await fetch(`/api/admin/orders/${orderId}/status`, {
+                const res = await fetch(`/api/admin/orders/${orderId}/status`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ status: 'processing' })
                 });
+                
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed');
+                
                 showToast('Moved back to Processing');
                 refreshData();
             } catch(e) {
-                showToast('Error updating order', true);
+                showToast(e.message || 'Error updating order', true);
             }
         }
         
         async function markShipped(orderId) {
             const tracking = prompt('Enter tracking number (optional):');
             try {
-                await fetch(`/api/admin/orders/${orderId}/status`, {
+                const res = await fetch(`/api/admin/orders/${orderId}/status`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ status: 'shipped', tracking_number: tracking || null })
                 });
+                
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed');
+                
                 showToast('Order marked as shipped');
                 refreshData();
             } catch(e) {
-                showToast('Error updating order', true);
+                showToast(e.message || 'Error updating order', true);
             }
         }
         
