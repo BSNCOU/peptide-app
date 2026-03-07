@@ -3489,7 +3489,7 @@ The Peptide Wizard Team"></textarea>
 
         function renderPickMode() {
             const openOrders = state.orders.filter(o => 
-                !['fulfilled', 'delivered', 'cancelled', 'refunded'].includes(o.status)
+                !['fulfilled', 'delivered', 'cancelled', 'refunded', 'ready_to_ship', 'shipped'].includes(o.status)
             );
             
             const content = document.getElementById('tabContent');
@@ -3735,18 +3735,19 @@ The Peptide Wizard Team"></textarea>
                         delete pickState.pickedItems[key];
                     }
                 });
-                
-     showAlert('Order moved to Ready to Ship!', 'success');
 
-// Optimistic update - remove immediately
-const orderIndex = state.orders.findIndex(o => o.id === orderId);
-if (orderIndex !== -1) {
-    state.orders[orderIndex].status = 'ready_to_ship';
-}
-renderPickMode();
+                showAlert('Order moved to Ready to Ship!', 'success');
 
-// Background sync
-loadOpenOrders();
+                // Optimistic update - remove immediately
+                const orderIndex = state.orders.findIndex(o => o.id === orderId);
+                if (orderIndex !== -1) {
+                    state.orders[orderIndex].status = 'ready_to_ship';
+                }
+                renderPickMode();
+                updateStats();
+
+                // Background sync
+                loadOpenOrders();
             } catch (err) {
                 showAlert(err.message);
             }
