@@ -3736,13 +3736,17 @@ The Peptide Wizard Team"></textarea>
                     }
                 });
                 
-                showAlert('Order moved to Ready to Ship!', 'success');
-                
-                // Reload orders and re-render
-                await loadOpenOrders();
-                if (pickState.active) {
-                    renderPickMode();
-                }
+     showAlert('Order moved to Ready to Ship!', 'success');
+
+// Optimistic update - remove immediately
+const orderIndex = state.orders.findIndex(o => o.id === orderId);
+if (orderIndex !== -1) {
+    state.orders[orderIndex].status = 'ready_to_ship';
+}
+renderPickMode();
+
+// Background sync
+loadOpenOrders();
             } catch (err) {
                 showAlert(err.message);
             }
