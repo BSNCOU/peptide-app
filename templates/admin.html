@@ -3488,19 +3488,10 @@ The Peptide Wizard Team"></textarea>
         }
 
         function renderPickMode() {
-        const openOrders = state.orders.filter(o => 
-    !['fulfilled', 'delivered', 'cancelled', 'refunded', 'ready_to_ship', 'shipped'].includes(o.status)
-);
-```
-
-There are actually **two** `renderPickMode` related filters — `renderPickModeByOrder` and `renderPickModeByProduct` — both have the same filter at the top. Use **Ctrl+H** to find and replace both at once. Search for:
-```
-!['fulfilled', 'delivered', 'cancelled', 'refunded'].includes(o.status)
-```
-
-Replace all with:
-```
-!['fulfilled', 'delivered', 'cancelled', 'refunded', 'ready_to_ship', 'shipped'].includes(o.status)
+            const openOrders = state.orders.filter(o => 
+                !['fulfilled', 'delivered', 'cancelled', 'refunded'].includes(o.status)
+            );
+            
             const content = document.getElementById('tabContent');
             
             if (pickState.viewMode === 'byProduct') {
