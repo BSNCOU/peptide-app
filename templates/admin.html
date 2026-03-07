@@ -3124,9 +3124,9 @@ The Peptide Wizard Team"></textarea>
         }
 
         function renderOpenOrders() {
-            const openOrders = state.orders.filter(o => 
-                !['fulfilled', 'delivered', 'cancelled', 'refunded', 'shipped', 'ready_to_ship'].includes(o.status)
-            );
+      const openOrders = state.orders.filter(o => 
+    !['fulfilled', 'delivered', 'cancelled', 'refunded', 'ready_to_ship', 'shipped'].includes(o.status)
+);
             
             const content = document.getElementById('tabContent');
             content.innerHTML = `
