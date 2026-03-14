@@ -1365,13 +1365,36 @@ BC10,8.00</pre>
                                 <span style="white-space: pre-line; font-size: 0.9rem;">${escapeHtml(o.admin_notes)}</span>
                             </div>
                         ` : ''}
-                        <div style="margin-top: 20px; display: flex; gap: 10px;">
+                        <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                             <button class="btn" onclick="showEditOrderModal(${o.id})">✏️ Edit Order</button>
+                            <button class="btn" style="background: #ed8936;" onclick="createReplacementOrder(${o.id}, '${escapeHtml(o.order_number)}')">🔄 Create Replacement</button>
                         </div>
                     </div>
                 </div>
             `;
+        }
+        
+        async function createReplacementOrder(orderId, orderNumber) {
+            const reason = prompt('Reason for replacement:', 'Shipping error - sent wrong items');
+            if (reason === null) return; // Cancelled
+            
+            if (!confirm(`Create a FREE replacement order for ${orderNumber}?\\n\\nThis will:\\n- Create new order with same items ($0 charge)\\n- Deduct inventory for replacement items\\n- Add note to original order`)) {
+                return;
+            }
+            
+            try {
+                const result = await api(`/api/admin/orders/${orderId}/replacement`, {
+                    method: 'POST',
+                    body: JSON.stringify({ reason })
+                });
+                
+                showAlert(`Replacement order created: ${result.new_order_number}`, 'success');
+                closeModal();
+                loadOrders();
+            } catch (err) {
+                showAlert(err.message || 'Error creating replacement');
+            }
         }
 
         function showUpdateStatusModal(id) {
@@ -3124,16 +3147,17 @@ The Peptide Wizard Team"></textarea>
         }
 
         function renderOpenOrders() {
-      const openOrders = state.orders.filter(o => 
-    !['fulfilled', 'delivered', 'cancelled', 'refunded', 'ready_to_ship', 'shipped'].includes(o.status)
-);
+            // ONLY show orders that have been PAID - not pending/abandoned carts
+            const openOrders = state.orders.filter(o => 
+                ['paid', 'processing'].includes(o.status)
+            );
             
             const content = document.getElementById('tabContent');
             content.innerHTML = `
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                     <div>
                         <h3 style="color: #2d3748; margin: 0;">Open Orders (${openOrders.length})</h3>
-                        <p style="color: #718096; font-size: 0.9rem; margin: 5px 0 0 0;">Orders that need to be picked</p>
+                        <p style="color: #718096; font-size: 0.9rem; margin: 5px 0 0 0;">Paid orders ready to be picked</p>
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                         ${openOrders.length > 0 ? '<button class="btn btn-success" onclick="startPickMode()">📱 Pick Mode</button>' : ''}
@@ -3187,8 +3211,9 @@ The Peptide Wizard Team"></textarea>
         }
         
         function printOpenOrders() {
+            // ONLY show orders that have been PAID
             const openOrders = state.orders.filter(o => 
-                !['fulfilled', 'delivered', 'cancelled', 'refunded', 'shipped', 'ready_to_ship'].includes(o.status)
+                ['paid', 'processing'].includes(o.status)
             );
             
             let html = `
@@ -3488,8 +3513,9 @@ The Peptide Wizard Team"></textarea>
         }
 
         function renderPickMode() {
+            // ONLY show orders that have been PAID - not pending/abandoned
             const openOrders = state.orders.filter(o => 
-                !['fulfilled', 'delivered', 'cancelled', 'refunded', 'ready_to_ship', 'shipped'].includes(o.status)
+                ['paid', 'processing'].includes(o.status)
             );
             
             const content = document.getElementById('tabContent');
@@ -3735,19 +3761,14 @@ The Peptide Wizard Team"></textarea>
                         delete pickState.pickedItems[key];
                     }
                 });
-
+                
                 showAlert('Order moved to Ready to Ship!', 'success');
-
-                // Optimistic update - remove immediately
-                const orderIndex = state.orders.findIndex(o => o.id === orderId);
-                if (orderIndex !== -1) {
-                    state.orders[orderIndex].status = 'ready_to_ship';
+                
+                // Reload orders and re-render
+                await loadOpenOrders();
+                if (pickState.active) {
+                    renderPickMode();
                 }
-                renderPickMode();
-                updateStats();
-
-                // Background sync
-                loadOpenOrders();
             } catch (err) {
                 showAlert(err.message);
             }

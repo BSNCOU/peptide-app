@@ -4296,6 +4296,91 @@ def parse_shipping_address(address_str):
     return parts
 
 
+@app.route('/api/admin/orders/<int:oid>/replacement', methods=['POST'])
+@admin_required
+def create_replacement_order(oid):
+    """Create a replacement order (no charge) for customer service issues"""
+    data = request.json or {}
+    reason = data.get('reason', 'Shipping error - sent wrong items')
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Get original order
+    original = c.execute('''
+        SELECT o.*, u.full_name, u.email 
+        FROM orders o 
+        JOIN users u ON o.user_id = u.id 
+        WHERE o.id = ?
+    ''', (oid,)).fetchone()
+    
+    if not original:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    
+    original_dict = dict(original)
+    
+    # Get original items
+    items = c.execute('''
+        SELECT oi.*, p.name, p.sku 
+        FROM order_items oi 
+        JOIN products p ON oi.product_id = p.id 
+        WHERE oi.order_id = ?
+    ''', (oid,)).fetchall()
+    
+    # Generate new order number
+    order_number = 'RO-' + datetime.now().strftime('%Y%m%d%H%M%S') + '-REP'
+    
+    # Create replacement order - $0 total, status 'paid' so it shows in Open Orders
+    c.execute('''
+        INSERT INTO orders (
+            user_id, order_number, subtotal, discount_amount, shipping_cost, 
+            sales_tax, processing_fee, delivery_method, total, status,
+            shipping_address, notes, admin_notes
+        ) VALUES (?, ?, 0, 0, 0, 0, 0, ?, 0, 'paid', ?, ?, ?)
+    ''', (
+        original_dict['user_id'],
+        order_number,
+        original_dict['delivery_method'],
+        original_dict['shipping_address'],
+        f"REPLACEMENT for order {original_dict['order_number']}",
+        f"Replacement order created. Reason: {reason}. Original order: #{original_dict['order_number']}"
+    ))
+    
+    new_order_id = c.lastrowid
+    
+    # Copy items to new order
+    for item in items:
+        item_dict = dict(item)
+        c.execute('''
+            INSERT INTO order_items (order_id, product_id, quantity, unit_price)
+            VALUES (?, ?, ?, 0)
+        ''', (new_order_id, item_dict['product_id'], item_dict['quantity']))
+        
+        # Deduct inventory for replacement
+        c.execute('UPDATE products SET stock = stock - ? WHERE id = ?', 
+                  (item_dict['quantity'], item_dict['product_id']))
+    
+    # Update original order with note
+    existing_notes = original_dict.get('admin_notes') or ''
+    new_note = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Replacement order created: {order_number}. Reason: {reason}"
+    updated_notes = f"{existing_notes}\n{new_note}".strip()
+    
+    c.execute('UPDATE orders SET admin_notes = ? WHERE id = ?', (updated_notes, oid))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"[REPLACEMENT] Created {order_number} for original order {original_dict['order_number']}")
+    
+    return jsonify({
+        'success': True,
+        'new_order_id': new_order_id,
+        'new_order_number': order_number,
+        'message': f'Replacement order {order_number} created'
+    })
+
+
 @app.route('/api/admin/orders/<int:oid>/edit', methods=['PUT'])
 @admin_required
 def admin_edit_order(oid):
