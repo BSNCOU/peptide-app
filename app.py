@@ -4144,6 +4144,177 @@ def get_shipping_label(oid):
         return jsonify({'error': 'No label found for this order'}), 404
 
 
+@app.route('/admin/pick-labels', methods=['GET'])
+@admin_required
+def pick_labels_html():
+    """Print one 4x6 pick label per open order for the Zebra printer"""
+    conn = get_db()
+    orders = conn.execute('''
+        SELECT o.*, u.full_name, u.email
+        FROM orders o JOIN users u ON o.user_id = u.id
+        WHERE o.status IN ('paid', 'processing') AND o.delivery_method = 'ship'
+        ORDER BY o.created_at ASC
+    ''').fetchall()
+
+    all_items = {}
+    if orders:
+        order_ids = [o['id'] for o in orders]
+        placeholders = ','.join('?' * len(order_ids))
+        items = conn.execute(f'''
+            SELECT oi.order_id, oi.quantity, p.name, p.sku
+            FROM order_items oi JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id IN ({placeholders})
+        ''', order_ids).fetchall()
+        for item in items:
+            all_items.setdefault(item['order_id'], []).append(item)
+    conn.close()
+
+    labels_html = ''
+    for order in orders:
+        o = dict(order)
+        items = all_items.get(o['id'], [])
+        addr_raw = o.get('shipping_address', '') or ''
+        addr_lines = [l.strip() for l in addr_raw.replace('\\n', '\n').split('\n') if l.strip()]
+        # Just city/state line for the label
+        addr_short = ', '.join(addr_lines[1:3]) if len(addr_lines) > 1 else addr_lines[0] if addr_lines else ''
+
+        items_rows = ''
+        for item in items:
+            items_rows += f'''
+            <div class="item-row">
+                <span class="item-qty">×{item["quantity"]}</span>
+                <span class="item-name">{item["name"]}</span>
+                <span class="item-sku">{item["sku"] or ""}</span>
+            </div>'''
+
+        labels_html += f'''
+        <div class="label">
+            <div class="label-header">
+                <div class="order-num">{o["order_number"]}</div>
+                <div class="customer">{o["full_name"]}</div>
+                <div class="addr">{addr_short}</div>
+            </div>
+            <div class="divider"></div>
+            <div class="items-section">
+                <div class="items-title">PICK LIST</div>
+                {items_rows}
+            </div>
+            <div class="divider"></div>
+            <div class="footer-note">The Peptide Wizard &nbsp;·&nbsp; For Research Use Only</div>
+        </div>'''
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pick Labels</title>
+<style>
+  @page {{
+    size: 4in 6in;
+    margin: 0;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ background: white; font-family: Arial, sans-serif; }}
+
+  .label {{
+    width: 4in;
+    height: 6in;
+    padding: 0.18in 0.2in;
+    page-break-after: always;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }}
+
+  .label-header {{
+    margin-bottom: 6px;
+  }}
+
+  .order-num {{
+    font-size: 22pt;
+    font-weight: bold;
+    letter-spacing: 1px;
+    color: #000;
+    line-height: 1.1;
+  }}
+
+  .customer {{
+    font-size: 15pt;
+    font-weight: bold;
+    color: #222;
+    margin-top: 3px;
+  }}
+
+  .addr {{
+    font-size: 10pt;
+    color: #555;
+    margin-top: 2px;
+  }}
+
+  .divider {{
+    border-top: 2px solid #000;
+    margin: 7px 0;
+  }}
+
+  .items-section {{
+    flex: 1;
+    overflow: hidden;
+  }}
+
+  .items-title {{
+    font-size: 9pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    color: #666;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+  }}
+
+  .item-row {{
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px dashed #ccc;
+  }}
+
+  .item-qty {{
+    font-size: 20pt;
+    font-weight: bold;
+    color: #000;
+    min-width: 0.55in;
+    flex-shrink: 0;
+  }}
+
+  .item-name {{
+    font-size: 13pt;
+    font-weight: bold;
+    color: #111;
+    flex: 1;
+    line-height: 1.2;
+  }}
+
+  .item-sku {{
+    font-size: 8.5pt;
+    color: #777;
+    flex-shrink: 0;
+  }}
+
+  .footer-note {{
+    font-size: 8pt;
+    color: #888;
+    text-align: center;
+    padding-top: 5px;
+  }}
+</style>
+</head>
+<body onload="window.print()">
+{labels_html}
+</body>
+</html>"""
+    return html
+
+
 @app.route('/admin/packing-slip/<int:oid>', methods=['GET'])
 @admin_required
 def packing_slip_html(oid):

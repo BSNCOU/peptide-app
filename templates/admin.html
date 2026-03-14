@@ -3161,6 +3161,7 @@ The Peptide Wizard Team"></textarea>
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                         ${openOrders.length > 0 ? '<button class="btn btn-success" onclick="startPickMode()">📱 Pick Mode</button>' : ''}
+                        ${openOrders.length > 0 ? '<button class="btn" style="background:#6b46c1;color:white;" onclick="window.open(\'/admin/pick-labels\',\'_blank\',\'width=420,height=650\')">🖨️ Print Pick Labels</button>' : ''}
                         ${openOrders.length > 0 ? '<button class="btn btn-secondary" onclick="printOpenOrders()">🖨️ Print Pick List</button>' : ''}
                     </div>
                 </div>
