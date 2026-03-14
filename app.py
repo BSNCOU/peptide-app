@@ -4144,6 +4144,102 @@ def get_shipping_label(oid):
         return jsonify({'error': 'No label found for this order'}), 404
 
 
+@app.route('/admin/packing-slip/<int:oid>', methods=['GET'])
+@admin_required
+def packing_slip_html(oid):
+    """Generate a print-ready HTML packing slip sized for 4x6 Zebra label"""
+    conn = get_db()
+    order = conn.execute('''
+        SELECT o.*, u.full_name, u.email, u.phone
+        FROM orders o JOIN users u ON o.user_id = u.id
+        WHERE o.id = ?
+    ''', (oid,)).fetchone()
+    if not order:
+        conn.close()
+        return "Order not found", 404
+    order_dict = dict(order)
+    items = conn.execute('''
+        SELECT oi.quantity, p.name, p.sku
+        FROM order_items oi JOIN products p ON oi.product_id = p.id
+        WHERE oi.order_id = ?
+    ''', (oid,)).fetchall()
+    conn.close()
+
+    addr_raw = order_dict.get('shipping_address', '') or ''
+    addr_lines = [l.strip() for l in addr_raw.replace('\\n', '\n').split('\n') if l.strip()]
+
+    items_html = ''.join(
+        f'<tr><td>{i["quantity"]}x</td><td>{i["name"]}</td><td style="color:#555;font-size:9pt;">{i["sku"] or ""}</td></tr>'
+        for i in items
+    )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Packing Slip - {order_dict['order_number']}</title>
+<style>
+  @page {{
+    size: 4in 6in;
+    margin: 0.15in;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    font-family: Arial, sans-serif;
+    font-size: 10pt;
+    width: 3.7in;
+    background: white;
+    color: #000;
+  }}
+  .header {{ text-align: center; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 6px; }}
+  .company {{ font-size: 15pt; font-weight: bold; letter-spacing: 1px; }}
+  .sub {{ font-size: 8pt; color: #333; }}
+  .section {{ margin-bottom: 6px; }}
+  .label {{ font-size: 7.5pt; font-weight: bold; text-transform: uppercase; color: #555; border-bottom: 1px solid #ccc; margin-bottom: 3px; }}
+  .ship-name {{ font-size: 12pt; font-weight: bold; }}
+  .addr {{ font-size: 9.5pt; line-height: 1.4; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 9.5pt; }}
+  td {{ padding: 2px 3px; vertical-align: top; }}
+  tr:nth-child(even) {{ background: #f5f5f5; }}
+  .footer {{ border-top: 2px solid #000; margin-top: 6px; padding-top: 5px; text-align: center; font-size: 8pt; color: #444; }}
+  .order-info {{ display: flex; justify-content: space-between; font-size: 9pt; }}
+</style>
+</head>
+<body onload="window.print()">
+  <div class="header">
+    <div class="company">THE PEPTIDE WIZARD</div>
+    <div class="sub">530 North St · Auburn, IN 46706 · info@thepeptidewizard.com</div>
+  </div>
+
+  <div class="section">
+    <div class="order-info">
+      <span><strong>Order:</strong> {order_dict['order_number']}</span>
+      <span><strong>Date:</strong> {datetime.now().strftime('%m/%d/%Y')}</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label">Ship To</div>
+    <div class="ship-name">{order_dict.get('full_name', '')}</div>
+    <div class="addr">{'<br>'.join(addr_lines)}</div>
+  </div>
+
+  <div class="section">
+    <div class="label">Items</div>
+    <table>
+      <tbody>{items_html}</tbody>
+    </table>
+  </div>
+
+  <div class="footer">
+    Thank you for your order! &nbsp;|&nbsp; www.thepeptidewizard.com<br>
+    <strong>FOR RESEARCH USE ONLY</strong>
+  </div>
+</body>
+</html>"""
+    return html
+
+
 @app.route('/api/admin/shipping/packing-slip/<int:oid>', methods=['GET'])
 @admin_required
 def get_packing_slip(oid):

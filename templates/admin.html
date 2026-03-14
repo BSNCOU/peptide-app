@@ -3342,6 +3342,7 @@ The Peptide Wizard Team"></textarea>
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                         ${readyOrders.length > 0 ? `
+                            <button class="btn" style="background:#6b46c1;color:white;" onclick="printAllPackingSlips()">🖨️ Print All Packing Slips</button>
                             <button class="btn btn-success" onclick="exportReadyToShipPirateship()">📦 Export to Pirate Ship</button>
                             <button class="btn" onclick="showImportTrackingModal()">📥 Import Tracking</button>
                         ` : ''}
@@ -3398,6 +3399,7 @@ The Peptide Wizard Team"></textarea>
                                         <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOrderDetailModal(${o.id})">View</button>
+                                            <button class="btn btn-small" style="background:#6b46c1;color:white;" onclick="printPackingSlip(${o.id})">🖨️ Slip</button>
                                             <button class="btn btn-secondary btn-small" onclick="moveBackToProcessing(${o.id})">← Back</button>
                                         </td>
                                     </tr>
@@ -3414,6 +3416,21 @@ The Peptide Wizard Team"></textarea>
             `;
         }
         
+        function printPackingSlip(orderId) {
+            window.open(`/admin/packing-slip/${orderId}`, '_blank', 'width=420,height=650');
+        }
+
+        function printAllPackingSlips() {
+            const readyOrders = state.orders.filter(o => o.status === 'ready_to_ship' && o.delivery_method === 'ship');
+            if (readyOrders.length === 0) { showAlert('No orders to print'); return; }
+            // Open each slip with a small delay so browser doesn't block popups
+            readyOrders.forEach((o, i) => {
+                setTimeout(() => {
+                    window.open(`/admin/packing-slip/${o.id}`, '_blank', 'width=420,height=650');
+                }, i * 600);
+            });
+        }
+
         async function exportReadyToShipPirateship() {
             const readyOrders = state.orders.filter(o => o.status === 'ready_to_ship' && o.delivery_method === 'ship');
             
