@@ -1792,6 +1792,7 @@ BC10,8.00</pre>
                     <button class="btn" onclick="showAddDiscountModal()">+ Add Discount Code</button>
                     <button class="btn btn-secondary" onclick="showDiscountReportModal()">📊 Date Range Report</button>
                     <button class="btn btn-secondary" onclick="showReferralReportModal()">👥 Referral Report</button>
+                    <button class="btn btn-secondary" onclick="runCheckMinimums()" style="background:#ed8936;color:white;" title="Check all codes with monthly minimums and deactivate any that didn't hit their target last month">📋 Check Monthly Minimums</button>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
@@ -1800,6 +1801,7 @@ BC10,8.00</pre>
                                 <th>Code</th>
                                 <th>Description</th>
                                 <th>Discount</th>
+                                <th>Perks</th>
                                 <th>Referrer</th>
                                 <th>Usage</th>
                                 <th>Status</th>
@@ -1812,6 +1814,11 @@ BC10,8.00</pre>
                                     <td><strong>${d.code}</strong></td>
                                     <td>${d.description || '-'}</td>
                                     <td>${d.discount_percent > 0 ? d.discount_percent + '%' : '$' + parseFloat(d.discount_amount || 0).toFixed(2)}</td>
+                                    <td>
+                                        ${d.free_shipping ? '<span style="background:#ebf8ff;color:#2b6cb0;padding:2px 7px;border-radius:10px;font-size:0.75rem;">🚚 Free Ship</span>' : ''}
+                                        ${d.monthly_minimum > 0 ? '<br><small style="color:#718096;">Min $' + parseFloat(d.monthly_minimum).toFixed(0) + '/mo</small>' : ''}
+                                        ${!d.free_shipping && !d.monthly_minimum ? '<span style="color:#a0aec0;">-</span>' : ''}
+                                    </td>
                                     <td>${d.referrer_name ? '<span style="color: #2b6cb0;">' + d.referrer_name + '</span><br><small style="color: #718096;">' + (d.commission_percent || 20) + '% commission</small>' : '<span style="color: #a0aec0;">-</span>'}</td>
                                     <td>${d.times_used || 0}${d.usage_limit ? ' / ' + d.usage_limit : ''}</td>
                                     <td>${d.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
@@ -2021,6 +2028,23 @@ BC10,8.00</pre>
                                     </div>
                                 </div>
                             </div>
+                            <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                                <h4 style="margin-bottom: 10px; color: #2b6cb0;">🚚 Shipping & Minimums</h4>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                                            <input type="checkbox" id="discFreeShipping" style="width:18px;height:18px;">
+                                            Free Shipping on all orders with this code
+                                        </label>
+                                        <small style="color:#718096;">Customer pays $0 shipping regardless of order size</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Monthly Minimum Sales ($)</label>
+                                        <input type="number" id="discMonthlyMin" step="0.01" value="0" min="0">
+                                        <small style="color:#718096;">Code deactivates if prior month sales fall below this. Set 0 for no minimum.</small>
+                                    </div>
+                                </div>
+                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Add Code</button>
@@ -2044,7 +2068,9 @@ BC10,8.00</pre>
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
                         usage_limit: parseInt(document.getElementById('discLimit').value) || null,
                         referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
-                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
+                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20,
+                        free_shipping: document.getElementById('discFreeShipping').checked ? 1 : 0,
+                        monthly_minimum: parseFloat(document.getElementById('discMonthlyMin').value) || 0
                     })
                 });
                 closeModal();
@@ -2114,6 +2140,23 @@ BC10,8.00</pre>
                                     </div>
                                 </div>
                             </div>
+                            <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                                <h4 style="margin-bottom: 10px; color: #2b6cb0;">🚚 Shipping & Minimums</h4>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                                            <input type="checkbox" id="discFreeShipping" style="width:18px;height:18px;" ${d.free_shipping ? 'checked' : ''}>
+                                            Free Shipping on all orders with this code
+                                        </label>
+                                        <small style="color:#718096;">Customer pays $0 shipping regardless of order size</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Monthly Minimum Sales ($)</label>
+                                        <input type="number" id="discMonthlyMin" step="0.01" value="${d.monthly_minimum || 0}" min="0">
+                                        <small style="color:#718096;">Code deactivates if prior month sales fall below this. Set 0 for no minimum.</small>
+                                    </div>
+                                </div>
+                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Save Changes</button>
@@ -2137,7 +2180,9 @@ BC10,8.00</pre>
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
                         usage_limit: parseInt(document.getElementById('discLimit').value) || null,
                         referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
-                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
+                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20,
+                        free_shipping: document.getElementById('discFreeShipping').checked ? 1 : 0,
+                        monthly_minimum: parseFloat(document.getElementById('discMonthlyMin').value) || 0
                     })
                 });
                 closeModal();
@@ -5846,6 +5891,30 @@ The Peptide Wizard Team"></textarea>
                 showAlert('Order cancelled, inventory restored', 'success');
             } catch(e) {
                 showAlert(e.message);
+            }
+        }
+
+
+        async function runCheckMinimums() {
+            const month = new Date();
+            month.setMonth(month.getMonth() - 1);
+            const monthName = month.toLocaleString('default', { month: 'long', year: 'numeric' });
+            if (!confirm(`This will check all codes with monthly minimums against ${monthName} sales and DEACTIVATE any that didn't hit their target. Continue?`)) return;
+            try {
+                const result = await api('/api/admin/discount-codes/check-minimums', { method: 'POST' });
+                let msg = `✅ Checked ${result.codes_checked} code(s) for ${result.month_checked}.\n`;
+                if (result.codes_deactivated === 0) {
+                    msg += 'All codes met their monthly minimums — nothing deactivated.';
+                } else {
+                    msg += `⚠️ ${result.codes_deactivated} code(s) deactivated:\n`;
+                    result.results.filter(r => r.action === 'deactivated').forEach(r => {
+                        msg += `  • ${r.code} (${r.referrer_name}) — $${r.net_sales_prior_month.toFixed(2)} vs $${r.monthly_minimum.toFixed(2)} minimum\n`;
+                    });
+                }
+                alert(msg);
+                loadDiscounts();
+            } catch(e) {
+                showAlert('Failed to run check: ' + e.message);
             }
         }
 

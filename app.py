@@ -752,6 +752,8 @@ def init_db():
         if using_postgres:
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS referrer_user_id INTEGER DEFAULT NULL")
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS commission_percent REAL DEFAULT 20")
+            c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS free_shipping INTEGER DEFAULT 0")
+            c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS monthly_minimum REAL DEFAULT 0")
             c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_credit REAL DEFAULT 0")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
         else:
@@ -761,6 +763,14 @@ def init_db():
                 pass
             try:
                 c.execute("ALTER TABLE discount_codes ADD COLUMN commission_percent REAL DEFAULT 20")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE discount_codes ADD COLUMN free_shipping INTEGER DEFAULT 0")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE discount_codes ADD COLUMN monthly_minimum REAL DEFAULT 0")
             except:
                 pass
             try:
@@ -2049,7 +2059,9 @@ def validate_discount():
         'combined_percent': combined_percent,
         'combined_amount': round(combined_amount, 2),
         'has_sale_items': has_sale_items,
-        'non_sale_subtotal': round(non_sale_subtotal, 2)
+        'non_sale_subtotal': round(non_sale_subtotal, 2),
+        'free_shipping': bool(discount['free_shipping']),
+        'monthly_minimum': float(discount['monthly_minimum'] or 0)
     })
 
 # ============================================
@@ -2192,12 +2204,25 @@ def create_order():
             credit_applied = min(available_credit, max_credit_provisional)
 
     # Determine shipping cost.
-    # Free shipping threshold is checked AFTER discounts AND credits, before taxes/fees.
+    # Free shipping if:
+    #   (1) THIS USER personally owns an active code with free_shipping=1 (code holder perk), OR
+    #   (2) net total >= threshold
+    # Note: customers using someone else's code do NOT get free shipping from that code.
     shipping_cost = 0.0
     if delivery_method == 'ship':
+        # Check if the logged-in user is a code HOLDER with free shipping perk
+        holder_free_shipping = c.execute('''
+            SELECT id FROM discount_codes
+            WHERE referrer_user_id = ? AND active = 1 AND free_shipping = 1
+        ''', (session['user_id'],)).fetchone()
+
         free_shipping_threshold = float(get_setting('free_shipping_threshold', '500.00'))
         net_product_total = subtotal - discount_amount - credit_applied
-        if net_product_total >= free_shipping_threshold:
+
+        if holder_free_shipping:
+            shipping_cost = 0.0
+            print(f"[SHIPPING] Free shipping applied - user {session['user_id']} is a code holder with free shipping perk")
+        elif net_product_total >= free_shipping_threshold:
             shipping_cost = 0.0
             print(f"[SHIPPING] Free shipping applied - net after discounts+credits ${net_product_total:.2f} >= ${free_shipping_threshold:.2f}")
         else:
@@ -3720,8 +3745,8 @@ def admin_add_code():
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent) VALUES (?,?,?,?,?,?,?,?,?)',
-                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20)))
+        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent,free_shipping,monthly_minimum) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('free_shipping') else 0, data.get('monthly_minimum', 0)))
         conn.commit()
         cid = c.lastrowid
         conn.close()
@@ -3735,8 +3760,8 @@ def admin_add_code():
 def admin_update_code(cid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=? WHERE id=?',
-                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), cid))
+    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=?,free_shipping=?,monthly_minimum=? WHERE id=?',
+                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('free_shipping') else 0, data.get('monthly_minimum', 0), cid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Code updated'})
@@ -3770,6 +3795,113 @@ def admin_permanent_delete_code(cid):
     conn.commit()
     conn.close()
     return jsonify({'message': 'Discount code permanently deleted'})
+
+
+@app.route('/api/admin/discount-codes/check-minimums', methods=['POST'])
+@admin_required
+def check_code_minimums():
+    """
+    Check all active discount codes that have a monthly_minimum set.
+    If the code's total sales in the PRIOR calendar month are below the minimum,
+    deactivate it and record why.
+
+    Safe to run manually any time. Designed to be called on the 1st of each month.
+    Returns a report of what was checked and what was deactivated.
+    """
+    conn = get_db()
+    c = conn.cursor()
+    pg = is_postgres()
+
+    # Date range for PRIOR calendar month
+    if pg:
+        prior_start = "DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')"
+        prior_end   = "DATE_TRUNC('month', CURRENT_DATE)"
+        month_label_sql = "TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'Month YYYY')"
+        month_label = c.execute(f"SELECT {month_label_sql} as m").fetchone()['m'].strip()
+    else:
+        prior_start = "date('now','start of month','-1 month')"
+        prior_end   = "date('now','start of month')"
+        from datetime import date
+        today = date.today()
+        # First day of prior month
+        if today.month == 1:
+            month_label = f"December {today.year - 1}"
+        else:
+            import calendar
+            month_label = f"{calendar.month_name[today.month - 1]} {today.year}"
+
+    # Get all active codes with a monthly minimum set
+    codes = c.execute('''
+        SELECT dc.*, u.full_name as referrer_name, u.email as referrer_email
+        FROM discount_codes dc
+        LEFT JOIN users u ON dc.referrer_user_id = u.id
+        WHERE dc.active = 1
+          AND dc.monthly_minimum > 0
+    ''').fetchall()
+
+    results = []
+    deactivated = []
+
+    for code in codes:
+        code = dict(code)
+        # Sum of order totals where this code was used in the prior month
+        if pg:
+            sales_row = c.execute(f'''
+                SELECT COALESCE(SUM(o.subtotal - o.discount_amount), 0) as net_sales
+                FROM orders o
+                WHERE o.discount_code_id = %s
+                  AND o.status IN {PAID_STATUSES_SQL}
+                  AND o.created_at >= {prior_start}
+                  AND o.created_at < {prior_end}
+            ''', (code['id'],)).fetchone()
+        else:
+            sales_row = c.execute(f'''
+                SELECT COALESCE(SUM(o.subtotal - o.discount_amount), 0) as net_sales
+                FROM orders o
+                WHERE o.discount_code_id = ?
+                  AND o.status IN {PAID_STATUSES_SQL}
+                  AND o.created_at >= {prior_start}
+                  AND o.created_at < {prior_end}
+            ''', (code['id'],)).fetchone()
+
+        net_sales = float(sales_row['net_sales'] or 0)
+        minimum = float(code['monthly_minimum'])
+        passed = net_sales >= minimum
+
+        result = {
+            'code': code['code'],
+            'id': code['id'],
+            'referrer_name': code.get('referrer_name') or 'N/A',
+            'referrer_email': code.get('referrer_email') or '',
+            'monthly_minimum': minimum,
+            'net_sales_prior_month': round(net_sales, 2),
+            'passed': passed,
+            'month_checked': month_label,
+            'action': 'no_change'
+        }
+
+        if not passed:
+            # Deactivate the code
+            if pg:
+                c.execute('UPDATE discount_codes SET active = 0, description = CONCAT(description, %s) WHERE id = %s',
+                          (f' [DEACTIVATED {month_label} - sales ${net_sales:.2f} below ${minimum:.2f} minimum]', code['id']))
+            else:
+                c.execute("UPDATE discount_codes SET active = 0, description = description || ? WHERE id = ?",
+                          (f' [DEACTIVATED {month_label} - sales ${net_sales:.2f} below ${minimum:.2f} minimum]', code['id']))
+            result['action'] = 'deactivated'
+            deactivated.append(result)
+
+        results.append(result)
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'month_checked': month_label,
+        'codes_checked': len(results),
+        'codes_deactivated': len(deactivated),
+        'results': results
+    })
 
 @app.route('/api/admin/inventory-receipts', methods=['GET'])
 @admin_required
