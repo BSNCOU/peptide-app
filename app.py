@@ -2597,33 +2597,35 @@ def payment_audit():
     """
     conn = get_db()
     c = conn.cursor()
+    pg = is_postgres()
+    cutoff_24h = "NOW() - INTERVAL '1 day'" if pg else "datetime('now', '-1 day')"
+    ph = "%s" if pg else "?"
 
-    # --- Suspicious: looks paid but no Stripe proof ---
-    suspicious = c.execute(f'''
+    # Suspicious: looks paid but no Stripe proof
+    suspicious = c.execute(f"""
         SELECT o.id, o.order_number, o.status, o.total, o.created_at, o.paid_at,
                o.stripe_payment_intent, o.stripe_session_id,
                u.full_name, u.email
         FROM orders o
         JOIN users u ON o.user_id = u.id
         WHERE o.status IN {PAID_STATUSES_SQL}
-          AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = '')
+          AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = {ph})
         ORDER BY o.created_at DESC
-    ''').fetchall()
+    """, ('',)).fetchall()
 
-    # --- Abandoned: never completed checkout, older than 24h ---
-    abandoned = c.execute('''
+    # Abandoned: never paid, older than 24h
+    abandoned = c.execute(f"""
         SELECT o.id, o.order_number, o.status, o.total, o.created_at,
-               o.stripe_session_id,
-               u.full_name, u.email
+               o.stripe_session_id, u.full_name, u.email
         FROM orders o
         JOIN users u ON o.user_id = u.id
         WHERE o.status IN ('pending', 'pending_payment')
-          AND o.created_at < datetime('now', '-1 day')
+          AND o.created_at < {cutoff_24h}
         ORDER BY o.created_at DESC
-    ''').fetchall()
+    """).fetchall()
 
-    # --- Mismatch: has Stripe intent but status wasn't updated ---
-    mismatch = c.execute('''
+    # Mismatch: has Stripe intent but stuck pending
+    mismatch = c.execute(f"""
         SELECT o.id, o.order_number, o.status, o.total, o.created_at,
                o.stripe_payment_intent, o.stripe_session_id,
                u.full_name, u.email
@@ -2631,20 +2633,22 @@ def payment_audit():
         JOIN users u ON o.user_id = u.id
         WHERE o.status IN ('pending', 'pending_payment')
           AND o.stripe_payment_intent IS NOT NULL
-          AND o.stripe_payment_intent != ''
+          AND o.stripe_payment_intent != {ph}
         ORDER BY o.created_at DESC
-    ''').fetchall()
+    """, ('',)).fetchall()
 
-    # --- Summary counts ---
-    summary = c.execute(f'''
-        SELECT
-            COUNT(*) as total_orders,
-            COALESCE(SUM(total), 0) as total_revenue,
-            SUM(CASE WHEN stripe_payment_intent IS NOT NULL AND stripe_payment_intent != '' THEN 1 ELSE 0 END) as with_stripe_proof,
-            SUM(CASE WHEN stripe_payment_intent IS NULL OR stripe_payment_intent = '' THEN 1 ELSE 0 END) as without_stripe_proof
-        FROM orders
-        WHERE status IN {PAID_STATUSES_SQL}
-    ''').fetchone()
+    # Summary
+    summary = c.execute(f"""
+        SELECT COUNT(*) as total_orders,
+               COALESCE(SUM(total), 0) as total_revenue,
+               SUM(CASE WHEN stripe_payment_intent IS NOT NULL
+                         AND stripe_payment_intent != {ph}
+                         THEN 1 ELSE 0 END) as with_stripe_proof,
+               SUM(CASE WHEN stripe_payment_intent IS NULL
+                         OR stripe_payment_intent = {ph}
+                         THEN 1 ELSE 0 END) as without_stripe_proof
+        FROM orders WHERE status IN {PAID_STATUSES_SQL}
+    """, ('', '')).fetchone()
 
     conn.close()
 
