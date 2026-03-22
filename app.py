@@ -374,6 +374,10 @@ def init_po_tables(c, using_postgres, auto_id):
         result = c.execute("SELECT key FROM app_settings WHERE key = 'shipping_cost'").fetchone()
         if not result:
             c.execute("INSERT INTO app_settings (key, value) VALUES ('shipping_cost', '20.00')")
+        # Check if free_shipping_threshold exists
+        result = c.execute("SELECT key FROM app_settings WHERE key = 'free_shipping_threshold'").fetchone()
+        if not result:
+            c.execute("INSERT INTO app_settings (key, value) VALUES ('free_shipping_threshold', '500.00')")
         # Check if sales_tax_rate exists (Indiana = 7%)
         result = c.execute("SELECT key FROM app_settings WHERE key = 'sales_tax_rate'").fetchone()
         if not result:
@@ -2151,37 +2155,53 @@ def create_order():
                 # Normal discount
                 discount_amount = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
     
-    # Handle delivery method and shipping cost
+    # Handle delivery method
     delivery_method = data.get('delivery_method', 'pickup')
-    shipping_cost = float(get_setting('shipping_cost', '20.00')) if delivery_method == 'ship' else 0.0
-    
-    # Calculate sales tax (Indiana 7% - only on product subtotal after discounts, not shipping)
+
+    # Calculate sales tax first (Indiana 7% - only on product subtotal after discounts, not shipping)
     sales_tax = 0
     if get_setting('sales_tax_enabled', 'true').lower() == 'true':
         tax_rate = float(get_setting('sales_tax_rate', '7.00'))
         taxable_amount = subtotal - discount_amount
         if taxable_amount > 0:
             sales_tax = round(taxable_amount * (tax_rate / 100), 2)
-    
+
     # Calculate processing fee (covers Stripe fees ~3%)
     processing_fee = 0
     if get_setting('processing_fee_enabled', 'true').lower() == 'true':
         fee_rate = float(get_setting('processing_fee_rate', '3.00'))
-        # Calculate fee on subtotal after discount (before tax/shipping)
         fee_base = subtotal - discount_amount
         if fee_base > 0:
             processing_fee = round(fee_base * (fee_rate / 100), 2)
-    
-    # Handle credit application
+
+    # Calculate credit provisionally (without shipping, since we don't know it yet).
+    # We need credit first so it can factor into free shipping eligibility.
+    available_credit = 0
     credit_applied = 0
     if data.get('apply_credit'):
-        user = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
-        available_credit = float(user['referral_credit'] or 0) if user else 0
+        credit_user = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
+        available_credit = float(credit_user['referral_credit'] or 0) if credit_user else 0
         if available_credit > 0:
-            # Calculate how much credit can be applied (up to subtotal after discount + shipping + tax + fee)
-            max_credit = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee
-            credit_applied = min(available_credit, max_credit)
-    
+            # Cap at order total excluding shipping (not known yet)
+            max_credit_provisional = max(0, subtotal - discount_amount + sales_tax + processing_fee)
+            credit_applied = min(available_credit, max_credit_provisional)
+
+    # Determine shipping cost.
+    # Free shipping threshold is checked AFTER discounts AND credits, before taxes/fees.
+    shipping_cost = 0.0
+    if delivery_method == 'ship':
+        free_shipping_threshold = float(get_setting('free_shipping_threshold', '500.00'))
+        net_product_total = subtotal - discount_amount - credit_applied
+        if net_product_total >= free_shipping_threshold:
+            shipping_cost = 0.0
+            print(f"[SHIPPING] Free shipping applied - net after discounts+credits ${net_product_total:.2f} >= ${free_shipping_threshold:.2f}")
+        else:
+            shipping_cost = float(get_setting('shipping_cost', '20.00'))
+            # Shipping is being charged — recalculate credit cap to include shipping cost
+            if available_credit > 0:
+                max_credit = max(0, subtotal - discount_amount + shipping_cost + sales_tax + processing_fee)
+                credit_applied = min(available_credit, max_credit)
+
     total = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee - credit_applied
     if total < 0:
         total = 0
@@ -4144,273 +4164,6 @@ def get_shipping_label(oid):
         return jsonify({'error': 'No label found for this order'}), 404
 
 
-@app.route('/admin/pick-labels', methods=['GET'])
-@admin_required
-def pick_labels_html():
-    """Print one 4x6 pick label per open order for the Zebra printer"""
-    conn = get_db()
-    orders = conn.execute('''
-        SELECT o.*, u.full_name, u.email
-        FROM orders o JOIN users u ON o.user_id = u.id
-        WHERE o.status IN ('paid', 'processing') AND o.delivery_method = 'ship'
-        ORDER BY o.created_at ASC
-    ''').fetchall()
-
-    all_items = {}
-    if orders:
-        order_ids = [o['id'] for o in orders]
-        placeholders = ','.join('?' * len(order_ids))
-        items = conn.execute(f'''
-            SELECT oi.order_id, oi.quantity, p.name, p.sku
-            FROM order_items oi JOIN products p ON oi.product_id = p.id
-            WHERE oi.order_id IN ({placeholders})
-        ''', order_ids).fetchall()
-        for item in items:
-            all_items.setdefault(item['order_id'], []).append(item)
-    conn.close()
-
-    labels_html = ''
-    for order in orders:
-        o = dict(order)
-        items = all_items.get(o['id'], [])
-        addr_raw = o.get('shipping_address', '') or ''
-        addr_lines = [l.strip() for l in addr_raw.replace('\\n', '\n').split('\n') if l.strip()]
-        # Just city/state line for the label
-        addr_short = ', '.join(addr_lines[1:3]) if len(addr_lines) > 1 else addr_lines[0] if addr_lines else ''
-
-        items_rows = ''
-        for item in items:
-            items_rows += f'''
-            <div class="item-row">
-                <span class="item-qty">×{item["quantity"]}</span>
-                <span class="item-name">{item["name"]}</span>
-                <span class="item-sku">{item["sku"] or ""}</span>
-            </div>'''
-
-        labels_html += f'''
-        <div class="label">
-            <div class="label-header">
-                <div class="order-num">{o["order_number"]}</div>
-                <div class="customer">{o["full_name"]}</div>
-                <div class="addr">{addr_short}</div>
-            </div>
-            <div class="divider"></div>
-            <div class="items-section">
-                <div class="items-title">PICK LIST</div>
-                {items_rows}
-            </div>
-            <div class="divider"></div>
-            <div class="footer-note">The Peptide Wizard &nbsp;·&nbsp; For Research Use Only</div>
-        </div>'''
-
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Pick Labels</title>
-<style>
-  @page {{
-    size: 4in 6in;
-    margin: 0;
-  }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: white; font-family: Arial, sans-serif; }}
-
-  .label {{
-    width: 4in;
-    height: 6in;
-    padding: 0.18in 0.2in;
-    page-break-after: always;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }}
-
-  .label-header {{
-    margin-bottom: 6px;
-  }}
-
-  .order-num {{
-    font-size: 22pt;
-    font-weight: bold;
-    letter-spacing: 1px;
-    color: #000;
-    line-height: 1.1;
-  }}
-
-  .customer {{
-    font-size: 15pt;
-    font-weight: bold;
-    color: #222;
-    margin-top: 3px;
-  }}
-
-  .addr {{
-    font-size: 10pt;
-    color: #555;
-    margin-top: 2px;
-  }}
-
-  .divider {{
-    border-top: 2px solid #000;
-    margin: 7px 0;
-  }}
-
-  .items-section {{
-    flex: 1;
-    overflow: hidden;
-  }}
-
-  .items-title {{
-    font-size: 9pt;
-    font-weight: bold;
-    text-transform: uppercase;
-    color: #666;
-    letter-spacing: 1px;
-    margin-bottom: 6px;
-  }}
-
-  .item-row {{
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 5px 0;
-    border-bottom: 1px dashed #ccc;
-  }}
-
-  .item-qty {{
-    font-size: 20pt;
-    font-weight: bold;
-    color: #000;
-    min-width: 0.55in;
-    flex-shrink: 0;
-  }}
-
-  .item-name {{
-    font-size: 13pt;
-    font-weight: bold;
-    color: #111;
-    flex: 1;
-    line-height: 1.2;
-  }}
-
-  .item-sku {{
-    font-size: 8.5pt;
-    color: #777;
-    flex-shrink: 0;
-  }}
-
-  .footer-note {{
-    font-size: 8pt;
-    color: #888;
-    text-align: center;
-    padding-top: 5px;
-  }}
-</style>
-</head>
-<body onload="window.print()">
-{labels_html}
-</body>
-</html>"""
-    return html
-
-
-@app.route('/admin/packing-slip/<int:oid>', methods=['GET'])
-@admin_required
-def packing_slip_html(oid):
-    """Generate a print-ready HTML packing slip sized for 4x6 Zebra label"""
-    conn = get_db()
-    order = conn.execute('''
-        SELECT o.*, u.full_name, u.email, u.phone
-        FROM orders o JOIN users u ON o.user_id = u.id
-        WHERE o.id = ?
-    ''', (oid,)).fetchone()
-    if not order:
-        conn.close()
-        return "Order not found", 404
-    order_dict = dict(order)
-    items = conn.execute('''
-        SELECT oi.quantity, p.name, p.sku
-        FROM order_items oi JOIN products p ON oi.product_id = p.id
-        WHERE oi.order_id = ?
-    ''', (oid,)).fetchall()
-    conn.close()
-
-    addr_raw = order_dict.get('shipping_address', '') or ''
-    addr_lines = [l.strip() for l in addr_raw.replace('\\n', '\n').split('\n') if l.strip()]
-
-    items_html = ''.join(
-        f'<tr><td>{i["quantity"]}x</td><td>{i["name"]}</td><td style="color:#555;font-size:9pt;">{i["sku"] or ""}</td></tr>'
-        for i in items
-    )
-
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Packing Slip - {order_dict['order_number']}</title>
-<style>
-  @page {{
-    size: 4in 6in;
-    margin: 0.15in;
-  }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{
-    font-family: Arial, sans-serif;
-    font-size: 10pt;
-    width: 3.7in;
-    background: white;
-    color: #000;
-  }}
-  .header {{ text-align: center; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 6px; }}
-  .company {{ font-size: 15pt; font-weight: bold; letter-spacing: 1px; }}
-  .sub {{ font-size: 8pt; color: #333; }}
-  .section {{ margin-bottom: 6px; }}
-  .label {{ font-size: 7.5pt; font-weight: bold; text-transform: uppercase; color: #555; border-bottom: 1px solid #ccc; margin-bottom: 3px; }}
-  .ship-name {{ font-size: 12pt; font-weight: bold; }}
-  .addr {{ font-size: 9.5pt; line-height: 1.4; }}
-  table {{ width: 100%; border-collapse: collapse; font-size: 9.5pt; }}
-  td {{ padding: 2px 3px; vertical-align: top; }}
-  tr:nth-child(even) {{ background: #f5f5f5; }}
-  .footer {{ border-top: 2px solid #000; margin-top: 6px; padding-top: 5px; text-align: center; font-size: 8pt; color: #444; }}
-  .order-info {{ display: flex; justify-content: space-between; font-size: 9pt; }}
-</style>
-</head>
-<body onload="window.print()">
-  <div class="header">
-    <div class="company">THE PEPTIDE WIZARD</div>
-    <div class="sub">530 North St · Auburn, IN 46706 · info@thepeptidewizard.com</div>
-  </div>
-
-  <div class="section">
-    <div class="order-info">
-      <span><strong>Order:</strong> {order_dict['order_number']}</span>
-      <span><strong>Date:</strong> {datetime.now().strftime('%m/%d/%Y')}</span>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="label">Ship To</div>
-    <div class="ship-name">{order_dict.get('full_name', '')}</div>
-    <div class="addr">{'<br>'.join(addr_lines)}</div>
-  </div>
-
-  <div class="section">
-    <div class="label">Items</div>
-    <table>
-      <tbody>{items_html}</tbody>
-    </table>
-  </div>
-
-  <div class="footer">
-    Thank you for your order! &nbsp;|&nbsp; www.thepeptidewizard.com<br>
-    <strong>FOR RESEARCH USE ONLY</strong>
-  </div>
-</body>
-</html>"""
-    return html
-
-
 @app.route('/api/admin/shipping/packing-slip/<int:oid>', methods=['GET'])
 @admin_required
 def get_packing_slip(oid):
@@ -6203,6 +5956,7 @@ def get_all_settings():
 def get_shipping_cost():
     """Get shipping cost and tax settings (public endpoint)"""
     shipping_cost = get_setting('shipping_cost', '20.00')
+    free_shipping_threshold = get_setting('free_shipping_threshold', '500.00')
     sales_tax_rate = get_setting('sales_tax_rate', '7.00')
     sales_tax_enabled = get_setting('sales_tax_enabled', 'true')
     processing_fee_rate = get_setting('processing_fee_rate', '3.00')
@@ -6210,6 +5964,7 @@ def get_shipping_cost():
     google_places_api_key = get_setting('google_places_api_key', '')
     return jsonify({
         'shipping_cost': float(shipping_cost),
+        'free_shipping_threshold': float(free_shipping_threshold),
         'sales_tax_rate': float(sales_tax_rate),
         'sales_tax_enabled': sales_tax_enabled.lower() == 'true',
         'processing_fee_rate': float(processing_fee_rate),
