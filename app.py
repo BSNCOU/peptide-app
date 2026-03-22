@@ -78,6 +78,11 @@ CONFIG = {
 
 DATABASE = 'research_orders.db'
 
+# Statuses that represent real, confirmed payments
+# pending / pending_payment = customer started but never paid — NOT real revenue
+PAID_STATUSES = ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
+PAID_STATUSES_SQL = "('paid','processing','ready_to_ship','shipped','delivered','fulfilled')"
+
 def is_postgres():
     """Check if using PostgreSQL"""
     database_url = CONFIG.get('DATABASE_URL', '')
@@ -2558,8 +2563,8 @@ def download_invoice(oid):
 @admin_required
 def admin_stats():
     conn = get_db()
-    # Exclude cancelled/refunded orders from revenue
-    orders = conn.execute("SELECT COUNT(*) as count, SUM(total) as total FROM orders WHERE status NOT IN ('cancelled', 'refunded')").fetchone()
+    # Only count CONFIRMED paid orders as revenue (pending/pending_payment = abandoned carts)
+    orders = conn.execute(f"SELECT COUNT(*) as count, SUM(total) as total FROM orders WHERE status IN {PAID_STATUSES_SQL}").fetchone()
     by_status = {r['status']: r['count'] for r in conn.execute('SELECT status, COUNT(*) as count FROM orders GROUP BY status').fetchall()}
     users = conn.execute('SELECT COUNT(*) as count FROM users WHERE is_admin=0').fetchone()
     products = conn.execute('SELECT COUNT(*) as count FROM products WHERE active=1').fetchone()
@@ -2575,6 +2580,137 @@ def admin_stats():
     conn.close()
     
     return jsonify({'total_orders': orders['count'] or 0, 'total_revenue': orders['total'] or 0, 'orders_by_status': by_status, 'total_users': users['count'] or 0, 'total_products': products['count'] or 0, 'recent_orders': [dict(r) for r in recent], 'low_stock_items': [dict(p) for p in low_stock]})
+
+
+@app.route('/api/admin/payment-audit', methods=['GET'])
+@admin_required
+def payment_audit():
+    """
+    Audit endpoint: surfaces orders that may be counted as revenue but have
+    no confirmed Stripe payment, plus abandoned carts still cluttering the DB.
+
+    Returns four buckets:
+      suspicious  - status = paid/processing/etc but NO stripe_payment_intent recorded
+      abandoned   - status = pending or pending_payment, older than 24 hours
+      mismatch    - has a stripe_payment_intent but status is still pending*
+      clean       - confirmed paid orders (for summary counts only)
+    """
+    conn = get_db()
+    c = conn.cursor()
+
+    # --- Suspicious: looks paid but no Stripe proof ---
+    suspicious = c.execute(f'''
+        SELECT o.id, o.order_number, o.status, o.total, o.created_at, o.paid_at,
+               o.stripe_payment_intent, o.stripe_session_id,
+               u.full_name, u.email
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.status IN {PAID_STATUSES_SQL}
+          AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = '')
+        ORDER BY o.created_at DESC
+    ''').fetchall()
+
+    # --- Abandoned: never completed checkout, older than 24h ---
+    abandoned = c.execute('''
+        SELECT o.id, o.order_number, o.status, o.total, o.created_at,
+               o.stripe_session_id,
+               u.full_name, u.email
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.status IN ('pending', 'pending_payment')
+          AND o.created_at < datetime('now', '-1 day')
+        ORDER BY o.created_at DESC
+    ''').fetchall()
+
+    # --- Mismatch: has Stripe intent but status wasn't updated ---
+    mismatch = c.execute('''
+        SELECT o.id, o.order_number, o.status, o.total, o.created_at,
+               o.stripe_payment_intent, o.stripe_session_id,
+               u.full_name, u.email
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.status IN ('pending', 'pending_payment')
+          AND o.stripe_payment_intent IS NOT NULL
+          AND o.stripe_payment_intent != ''
+        ORDER BY o.created_at DESC
+    ''').fetchall()
+
+    # --- Summary counts ---
+    summary = c.execute(f'''
+        SELECT
+            COUNT(*) as total_orders,
+            COALESCE(SUM(total), 0) as total_revenue,
+            SUM(CASE WHEN stripe_payment_intent IS NOT NULL AND stripe_payment_intent != '' THEN 1 ELSE 0 END) as with_stripe_proof,
+            SUM(CASE WHEN stripe_payment_intent IS NULL OR stripe_payment_intent = '' THEN 1 ELSE 0 END) as without_stripe_proof
+        FROM orders
+        WHERE status IN {PAID_STATUSES_SQL}
+    ''').fetchone()
+
+    conn.close()
+
+    return jsonify({
+        'summary': {
+            'total_paid_orders': summary['total_orders'] or 0,
+            'total_revenue': float(summary['total_revenue'] or 0),
+            'with_stripe_proof': summary['with_stripe_proof'] or 0,
+            'without_stripe_proof': summary['without_stripe_proof'] or 0,
+        },
+        'suspicious': [dict(r) for r in suspicious],
+        'abandoned': [dict(r) for r in abandoned],
+        'mismatch': [dict(r) for r in mismatch],
+    })
+
+
+@app.route('/api/admin/payment-audit/fix-mismatch/<int:order_id>', methods=['POST'])
+@admin_required
+def fix_mismatch_order(order_id):
+    """Mark a mismatch order (has Stripe intent but stuck pending) as paid."""
+    conn = get_db()
+    c = conn.cursor()
+    order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    order = dict(order)
+    if order['status'] not in ('pending', 'pending_payment'):
+        conn.close()
+        return jsonify({'error': f"Order is already {order['status']}"}), 400
+    if not order.get('stripe_payment_intent'):
+        conn.close()
+        return jsonify({'error': 'No Stripe payment intent on this order — cannot auto-fix'}), 400
+
+    c.execute('''UPDATE orders SET status = 'paid', paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP),
+                 updated_at = CURRENT_TIMESTAMP WHERE id = ?''', (order_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'message': f"Order {order['order_number']} marked as paid"})
+
+
+@app.route('/api/admin/payment-audit/cancel-abandoned/<int:order_id>', methods=['POST'])
+@admin_required
+def cancel_abandoned_order(order_id):
+    """Cancel an abandoned (never-paid) order and restore its inventory."""
+    conn = get_db()
+    c = conn.cursor()
+    order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    if dict(order)['status'] not in ('pending', 'pending_payment'):
+        conn.close()
+        return jsonify({'error': 'Order is not in a pending state'}), 400
+
+    # Restore inventory
+    items = c.execute('SELECT product_id, quantity FROM order_items WHERE order_id = ?', (order_id,)).fetchall()
+    for item in items:
+        c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (item['quantity'], item['product_id']))
+
+    c.execute('''UPDATE orders SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?''', (order_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'message': 'Order cancelled and inventory restored'})
+
 
 @app.route('/api/admin/products', methods=['GET'])
 @admin_required
@@ -2912,7 +3048,7 @@ def admin_financial_report():
             COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected,
             COALESCE(SUM(o.processing_fee), 0) as processing_fees_collected
         FROM orders o
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
         AND {date_filter}
     '''
     orders = conn.execute(orders_query).fetchone()
@@ -2923,7 +3059,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
         AND {date_filter}
     '''
     cogs = conn.execute(cogs_query).fetchone()
@@ -2943,7 +3079,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
         AND {date_filter}
         GROUP BY p.id, p.sku, p.name, p.category, p.cost, p.price_single
         ORDER BY gross_profit DESC
@@ -2961,7 +3097,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
         AND {date_filter}
         GROUP BY p.category
         ORDER BY gross_profit DESC
@@ -3033,7 +3169,7 @@ def admin_profitability_report():
             COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected,
             COALESCE(SUM(o.processing_fee), 0) as processing_fees_collected
         FROM orders o
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
         AND {date_filter}
     '''
     orders = conn.execute(orders_query).fetchone()
@@ -3044,7 +3180,7 @@ def admin_profitability_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
         AND {date_filter}
     '''
     cogs = conn.execute(cogs_query).fetchone()
@@ -3084,7 +3220,7 @@ def admin_profitability_report():
             SELECT COUNT(DISTINCT oi.product_id) as unique_products
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.id
-            WHERE o.status NOT IN ('cancelled', 'refunded')
+            WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
             AND {date_filter}
         '''
         unique_result = conn.execute(unique_query).fetchone()
