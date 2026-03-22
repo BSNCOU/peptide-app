@@ -2586,32 +2586,42 @@ def admin_stats():
 @admin_required
 def payment_audit():
     """
-    Audit endpoint: surfaces orders that may be counted as revenue but have
-    no confirmed Stripe payment, plus abandoned carts still cluttering the DB.
-
-    Returns four buckets:
-      suspicious  - status = paid/processing/etc but NO stripe_payment_intent recorded
-      abandoned   - status = pending or pending_payment, older than 24 hours
-      mismatch    - has a stripe_payment_intent but status is still pending*
-      clean       - confirmed paid orders (for summary counts only)
+    Surfaces orders after STRIPE_CUTOFF_DATE that look paid but have no
+    Stripe payment intent, plus abandoned carts and stuck-pending orders.
+    Orders before STRIPE_CUTOFF_DATE are excluded — those were pre-Stripe (Venmo era).
     """
+    STRIPE_CUTOFF = '2026-02-17'
+
     conn = get_db()
     c = conn.cursor()
     pg = is_postgres()
     cutoff_24h = "NOW() - INTERVAL '1 day'" if pg else "datetime('now', '-1 day')"
     ph = "%s" if pg else "?"
 
-    # Suspicious: looks paid but no Stripe proof
+    # Suspicious AFTER Stripe cutoff: paid status but no Stripe proof
     suspicious = c.execute(f"""
         SELECT o.id, o.order_number, o.status, o.total, o.created_at, o.paid_at,
                o.stripe_payment_intent, o.stripe_session_id,
+               u.full_name, u.email, o.shipping_address
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.status IN {PAID_STATUSES_SQL}
+          AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = {ph})
+          AND o.created_at >= {ph}
+        ORDER BY o.created_at DESC
+    """, ('', STRIPE_CUTOFF)).fetchall()
+
+    # Pre-Stripe orders (before Feb 17 2026) - excluded from suspicious but shown for reference
+    pre_stripe = c.execute(f"""
+        SELECT o.id, o.order_number, o.status, o.total, o.created_at,
                u.full_name, u.email
         FROM orders o
         JOIN users u ON o.user_id = u.id
         WHERE o.status IN {PAID_STATUSES_SQL}
           AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = {ph})
+          AND o.created_at < {ph}
         ORDER BY o.created_at DESC
-    """, ('',)).fetchall()
+    """, ('', STRIPE_CUTOFF)).fetchall()
 
     # Abandoned: never paid, older than 24h
     abandoned = c.execute(f"""
@@ -2637,7 +2647,7 @@ def payment_audit():
         ORDER BY o.created_at DESC
     """, ('',)).fetchall()
 
-    # Summary
+    # Summary (Stripe era only)
     summary = c.execute(f"""
         SELECT COUNT(*) as total_orders,
                COALESCE(SUM(total), 0) as total_revenue,
@@ -2648,11 +2658,13 @@ def payment_audit():
                          OR stripe_payment_intent = {ph}
                          THEN 1 ELSE 0 END) as without_stripe_proof
         FROM orders WHERE status IN {PAID_STATUSES_SQL}
-    """, ('', '')).fetchone()
+        AND created_at >= {ph}
+    """, ('', '', STRIPE_CUTOFF)).fetchone()
 
     conn.close()
 
     return jsonify({
+        'stripe_cutoff_date': STRIPE_CUTOFF,
         'summary': {
             'total_paid_orders': summary['total_orders'] or 0,
             'total_revenue': float(summary['total_revenue'] or 0),
@@ -2660,6 +2672,7 @@ def payment_audit():
             'without_stripe_proof': summary['without_stripe_proof'] or 0,
         },
         'suspicious': [dict(r) for r in suspicious],
+        'pre_stripe': [dict(r) for r in pre_stripe],
         'abandoned': [dict(r) for r in abandoned],
         'mismatch': [dict(r) for r in mismatch],
     })
@@ -2714,6 +2727,75 @@ def cancel_abandoned_order(order_id):
     conn.commit()
     conn.close()
     return jsonify({'success': True, 'message': 'Order cancelled and inventory restored'})
+
+
+@app.route('/api/admin/payment-audit/export-csv', methods=['GET'])
+@admin_required
+def export_suspicious_csv():
+    """
+    Export post-Stripe suspicious orders (no payment intent) as CSV
+    for cross-referencing against Venmo/payment statements.
+    """
+    import csv
+    from io import StringIO
+
+    STRIPE_CUTOFF = '2026-02-17'
+    conn = get_db()
+    c = conn.cursor()
+    pg = is_postgres()
+    ph = "%s" if pg else "?"
+
+    rows = c.execute(f"""
+        SELECT
+            o.order_number,
+            o.created_at,
+            o.status,
+            u.full_name,
+            u.email,
+            o.subtotal,
+            o.discount_amount,
+            o.shipping_cost,
+            o.sales_tax,
+            o.total,
+            o.shipping_address,
+            o.notes
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.status IN {PAID_STATUSES_SQL}
+          AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = {ph})
+          AND o.created_at >= {ph}
+        ORDER BY o.created_at ASC
+    """, ('', STRIPE_CUTOFF)).fetchall()
+    conn.close()
+
+    si = StringIO()
+    writer = csv.writer(si)
+    writer.writerow([
+        'Order Number', 'Date', 'Status', 'Customer Name', 'Email',
+        'Subtotal', 'Discount', 'Shipping', 'Tax', 'Total',
+        'Shipping Address', 'Notes'
+    ])
+    for r in rows:
+        writer.writerow([
+            r['order_number'],
+            r['created_at'],
+            r['status'],
+            r['full_name'],
+            r['email'],
+            f"${float(r['subtotal'] or 0):.2f}",
+            f"${float(r['discount_amount'] or 0):.2f}",
+            f"${float(r['shipping_cost'] or 0):.2f}",
+            f"${float(r['sales_tax'] or 0):.2f}",
+            f"${float(r['total'] or 0):.2f}",
+            r['shipping_address'] or '',
+            r['notes'] or ''
+        ])
+
+    output = si.getvalue()
+    response = make_response(output)
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = f'attachment; filename=suspicious_orders_post_{STRIPE_CUTOFF}.csv'
+    return response
 
 
 @app.route('/api/admin/products', methods=['GET'])

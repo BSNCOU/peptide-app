@@ -5679,13 +5679,21 @@ The Peptide Wizard Team"></textarea>
             const proofPct = s.total_paid_orders > 0 ? Math.round(s.with_stripe_proof / s.total_paid_orders * 100) : 0;
             const susTotal = data.suspicious.reduce((a,o) => a + parseFloat(o.total||0), 0);
             const misTotal = data.mismatch.reduce((a,o) => a + parseFloat(o.total||0), 0);
+            const preStripeTotal = (data.pre_stripe||[]).reduce((a,o) => a + parseFloat(o.total||0), 0);
 
             const html = `
             <div style="padding:20px;max-width:1100px">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
                     <h2 style="margin:0">🔍 Payment Audit</h2>
-                    <button onclick="loadPaymentAudit()" style="padding:8px 16px;background:#4299e1;color:white;border:none;border-radius:6px;cursor:pointer">↻ Refresh</button>
+                    <div style="display:flex;gap:10px">
+                        <a href="/api/admin/payment-audit/export-csv" style="padding:8px 16px;background:#38a169;color:white;border:none;border-radius:6px;cursor:pointer;text-decoration:none;font-size:0.9rem">⬇ Export CSV</a>
+                        <button onclick="loadPaymentAudit()" style="padding:8px 16px;background:#4299e1;color:white;border:none;border-radius:6px;cursor:pointer">↻ Refresh</button>
+                    </div>
                 </div>
+                <p style="color:#718096;font-size:0.85rem;margin-bottom:20px">
+                    Showing orders <strong>after Feb 17, 2026</strong> (Stripe launch date).
+                    ${data.pre_stripe && data.pre_stripe.length > 0 ? `<span style="color:#805ad5">${data.pre_stripe.length} pre-Stripe orders (${preStripeTotal.toFixed(2)}) excluded — those were Venmo era.</span>` : ''}
+                </p>
 
                 <!-- Summary Cards -->
                 <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-bottom:25px">
