@@ -3398,6 +3398,8 @@ The Peptide Wizard Team"></textarea>
                                         <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOrderDetailModal(${o.id})">View</button>
+                                            <button class="btn btn-small" style="background:#38a169;color:white;" onclick="localFulfill(${o.id}, 'pickup')">🏪 Pickup</button>
+                                            <button class="btn btn-small" style="background:#805ad5;color:white;" onclick="localFulfill(${o.id}, 'delivery')">🚗 Delivery</button>
                                             <button class="btn btn-secondary btn-small" onclick="moveBackToProcessing(${o.id})">← Back</button>
                                         </td>
                                     </tr>
@@ -3476,6 +3478,25 @@ The Peptide Wizard Team"></textarea>
                 showAlert(err.message);
             }
         }
+
+        async function localFulfill(orderId, method) {
+            const label = method === 'pickup' ? 'Local Pickup' : 'Local Delivery';
+            const emoji = method === 'pickup' ? '🏪' : '🚗';
+            if (!confirm(`${emoji} Mark this order as ${label}?\n\nThis will mark it shipped and email the customer.`)) return;
+
+            try {
+                await api(`/api/admin/orders/${orderId}/local-fulfill`, {
+                    method: 'POST',
+                    body: JSON.stringify({ method })
+                });
+                showAlert(`${emoji} Order marked as ${label} — customer notified!`, 'success');
+                await loadOrders();
+                renderReadyToShip();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+        
         
         async function markOrderReadyToShip(orderId) {
             try {

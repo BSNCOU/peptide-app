@@ -4720,6 +4720,125 @@ def import_tracking_csv():
         'errors': errors
     })
 
+@app.route('/api/admin/orders/<int:order_id>/local-fulfill', methods=['POST'])
+@admin_required
+def local_fulfill_order(order_id):
+    """Mark an order as fulfilled locally (pickup or delivery) — no tracking number needed"""
+    data = request.json or {}
+    method = data.get('method', 'pickup')  # 'pickup' or 'delivery'
+
+    if method not in ('pickup', 'delivery'):
+        return jsonify({'error': 'method must be pickup or delivery'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+
+    order = c.execute(
+        'SELECT o.*, u.email, u.full_name, u.phone FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?',
+        (order_id,)
+    ).fetchone()
+
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+
+    order = dict(order)
+
+    fulfillment_note = 'Local Pickup - fulfilled in person' if method == 'pickup' else 'Local Delivery - delivered by owner'
+
+    # Update order status to shipped and record fulfillment note
+    existing_notes = order.get('notes') or ''
+    separator = '\n' if existing_notes else ''
+    new_notes = existing_notes + separator + fulfillment_note
+
+    c.execute(
+        "UPDATE orders SET status = 'shipped', notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (new_notes, order_id)
+    )
+    conn.commit()
+    conn.close()
+
+    # Send appropriate email
+    try:
+        send_local_fulfill_notification(order_id, method)
+    except Exception as e:
+        print(f"[ERROR] Failed to send local fulfill email for order {order_id}: {e}")
+
+    return jsonify({
+        'message': f'Order marked as {method} fulfilled',
+        'order_id': order_id,
+        'method': method
+    })
+
+
+def send_local_fulfill_notification(order_id, method):
+    """Send pickup-ready or out-for-delivery email to customer"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT o.*, u.full_name, u.email, u.phone FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?', (order_id,))
+    order = c.fetchone()
+    conn.close()
+
+    if not order:
+        return
+    order = dict(order)
+
+    if method == 'pickup':
+        subject = f"✅ Your Order is Ready for Pickup! - {order['order_number']}"
+        headline = "✅ Your Order is Ready for Pickup!"
+        body_line = "Your order is packed and ready. Stop by to pick it up at your convenience."
+        detail_label = "Pickup Location"
+        detail_value = "530 North St., Auburn IN 46706"
+        icon = "🏪"
+    else:
+        subject = f"🚗 Your Order is Out for Delivery! - {order['order_number']}"
+        headline = "🚗 Your Order is Out for Delivery!"
+        body_line = "Great news! Your order is on its way and will be delivered to you soon."
+        detail_label = "Delivery Address"
+        detail_value = order.get('shipping_address', 'On file').replace('\\n', ', ')
+        icon = "🚗"
+
+    html = f"""<html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: linear-gradient(135deg, #1a365d 0%, #2b6cb0 100%); color: white; padding: 20px; text-align: center;">
+        <h1 style="margin: 0;">{headline}</h1>
+    </div>
+    <div style="padding: 30px; background: #f7fafc;">
+        <p style="font-size: 16px;">Hi {order['full_name']},</p>
+        <p>{body_line}</p>
+
+        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0;">
+            <p style="margin: 0 0 10px 0;"><strong>Order Number:</strong> {order['order_number']}</p>
+            <p style="margin: 0 0 5px 0;"><strong>{detail_label}:</strong></p>
+            <p style="font-size: 15px; background: #edf2f7; padding: 10px; border-radius: 4px; margin: 0;">{icon} {detail_value}</p>
+        </div>
+
+        <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 8px; margin-top: 20px;">
+            <strong>⚠️ Research Use Only</strong><br>
+            <span style="font-size: 13px;">All materials are for laboratory research purposes only. Not for human or animal consumption.</span>
+        </div>
+
+        <p style="color: #718096; font-size: 14px; margin-top: 30px;">
+            Thank you for your order!<br>
+            The Peptide Wizard Team
+        </p>
+    </div>
+    <div style="background: #1a202c; color: #a0aec0; padding: 15px; text-align: center; font-size: 12px;">
+        <p style="margin: 0;">© 2026 The Peptide Wizard™ | Operated by NH Chemicals LLC</p>
+    </div>
+    </body></html>"""
+
+    ok, msg = send_email(order['email'], subject, html)
+    ntype = 'local_pickup' if method == 'pickup' else 'local_delivery'
+    log_notification(order.get('user_id'), order_id, ntype, 'email', order['email'], 'sent' if ok else 'failed', None if ok else msg)
+
+    if order.get('phone'):
+        if method == 'pickup':
+            sms = f"Your order {order['order_number']} is ready for pickup at 530 North St., Auburn IN 46706!"
+        else:
+            sms = f"Your order {order['order_number']} is out for delivery and on its way to you!"
+        send_sms(order['phone'], sms)
+
+
 @app.route('/api/admin/orders/bulk-status', methods=['POST'])
 @admin_required  
 def bulk_update_order_status():
