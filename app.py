@@ -78,11 +78,6 @@ CONFIG = {
 
 DATABASE = 'research_orders.db'
 
-# Statuses that represent real, confirmed payments
-# pending / pending_payment = customer started but never paid — NOT real revenue
-PAID_STATUSES = ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
-PAID_STATUSES_SQL = "('paid','processing','ready_to_ship','shipped','delivered','fulfilled')"
-
 def is_postgres():
     """Check if using PostgreSQL"""
     database_url = CONFIG.get('DATABASE_URL', '')
@@ -752,8 +747,6 @@ def init_db():
         if using_postgres:
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS referrer_user_id INTEGER DEFAULT NULL")
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS commission_percent REAL DEFAULT 20")
-            c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS free_shipping INTEGER DEFAULT 0")
-            c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS monthly_minimum REAL DEFAULT 0")
             c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_credit REAL DEFAULT 0")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
         else:
@@ -763,14 +756,6 @@ def init_db():
                 pass
             try:
                 c.execute("ALTER TABLE discount_codes ADD COLUMN commission_percent REAL DEFAULT 20")
-            except:
-                pass
-            try:
-                c.execute("ALTER TABLE discount_codes ADD COLUMN free_shipping INTEGER DEFAULT 0")
-            except:
-                pass
-            try:
-                c.execute("ALTER TABLE discount_codes ADD COLUMN monthly_minimum REAL DEFAULT 0")
             except:
                 pass
             try:
@@ -2059,9 +2044,7 @@ def validate_discount():
         'combined_percent': combined_percent,
         'combined_amount': round(combined_amount, 2),
         'has_sale_items': has_sale_items,
-        'non_sale_subtotal': round(non_sale_subtotal, 2),
-        'free_shipping': bool(discount['free_shipping']),
-        'monthly_minimum': float(discount['monthly_minimum'] or 0)
+        'non_sale_subtotal': round(non_sale_subtotal, 2)
     })
 
 # ============================================
@@ -2172,66 +2155,46 @@ def create_order():
                 # Normal discount
                 discount_amount = subtotal * (discount['discount_percent'] / 100) if discount['discount_percent'] > 0 else discount['discount_amount']
     
-    # Handle delivery method
+    # Handle delivery method and shipping cost
     delivery_method = data.get('delivery_method', 'pickup')
-
-    # Calculate sales tax first (Indiana 7% - only on product subtotal after discounts, not shipping)
+    shipping_cost = 0.0
+    if delivery_method == 'ship':
+        # Free shipping if subtotal after discounts is $500+
+        net_product_total = subtotal - discount_amount
+        free_shipping_threshold = float(get_setting('free_shipping_threshold', '500.00'))
+        if net_product_total >= free_shipping_threshold:
+            shipping_cost = 0.0
+            print(f"[SHIPPING] Free shipping applied - net total ${net_product_total:.2f} >= ${free_shipping_threshold:.2f}")
+        else:
+            shipping_cost = float(get_setting('shipping_cost', '20.00'))
+    
+    # Calculate sales tax (Indiana 7% - only on product subtotal after discounts, not shipping)
     sales_tax = 0
     if get_setting('sales_tax_enabled', 'true').lower() == 'true':
         tax_rate = float(get_setting('sales_tax_rate', '7.00'))
         taxable_amount = subtotal - discount_amount
         if taxable_amount > 0:
             sales_tax = round(taxable_amount * (tax_rate / 100), 2)
-
+    
     # Calculate processing fee (covers Stripe fees ~3%)
     processing_fee = 0
     if get_setting('processing_fee_enabled', 'true').lower() == 'true':
         fee_rate = float(get_setting('processing_fee_rate', '3.00'))
+        # Calculate fee on subtotal after discount (before tax/shipping)
         fee_base = subtotal - discount_amount
         if fee_base > 0:
             processing_fee = round(fee_base * (fee_rate / 100), 2)
-
-    # Calculate credit provisionally (without shipping, since we don't know it yet).
-    # We need credit first so it can factor into free shipping eligibility.
-    available_credit = 0
+    
+    # Handle credit application
     credit_applied = 0
     if data.get('apply_credit'):
-        credit_user = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
-        available_credit = float(credit_user['referral_credit'] or 0) if credit_user else 0
+        user = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
+        available_credit = float(user['referral_credit'] or 0) if user else 0
         if available_credit > 0:
-            # Cap at order total excluding shipping (not known yet)
-            max_credit_provisional = max(0, subtotal - discount_amount + sales_tax + processing_fee)
-            credit_applied = min(available_credit, max_credit_provisional)
-
-    # Determine shipping cost.
-    # Free shipping if:
-    #   (1) THIS USER personally owns an active code with free_shipping=1 (code holder perk), OR
-    #   (2) net total >= threshold
-    # Note: customers using someone else's code do NOT get free shipping from that code.
-    shipping_cost = 0.0
-    if delivery_method == 'ship':
-        # Check if the logged-in user is a code HOLDER with free shipping perk
-        holder_free_shipping = c.execute('''
-            SELECT id FROM discount_codes
-            WHERE referrer_user_id = ? AND active = 1 AND free_shipping = 1
-        ''', (session['user_id'],)).fetchone()
-
-        free_shipping_threshold = float(get_setting('free_shipping_threshold', '500.00'))
-        net_product_total = subtotal - discount_amount - credit_applied
-
-        if holder_free_shipping:
-            shipping_cost = 0.0
-            print(f"[SHIPPING] Free shipping applied - user {session['user_id']} is a code holder with free shipping perk")
-        elif net_product_total >= free_shipping_threshold:
-            shipping_cost = 0.0
-            print(f"[SHIPPING] Free shipping applied - net after discounts+credits ${net_product_total:.2f} >= ${free_shipping_threshold:.2f}")
-        else:
-            shipping_cost = float(get_setting('shipping_cost', '20.00'))
-            # Shipping is being charged — recalculate credit cap to include shipping cost
-            if available_credit > 0:
-                max_credit = max(0, subtotal - discount_amount + shipping_cost + sales_tax + processing_fee)
-                credit_applied = min(available_credit, max_credit)
-
+            # Calculate how much credit can be applied (up to subtotal after discount + shipping + tax + fee)
+            max_credit = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee
+            credit_applied = min(available_credit, max_credit)
+    
     total = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee - credit_applied
     if total < 0:
         total = 0
@@ -2588,8 +2551,8 @@ def download_invoice(oid):
 @admin_required
 def admin_stats():
     conn = get_db()
-    # Only count CONFIRMED paid orders as revenue (pending/pending_payment = abandoned carts)
-    orders = conn.execute(f"SELECT COUNT(*) as count, SUM(total) as total FROM orders WHERE status IN {PAID_STATUSES_SQL}").fetchone()
+    # Exclude cancelled/refunded orders from revenue
+    orders = conn.execute("SELECT COUNT(*) as count, SUM(total) as total FROM orders WHERE status NOT IN ('cancelled', 'refunded')").fetchone()
     by_status = {r['status']: r['count'] for r in conn.execute('SELECT status, COUNT(*) as count FROM orders GROUP BY status').fetchall()}
     users = conn.execute('SELECT COUNT(*) as count FROM users WHERE is_admin=0').fetchone()
     products = conn.execute('SELECT COUNT(*) as count FROM products WHERE active=1').fetchone()
@@ -2605,223 +2568,6 @@ def admin_stats():
     conn.close()
     
     return jsonify({'total_orders': orders['count'] or 0, 'total_revenue': orders['total'] or 0, 'orders_by_status': by_status, 'total_users': users['count'] or 0, 'total_products': products['count'] or 0, 'recent_orders': [dict(r) for r in recent], 'low_stock_items': [dict(p) for p in low_stock]})
-
-
-@app.route('/api/admin/payment-audit', methods=['GET'])
-@admin_required
-def payment_audit():
-    """
-    Surfaces orders after STRIPE_CUTOFF_DATE that look paid but have no
-    Stripe payment intent, plus abandoned carts and stuck-pending orders.
-    Orders before STRIPE_CUTOFF_DATE are excluded — those were pre-Stripe (Venmo era).
-    """
-    STRIPE_CUTOFF = '2026-02-17'
-
-    conn = get_db()
-    c = conn.cursor()
-    pg = is_postgres()
-    cutoff_24h = "NOW() - INTERVAL '1 day'" if pg else "datetime('now', '-1 day')"
-    ph = "%s" if pg else "?"
-
-    # Suspicious AFTER Stripe cutoff: paid status but no Stripe proof
-    suspicious = c.execute(f"""
-        SELECT o.id, o.order_number, o.status, o.total, o.created_at, o.paid_at,
-               o.stripe_payment_intent, o.stripe_session_id,
-               u.full_name, u.email, o.shipping_address
-        FROM orders o
-        JOIN users u ON o.user_id = u.id
-        WHERE o.status IN {PAID_STATUSES_SQL}
-          AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = {ph})
-          AND o.created_at >= {ph}
-        ORDER BY o.created_at DESC
-    """, ('', STRIPE_CUTOFF)).fetchall()
-
-    # Pre-Stripe orders (before Feb 17 2026) - excluded from suspicious but shown for reference
-    pre_stripe = c.execute(f"""
-        SELECT o.id, o.order_number, o.status, o.total, o.created_at,
-               u.full_name, u.email
-        FROM orders o
-        JOIN users u ON o.user_id = u.id
-        WHERE o.status IN {PAID_STATUSES_SQL}
-          AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = {ph})
-          AND o.created_at < {ph}
-        ORDER BY o.created_at DESC
-    """, ('', STRIPE_CUTOFF)).fetchall()
-
-    # Abandoned: never paid, older than 24h
-    abandoned = c.execute(f"""
-        SELECT o.id, o.order_number, o.status, o.total, o.created_at,
-               o.stripe_session_id, u.full_name, u.email
-        FROM orders o
-        JOIN users u ON o.user_id = u.id
-        WHERE o.status IN ('pending', 'pending_payment')
-          AND o.created_at < {cutoff_24h}
-        ORDER BY o.created_at DESC
-    """).fetchall()
-
-    # Mismatch: has Stripe intent but stuck pending
-    mismatch = c.execute(f"""
-        SELECT o.id, o.order_number, o.status, o.total, o.created_at,
-               o.stripe_payment_intent, o.stripe_session_id,
-               u.full_name, u.email
-        FROM orders o
-        JOIN users u ON o.user_id = u.id
-        WHERE o.status IN ('pending', 'pending_payment')
-          AND o.stripe_payment_intent IS NOT NULL
-          AND o.stripe_payment_intent != {ph}
-        ORDER BY o.created_at DESC
-    """, ('',)).fetchall()
-
-    # Summary (Stripe era only)
-    summary = c.execute(f"""
-        SELECT COUNT(*) as total_orders,
-               COALESCE(SUM(total), 0) as total_revenue,
-               SUM(CASE WHEN stripe_payment_intent IS NOT NULL
-                         AND stripe_payment_intent != {ph}
-                         THEN 1 ELSE 0 END) as with_stripe_proof,
-               SUM(CASE WHEN stripe_payment_intent IS NULL
-                         OR stripe_payment_intent = {ph}
-                         THEN 1 ELSE 0 END) as without_stripe_proof
-        FROM orders WHERE status IN {PAID_STATUSES_SQL}
-        AND created_at >= {ph}
-    """, ('', '', STRIPE_CUTOFF)).fetchone()
-
-    conn.close()
-
-    return jsonify({
-        'stripe_cutoff_date': STRIPE_CUTOFF,
-        'summary': {
-            'total_paid_orders': summary['total_orders'] or 0,
-            'total_revenue': float(summary['total_revenue'] or 0),
-            'with_stripe_proof': summary['with_stripe_proof'] or 0,
-            'without_stripe_proof': summary['without_stripe_proof'] or 0,
-        },
-        'suspicious': [dict(r) for r in suspicious],
-        'pre_stripe': [dict(r) for r in pre_stripe],
-        'abandoned': [dict(r) for r in abandoned],
-        'mismatch': [dict(r) for r in mismatch],
-    })
-
-
-@app.route('/api/admin/payment-audit/fix-mismatch/<int:order_id>', methods=['POST'])
-@admin_required
-def fix_mismatch_order(order_id):
-    """Mark a mismatch order (has Stripe intent but stuck pending) as paid."""
-    conn = get_db()
-    c = conn.cursor()
-    order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
-    if not order:
-        conn.close()
-        return jsonify({'error': 'Order not found'}), 404
-    order = dict(order)
-    if order['status'] not in ('pending', 'pending_payment'):
-        conn.close()
-        return jsonify({'error': f"Order is already {order['status']}"}), 400
-    if not order.get('stripe_payment_intent'):
-        conn.close()
-        return jsonify({'error': 'No Stripe payment intent on this order — cannot auto-fix'}), 400
-
-    c.execute('''UPDATE orders SET status = 'paid', paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP),
-                 updated_at = CURRENT_TIMESTAMP WHERE id = ?''', (order_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({'success': True, 'message': f"Order {order['order_number']} marked as paid"})
-
-
-@app.route('/api/admin/payment-audit/cancel-abandoned/<int:order_id>', methods=['POST'])
-@admin_required
-def cancel_abandoned_order(order_id):
-    """Cancel an abandoned (never-paid) order and restore its inventory."""
-    conn = get_db()
-    c = conn.cursor()
-    order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
-    if not order:
-        conn.close()
-        return jsonify({'error': 'Order not found'}), 404
-    if dict(order)['status'] not in ('pending', 'pending_payment'):
-        conn.close()
-        return jsonify({'error': 'Order is not in a pending state'}), 400
-
-    # Restore inventory
-    items = c.execute('SELECT product_id, quantity FROM order_items WHERE order_id = ?', (order_id,)).fetchall()
-    for item in items:
-        c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (item['quantity'], item['product_id']))
-
-    c.execute('''UPDATE orders SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-                 WHERE id = ?''', (order_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({'success': True, 'message': 'Order cancelled and inventory restored'})
-
-
-@app.route('/api/admin/payment-audit/export-csv', methods=['GET'])
-@admin_required
-def export_suspicious_csv():
-    """
-    Export post-Stripe suspicious orders (no payment intent) as CSV
-    for cross-referencing against Venmo/payment statements.
-    """
-    import csv
-    from io import StringIO
-
-    STRIPE_CUTOFF = '2026-02-17'
-    conn = get_db()
-    c = conn.cursor()
-    pg = is_postgres()
-    ph = "%s" if pg else "?"
-
-    rows = c.execute(f"""
-        SELECT
-            o.order_number,
-            o.created_at,
-            o.status,
-            u.full_name,
-            u.email,
-            o.subtotal,
-            o.discount_amount,
-            o.shipping_cost,
-            o.sales_tax,
-            o.total,
-            o.shipping_address,
-            o.notes
-        FROM orders o
-        JOIN users u ON o.user_id = u.id
-        WHERE o.status IN {PAID_STATUSES_SQL}
-          AND (o.stripe_payment_intent IS NULL OR o.stripe_payment_intent = {ph})
-          AND o.created_at >= {ph}
-        ORDER BY o.created_at ASC
-    """, ('', STRIPE_CUTOFF)).fetchall()
-    conn.close()
-
-    si = StringIO()
-    writer = csv.writer(si)
-    writer.writerow([
-        'Order Number', 'Date', 'Status', 'Customer Name', 'Email',
-        'Subtotal', 'Discount', 'Shipping', 'Tax', 'Total',
-        'Shipping Address', 'Notes'
-    ])
-    for r in rows:
-        writer.writerow([
-            r['order_number'],
-            r['created_at'],
-            r['status'],
-            r['full_name'],
-            r['email'],
-            f"${float(r['subtotal'] or 0):.2f}",
-            f"${float(r['discount_amount'] or 0):.2f}",
-            f"${float(r['shipping_cost'] or 0):.2f}",
-            f"${float(r['sales_tax'] or 0):.2f}",
-            f"${float(r['total'] or 0):.2f}",
-            r['shipping_address'] or '',
-            r['notes'] or ''
-        ])
-
-    output = si.getvalue()
-    response = make_response(output)
-    response.headers['Content-Type'] = 'text/csv'
-    response.headers['Content-Disposition'] = f'attachment; filename=suspicious_orders_post_{STRIPE_CUTOFF}.csv'
-    return response
-
 
 @app.route('/api/admin/products', methods=['GET'])
 @admin_required
@@ -3159,7 +2905,7 @@ def admin_financial_report():
             COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected,
             COALESCE(SUM(o.processing_fee), 0) as processing_fees_collected
         FROM orders o
-        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+        WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
     '''
     orders = conn.execute(orders_query).fetchone()
@@ -3170,7 +2916,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+        WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
     '''
     cogs = conn.execute(cogs_query).fetchone()
@@ -3190,7 +2936,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+        WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
         GROUP BY p.id, p.sku, p.name, p.category, p.cost, p.price_single
         ORDER BY gross_profit DESC
@@ -3208,7 +2954,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+        WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
         GROUP BY p.category
         ORDER BY gross_profit DESC
@@ -3280,7 +3026,7 @@ def admin_profitability_report():
             COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected,
             COALESCE(SUM(o.processing_fee), 0) as processing_fees_collected
         FROM orders o
-        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+        WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
     '''
     orders = conn.execute(orders_query).fetchone()
@@ -3291,7 +3037,7 @@ def admin_profitability_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+        WHERE o.status NOT IN ('cancelled', 'refunded')
         AND {date_filter}
     '''
     cogs = conn.execute(cogs_query).fetchone()
@@ -3331,7 +3077,7 @@ def admin_profitability_report():
             SELECT COUNT(DISTINCT oi.product_id) as unique_products
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.id
-            WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+            WHERE o.status NOT IN ('cancelled', 'refunded')
             AND {date_filter}
         '''
         unique_result = conn.execute(unique_query).fetchone()
@@ -3745,8 +3491,8 @@ def admin_add_code():
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent,free_shipping,monthly_minimum) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('free_shipping') else 0, data.get('monthly_minimum', 0)))
+        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent) VALUES (?,?,?,?,?,?,?,?,?)',
+                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20)))
         conn.commit()
         cid = c.lastrowid
         conn.close()
@@ -3760,8 +3506,8 @@ def admin_add_code():
 def admin_update_code(cid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=?,free_shipping=?,monthly_minimum=? WHERE id=?',
-                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('free_shipping') else 0, data.get('monthly_minimum', 0), cid))
+    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=? WHERE id=?',
+                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), cid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Code updated'})
@@ -3795,113 +3541,6 @@ def admin_permanent_delete_code(cid):
     conn.commit()
     conn.close()
     return jsonify({'message': 'Discount code permanently deleted'})
-
-
-@app.route('/api/admin/discount-codes/check-minimums', methods=['POST'])
-@admin_required
-def check_code_minimums():
-    """
-    Check all active discount codes that have a monthly_minimum set.
-    If the code's total sales in the PRIOR calendar month are below the minimum,
-    deactivate it and record why.
-
-    Safe to run manually any time. Designed to be called on the 1st of each month.
-    Returns a report of what was checked and what was deactivated.
-    """
-    conn = get_db()
-    c = conn.cursor()
-    pg = is_postgres()
-
-    # Date range for PRIOR calendar month
-    if pg:
-        prior_start = "DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')"
-        prior_end   = "DATE_TRUNC('month', CURRENT_DATE)"
-        month_label_sql = "TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'Month YYYY')"
-        month_label = c.execute(f"SELECT {month_label_sql} as m").fetchone()['m'].strip()
-    else:
-        prior_start = "date('now','start of month','-1 month')"
-        prior_end   = "date('now','start of month')"
-        from datetime import date
-        today = date.today()
-        # First day of prior month
-        if today.month == 1:
-            month_label = f"December {today.year - 1}"
-        else:
-            import calendar
-            month_label = f"{calendar.month_name[today.month - 1]} {today.year}"
-
-    # Get all active codes with a monthly minimum set
-    codes = c.execute('''
-        SELECT dc.*, u.full_name as referrer_name, u.email as referrer_email
-        FROM discount_codes dc
-        LEFT JOIN users u ON dc.referrer_user_id = u.id
-        WHERE dc.active = 1
-          AND dc.monthly_minimum > 0
-    ''').fetchall()
-
-    results = []
-    deactivated = []
-
-    for code in codes:
-        code = dict(code)
-        # Sum of order totals where this code was used in the prior month
-        if pg:
-            sales_row = c.execute(f'''
-                SELECT COALESCE(SUM(o.subtotal - o.discount_amount), 0) as net_sales
-                FROM orders o
-                WHERE o.discount_code_id = %s
-                  AND o.status IN {PAID_STATUSES_SQL}
-                  AND o.created_at >= {prior_start}
-                  AND o.created_at < {prior_end}
-            ''', (code['id'],)).fetchone()
-        else:
-            sales_row = c.execute(f'''
-                SELECT COALESCE(SUM(o.subtotal - o.discount_amount), 0) as net_sales
-                FROM orders o
-                WHERE o.discount_code_id = ?
-                  AND o.status IN {PAID_STATUSES_SQL}
-                  AND o.created_at >= {prior_start}
-                  AND o.created_at < {prior_end}
-            ''', (code['id'],)).fetchone()
-
-        net_sales = float(sales_row['net_sales'] or 0)
-        minimum = float(code['monthly_minimum'])
-        passed = net_sales >= minimum
-
-        result = {
-            'code': code['code'],
-            'id': code['id'],
-            'referrer_name': code.get('referrer_name') or 'N/A',
-            'referrer_email': code.get('referrer_email') or '',
-            'monthly_minimum': minimum,
-            'net_sales_prior_month': round(net_sales, 2),
-            'passed': passed,
-            'month_checked': month_label,
-            'action': 'no_change'
-        }
-
-        if not passed:
-            # Deactivate the code
-            if pg:
-                c.execute('UPDATE discount_codes SET active = 0, description = CONCAT(description, %s) WHERE id = %s',
-                          (f' [DEACTIVATED {month_label} - sales ${net_sales:.2f} below ${minimum:.2f} minimum]', code['id']))
-            else:
-                c.execute("UPDATE discount_codes SET active = 0, description = description || ? WHERE id = ?",
-                          (f' [DEACTIVATED {month_label} - sales ${net_sales:.2f} below ${minimum:.2f} minimum]', code['id']))
-            result['action'] = 'deactivated'
-            deactivated.append(result)
-
-        results.append(result)
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        'month_checked': month_label,
-        'codes_checked': len(results),
-        'codes_deactivated': len(deactivated),
-        'results': results
-    })
 
 @app.route('/api/admin/inventory-receipts', methods=['GET'])
 @admin_required
@@ -5989,19 +5628,20 @@ def add_po_item(po_id):
         conn.close()
         return jsonify({'error': 'Cannot modify a submitted PO - close it first to edit'}), 400
     
-    # Get product cost
+    # Get product default cost (use provided unit_cost if given, otherwise product.cost)
     product = c.execute('SELECT cost FROM products WHERE id = ?', (data['product_id'],)).fetchone()
-    unit_cost = dict(product)['cost'] if product else 0
+    default_cost = dict(product)['cost'] if product else 0
+    unit_cost = data.get('unit_cost', default_cost) if data.get('unit_cost') is not None else default_cost
     
     # Check if item already exists in PO
     existing = c.execute('SELECT id, quantity_ordered FROM purchase_order_items WHERE po_id = ? AND product_id = ?', 
                         (po_id, data['product_id'])).fetchone()
     
     if existing:
-        # Update quantity
+        # Update quantity and cost
         new_qty = dict(existing)['quantity_ordered'] + data.get('quantity', 1)
-        c.execute('UPDATE purchase_order_items SET quantity_ordered = ? WHERE id = ?', 
-                 (new_qty, dict(existing)['id']))
+        c.execute('UPDATE purchase_order_items SET quantity_ordered = ?, unit_cost = ? WHERE id = ?', 
+                 (new_qty, unit_cost, dict(existing)['id']))
     else:
         c.execute('''INSERT INTO purchase_order_items (po_id, product_id, quantity_ordered, unit_cost) 
                      VALUES (?, ?, ?, ?)''',
@@ -6016,7 +5656,7 @@ def add_po_item(po_id):
 @app.route('/api/admin/po/<int:po_id>/items/<int:item_id>', methods=['PUT'])
 @admin_required
 def update_po_item(po_id, item_id):
-    """Update PO item quantity"""
+    """Update PO item quantity and/or unit cost"""
     data = request.json
     
     conn = get_db()
@@ -6026,8 +5666,21 @@ def update_po_item(po_id, item_id):
         # Delete item if quantity is 0
         c.execute('DELETE FROM purchase_order_items WHERE id = ? AND po_id = ?', (item_id, po_id))
     else:
-        c.execute('UPDATE purchase_order_items SET quantity_ordered = ? WHERE id = ? AND po_id = ?',
-                 (data['quantity_ordered'], item_id, po_id))
+        # Build update dynamically based on what's provided
+        updates = []
+        values = []
+        
+        if 'quantity_ordered' in data:
+            updates.append('quantity_ordered = ?')
+            values.append(data['quantity_ordered'])
+        
+        if 'unit_cost' in data:
+            updates.append('unit_cost = ?')
+            values.append(data['unit_cost'])
+        
+        if updates:
+            values.extend([item_id, po_id])
+            c.execute(f'UPDATE purchase_order_items SET {", ".join(updates)} WHERE id = ? AND po_id = ?', values)
     
     conn.commit()
     conn.close()

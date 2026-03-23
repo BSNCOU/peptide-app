@@ -126,7 +126,6 @@
                 <button onclick="showTab('notifications')">Notifications</button>
                 <button onclick="showTab('todos')">✅ To-Do</button>
                 <button onclick="showTab('settings')">⚙️ Settings</button>
-                <button onclick="showTab('paymentAudit')" style="background:#fff3cd;color:#856404;border-color:#ffc107;">🔍 Payment Audit</button>
             </div>
             <div id="tabContent"></div>
         </div>
@@ -246,7 +245,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','readyToShip','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','settings','paymentAudit'];
+            const tabList = ['products','inventory','orders','openOrders','readyToShip','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','settings'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -264,7 +263,6 @@
                 case 'notifications': loadNotifications(); break;
                 case 'todos': loadTodos(); break;
                 case 'settings': loadSettings(); break;
-                case 'paymentAudit': loadPaymentAudit(); break;
             }
         }
 
@@ -1792,7 +1790,6 @@ BC10,8.00</pre>
                     <button class="btn" onclick="showAddDiscountModal()">+ Add Discount Code</button>
                     <button class="btn btn-secondary" onclick="showDiscountReportModal()">📊 Date Range Report</button>
                     <button class="btn btn-secondary" onclick="showReferralReportModal()">👥 Referral Report</button>
-                    <button class="btn btn-secondary" onclick="runCheckMinimums()" style="background:#ed8936;color:white;" title="Check all codes with monthly minimums and deactivate any that didn't hit their target last month">📋 Check Monthly Minimums</button>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
@@ -1801,7 +1798,6 @@ BC10,8.00</pre>
                                 <th>Code</th>
                                 <th>Description</th>
                                 <th>Discount</th>
-                                <th>Perks</th>
                                 <th>Referrer</th>
                                 <th>Usage</th>
                                 <th>Status</th>
@@ -1814,11 +1810,6 @@ BC10,8.00</pre>
                                     <td><strong>${d.code}</strong></td>
                                     <td>${d.description || '-'}</td>
                                     <td>${d.discount_percent > 0 ? d.discount_percent + '%' : '$' + parseFloat(d.discount_amount || 0).toFixed(2)}</td>
-                                    <td>
-                                        ${d.free_shipping ? '<span style="background:#ebf8ff;color:#2b6cb0;padding:2px 7px;border-radius:10px;font-size:0.75rem;">🚚 Free Ship</span>' : ''}
-                                        ${d.monthly_minimum > 0 ? '<br><small style="color:#718096;">Min $' + parseFloat(d.monthly_minimum).toFixed(0) + '/mo</small>' : ''}
-                                        ${!d.free_shipping && !d.monthly_minimum ? '<span style="color:#a0aec0;">-</span>' : ''}
-                                    </td>
                                     <td>${d.referrer_name ? '<span style="color: #2b6cb0;">' + d.referrer_name + '</span><br><small style="color: #718096;">' + (d.commission_percent || 20) + '% commission</small>' : '<span style="color: #a0aec0;">-</span>'}</td>
                                     <td>${d.times_used || 0}${d.usage_limit ? ' / ' + d.usage_limit : ''}</td>
                                     <td>${d.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
@@ -2028,23 +2019,6 @@ BC10,8.00</pre>
                                     </div>
                                 </div>
                             </div>
-                            <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; margin-top: 15px;">
-                                <h4 style="margin-bottom: 10px; color: #2b6cb0;">🚚 Shipping & Minimums</h4>
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                                            <input type="checkbox" id="discFreeShipping" style="width:18px;height:18px;">
-                                            Free Shipping on all orders with this code
-                                        </label>
-                                        <small style="color:#718096;">Customer pays $0 shipping regardless of order size</small>
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Monthly Minimum Sales ($)</label>
-                                        <input type="number" id="discMonthlyMin" step="0.01" value="0" min="0">
-                                        <small style="color:#718096;">Code deactivates if prior month sales fall below this. Set 0 for no minimum.</small>
-                                    </div>
-                                </div>
-                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Add Code</button>
@@ -2068,9 +2042,7 @@ BC10,8.00</pre>
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
                         usage_limit: parseInt(document.getElementById('discLimit').value) || null,
                         referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
-                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20,
-                        free_shipping: document.getElementById('discFreeShipping').checked ? 1 : 0,
-                        monthly_minimum: parseFloat(document.getElementById('discMonthlyMin').value) || 0
+                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
                     })
                 });
                 closeModal();
@@ -2140,23 +2112,6 @@ BC10,8.00</pre>
                                     </div>
                                 </div>
                             </div>
-                            <div style="background: #ebf8ff; padding: 15px; border-radius: 8px; margin-top: 15px;">
-                                <h4 style="margin-bottom: 10px; color: #2b6cb0;">🚚 Shipping & Minimums</h4>
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                                            <input type="checkbox" id="discFreeShipping" style="width:18px;height:18px;" ${d.free_shipping ? 'checked' : ''}>
-                                            Free Shipping on all orders with this code
-                                        </label>
-                                        <small style="color:#718096;">Customer pays $0 shipping regardless of order size</small>
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Monthly Minimum Sales ($)</label>
-                                        <input type="number" id="discMonthlyMin" step="0.01" value="${d.monthly_minimum || 0}" min="0">
-                                        <small style="color:#718096;">Code deactivates if prior month sales fall below this. Set 0 for no minimum.</small>
-                                    </div>
-                                </div>
-                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Save Changes</button>
@@ -2180,9 +2135,7 @@ BC10,8.00</pre>
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
                         usage_limit: parseInt(document.getElementById('discLimit').value) || null,
                         referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
-                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20,
-                        free_shipping: document.getElementById('discFreeShipping').checked ? 1 : 0,
-                        monthly_minimum: parseFloat(document.getElementById('discMonthlyMin').value) || 0
+                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
                     })
                 });
                 closeModal();
@@ -4200,6 +4153,7 @@ The Peptide Wizard Team"></textarea>
                                             <th>Product</th>
                                             <th>Stock</th>
                                             <th>Order Qty</th>
+                                            <th>Unit Cost</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -4210,6 +4164,7 @@ The Peptide Wizard Team"></textarea>
                                                 <td>${escapeHtml(item.name)}</td>
                                                 <td style="color: ${item.stock <= 5 ? '#e53e3e' : '#d69e2e'}; font-weight: 600;">${item.stock}</td>
                                                 <td><input type="number" class="low-stock-qty" data-id="${item.id}" value="${item.reorder_qty || 10}" min="1" style="width: 70px; padding: 5px;"></td>
+                                                <td><input type="number" class="low-stock-cost" data-id="${item.id}" value="${parseFloat(item.cost || 0).toFixed(2)}" step="0.01" min="0" style="width: 80px; padding: 5px;"></td>
                                             </tr>
                                         `).join('')}
                                     </tbody>
@@ -4245,7 +4200,8 @@ The Peptide Wizard Team"></textarea>
                 document.querySelectorAll('.low-stock-check:checked').forEach(cb => {
                     const id = cb.dataset.id;
                     const qty = document.querySelector(`.low-stock-qty[data-id="${id}"]`).value;
-                    items.push({ product_id: parseInt(id), quantity: parseInt(qty) });
+                    const cost = document.querySelector(`.low-stock-cost[data-id="${id}"]`).value;
+                    items.push({ product_id: parseInt(id), quantity: parseInt(qty), unit_cost: parseFloat(cost) });
                 });
                 
                 for (const item of items) {
@@ -4288,14 +4244,19 @@ The Peptide Wizard Team"></textarea>
                             ${isEditable ? `
                                 <div style="margin-bottom: 20px; padding: 15px; background: #f7fafc; border-radius: 8px;">
                                     <strong>Add Item:</strong>
-                                    <div style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
-                                        <select id="addPoProductId" style="flex: 1; min-width: 200px; padding: 8px;">
+                                    <div style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; align-items: center;">
+                                        <select id="addPoProductId" style="flex: 1; min-width: 200px; padding: 8px;" onchange="updatePoDefaultCost()">
                                             <option value="">Select product...</option>
-                                            ${state.products.filter(p => p.active).map(p => `<option value="${p.id}">${p.sku} - ${p.name}</option>`).join('')}
+                                            ${state.products.filter(p => p.active).map(p => `<option value="${p.id}" data-cost="${p.cost || 0}">${p.sku} - ${p.name}</option>`).join('')}
                                         </select>
-                                        <input type="number" id="addPoQty" value="10" min="1" style="width: 80px; padding: 8px;" placeholder="Qty">
+                                        <input type="number" id="addPoQty" value="10" min="1" style="width: 70px; padding: 8px;" placeholder="Qty">
+                                        <div style="display: flex; align-items: center; gap: 3px;">
+                                            <span style="color: #718096;">$</span>
+                                            <input type="number" id="addPoCost" value="" step="0.01" min="0" style="width: 80px; padding: 8px;" placeholder="Cost">
+                                        </div>
                                         <button class="btn btn-success" onclick="addItemToPO(${po.id})">+ Add</button>
                                     </div>
+                                    <small style="color: #718096; margin-top: 5px; display: block;">Unit cost auto-fills from product default but can be changed for this PO</small>
                                 </div>
                             ` : ''}
                             
@@ -4329,7 +4290,7 @@ The Peptide Wizard Team"></textarea>
                                                     <td style="color: #718096;">${packSize}/pack</td>
                                                     <td><strong>${totalUnits}</strong></td>
                                                     <td>${i.quantity_received} packs (${receivedUnits} units)</td>
-                                                    <td>$${parseFloat(i.unit_cost || 0).toFixed(2)}</td>
+                                                    <td>${isEditable ? `<input type="number" value="${parseFloat(i.unit_cost || 0).toFixed(2)}" step="0.01" min="0" style="width: 70px;" onchange="updatePOItemCost(${po.id}, ${i.id}, this.value)">` : '$' + parseFloat(i.unit_cost || 0).toFixed(2)}</td>
                                                     <td>$${lineCost.toFixed(2)}</td>
                                                     ${isEditable ? `<td><button class="btn btn-danger btn-small" onclick="removePOItem(${po.id}, ${i.id})">✕</button></td>` : ''}
                                                 </tr>
@@ -4366,9 +4327,21 @@ The Peptide Wizard Team"></textarea>
             return colors[status] || '#718096';
         }
 
+        function updatePoDefaultCost() {
+            const select = document.getElementById('addPoProductId');
+            const costInput = document.getElementById('addPoCost');
+            if (select && costInput) {
+                const selectedOption = select.options[select.selectedIndex];
+                const defaultCost = selectedOption.dataset.cost || 0;
+                costInput.value = parseFloat(defaultCost).toFixed(2);
+            }
+        }
+
         async function addItemToPO(poId) {
             const productId = document.getElementById('addPoProductId').value;
             const qty = document.getElementById('addPoQty').value;
+            const costInput = document.getElementById('addPoCost');
+            const unitCost = costInput.value ? parseFloat(costInput.value) : null;
             
             if (!productId) {
                 showAlert('Please select a product');
@@ -4376,9 +4349,13 @@ The Peptide Wizard Team"></textarea>
             }
             
             try {
+                const payload = { product_id: parseInt(productId), quantity: parseInt(qty) };
+                if (unitCost !== null) {
+                    payload.unit_cost = unitCost;
+                }
                 await api(`/api/admin/po/${poId}/items`, {
                     method: 'POST',
-                    body: JSON.stringify({ product_id: parseInt(productId), quantity: parseInt(qty) })
+                    body: JSON.stringify(payload)
                 });
                 showPODetail(poId);
             } catch (err) {
@@ -4391,6 +4368,19 @@ The Peptide Wizard Team"></textarea>
                 await api(`/api/admin/po/${poId}/items/${itemId}`, {
                     method: 'PUT',
                     body: JSON.stringify({ quantity_ordered: parseInt(qty) })
+                });
+                // Always refresh to show updated totals
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function updatePOItemCost(poId, itemId, cost) {
+            try {
+                await api(`/api/admin/po/${poId}/items/${itemId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ unit_cost: parseFloat(cost) })
                 });
                 // Always refresh to show updated totals
                 showPODetail(poId);
@@ -5704,220 +5694,6 @@ The Peptide Wizard Team"></textarea>
         }
 
         init();
-
-        // ============================================================
-        // PAYMENT AUDIT
-        // ============================================================
-        async function loadPaymentAudit() {
-            const container = document.getElementById('tabContent');
-            container.innerHTML = `<div style="padding:20px"><h2>🔍 Payment Audit</h2><p style="color:#718096">Loading audit data...</p></div>`;
-            try {
-                const data = await api('/api/admin/payment-audit');
-                renderPaymentAudit(data);
-            } catch(e) {
-                container.innerHTML = `<div style="padding:20px"><p style="color:red">Failed to load audit: ${e.message}</p></div>`;
-            }
-        }
-
-        function renderPaymentAudit(data) {
-            const s = data.summary;
-            const proofPct = s.total_paid_orders > 0 ? Math.round(s.with_stripe_proof / s.total_paid_orders * 100) : 0;
-            const susTotal = data.suspicious.reduce((a,o) => a + parseFloat(o.total||0), 0);
-            const misTotal = data.mismatch.reduce((a,o) => a + parseFloat(o.total||0), 0);
-            const preStripeTotal = (data.pre_stripe||[]).reduce((a,o) => a + parseFloat(o.total||0), 0);
-
-            const html = `
-            <div style="padding:20px;max-width:1100px">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-                    <h2 style="margin:0">🔍 Payment Audit</h2>
-                    <div style="display:flex;gap:10px">
-                        <a href="/api/admin/payment-audit/export-csv" style="padding:8px 16px;background:#38a169;color:white;border:none;border-radius:6px;cursor:pointer;text-decoration:none;font-size:0.9rem">⬇ Export CSV</a>
-                        <button onclick="loadPaymentAudit()" style="padding:8px 16px;background:#4299e1;color:white;border:none;border-radius:6px;cursor:pointer">↻ Refresh</button>
-                    </div>
-                </div>
-                <p style="color:#718096;font-size:0.85rem;margin-bottom:20px">
-                    Showing orders <strong>after Feb 17, 2026</strong> (Stripe launch date).
-                    ${data.pre_stripe && data.pre_stripe.length > 0 ? `<span style="color:#805ad5">${data.pre_stripe.length} pre-Stripe orders (${preStripeTotal.toFixed(2)}) excluded — those were Venmo era.</span>` : ''}
-                </p>
-
-                <!-- Summary Cards -->
-                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-bottom:25px">
-                    <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:15px;text-align:center">
-                        <div style="font-size:1.8rem;font-weight:700;color:#276749">${s.total_paid_orders}</div>
-                        <div style="color:#276749;font-size:0.85rem">Total Paid Orders</div>
-                        <div style="color:#38a169;font-size:1rem;font-weight:600;margin-top:4px">$${s.total_revenue.toFixed(2)}</div>
-                    </div>
-                    <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:15px;text-align:center">
-                        <div style="font-size:1.8rem;font-weight:700;color:#276749">${s.with_stripe_proof}</div>
-                        <div style="color:#276749;font-size:0.85rem">✅ Stripe Confirmed</div>
-                        <div style="color:#38a169;font-size:0.85rem;margin-top:4px">${proofPct}% of paid orders</div>
-                    </div>
-                    <div style="background:${data.suspicious.length > 0 ? '#fff5f5' : '#f0fff4'};border:1px solid ${data.suspicious.length > 0 ? '#fc8181' : '#9ae6b4'};border-radius:8px;padding:15px;text-align:center">
-                        <div style="font-size:1.8rem;font-weight:700;color:${data.suspicious.length > 0 ? '#c53030' : '#276749'}">${data.suspicious.length}</div>
-                        <div style="color:${data.suspicious.length > 0 ? '#c53030' : '#276749'};font-size:0.85rem">⚠️ Suspicious (no proof)</div>
-                        <div style="font-size:0.85rem;margin-top:4px;color:#718096">$${susTotal.toFixed(2)} at risk</div>
-                    </div>
-                    <div style="background:${data.mismatch.length > 0 ? '#fffbeb' : '#f0fff4'};border:1px solid ${data.mismatch.length > 0 ? '#f6ad55' : '#9ae6b4'};border-radius:8px;padding:15px;text-align:center">
-                        <div style="font-size:1.8rem;font-weight:700;color:${data.mismatch.length > 0 ? '#c05621' : '#276749'}">${data.mismatch.length}</div>
-                        <div style="color:${data.mismatch.length > 0 ? '#c05621' : '#276749'};font-size:0.85rem">🔧 Needs Fix (stuck pending)</div>
-                        <div style="font-size:0.85rem;margin-top:4px;color:#718096">$${misTotal.toFixed(2)} recoverable</div>
-                    </div>
-                </div>
-
-                ${data.mismatch.length > 0 ? `
-                <!-- Mismatch: Has Stripe Intent but stuck pending -->
-                <div style="margin-bottom:30px">
-                    <h3 style="color:#c05621;margin-bottom:5px">🔧 Stuck Orders — Has Stripe Payment But Status Not Updated (${data.mismatch.length})</h3>
-                    <p style="color:#718096;font-size:0.85rem;margin-bottom:10px">These customers paid via Stripe but the webhook didn't fire properly. Safe to mark as paid.</p>
-                    <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
-                        <thead><tr style="background:#fffbeb">
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #f6ad55">Order #</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #f6ad55">Customer</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #f6ad55">Status</th>
-                            <th style="padding:8px;text-align:right;border-bottom:2px solid #f6ad55">Total</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #f6ad55">Date</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #f6ad55">Stripe Intent</th>
-                            <th style="padding:8px;border-bottom:2px solid #f6ad55">Action</th>
-                        </tr></thead>
-                        <tbody>
-                        ${data.mismatch.map(o => `
-                            <tr style="border-bottom:1px solid #fed7aa" id="mismatch-row-${o.id}">
-                                <td style="padding:8px;font-weight:600">${o.order_number}</td>
-                                <td style="padding:8px">${o.full_name}<br><span style="color:#718096;font-size:0.8rem">${o.email}</span></td>
-                                <td style="padding:8px"><span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px;font-size:0.8rem">${o.status}</span></td>
-                                <td style="padding:8px;text-align:right;font-weight:600">$${parseFloat(o.total||0).toFixed(2)}</td>
-                                <td style="padding:8px;font-size:0.8rem;color:#718096">${new Date(o.created_at).toLocaleDateString()}</td>
-                                <td style="padding:8px;font-size:0.75rem;color:#4299e1;font-family:monospace">${(o.stripe_payment_intent||'').substring(0,20)}...</td>
-                                <td style="padding:8px">
-                                    <button onclick="fixMismatch(${o.id})" style="padding:5px 12px;background:#38a169;color:white;border:none;border-radius:5px;cursor:pointer;font-size:0.8rem">✓ Mark Paid</button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                        </tbody>
-                    </table>
-                </div>` : ''}
-
-                ${data.suspicious.length > 0 ? `
-                <!-- Suspicious: Paid status but no Stripe proof -->
-                <div style="margin-bottom:30px">
-                    <h3 style="color:#c53030;margin-bottom:5px">⚠️ Suspicious Orders — Marked Paid But No Stripe Confirmation (${data.suspicious.length})</h3>
-                    <p style="color:#718096;font-size:0.85rem;margin-bottom:10px">These orders are counted as revenue but have no payment intent recorded. Could be manual status changes, test orders, or cash/comp orders. Review each one in Stripe dashboard to verify.</p>
-                    <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
-                        <thead><tr style="background:#fff5f5">
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #fc8181">Order #</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #fc8181">Customer</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #fc8181">Status</th>
-                            <th style="padding:8px;text-align:right;border-bottom:2px solid #fc8181">Total</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #fc8181">Created</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #fc8181">Paid At</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #fc8181">Session ID</th>
-                        </tr></thead>
-                        <tbody>
-                        ${data.suspicious.map(o => `
-                            <tr style="border-bottom:1px solid #fed7d7">
-                                <td style="padding:8px;font-weight:600">${o.order_number}</td>
-                                <td style="padding:8px">${o.full_name}<br><span style="color:#718096;font-size:0.8rem">${o.email}</span></td>
-                                <td style="padding:8px"><span style="background:#fed7d7;color:#c53030;padding:2px 8px;border-radius:10px;font-size:0.8rem">${o.status}</span></td>
-                                <td style="padding:8px;text-align:right;font-weight:600;color:#c53030">$${parseFloat(o.total||0).toFixed(2)}</td>
-                                <td style="padding:8px;font-size:0.8rem;color:#718096">${new Date(o.created_at).toLocaleDateString()}</td>
-                                <td style="padding:8px;font-size:0.8rem;color:#718096">${o.paid_at ? new Date(o.paid_at).toLocaleDateString() : '<span style="color:#e53e3e">Never</span>'}</td>
-                                <td style="padding:8px;font-size:0.75rem;color:#718096;font-family:monospace">${o.stripe_session_id ? o.stripe_session_id.substring(0,20)+'...' : '<span style="color:#e53e3e">None</span>'}</td>
-                            </tr>
-                        `).join('')}
-                        </tbody>
-                    </table>
-                    <p style="color:#718096;font-size:0.8rem;margin-top:8px">💡 To fix: go to your Stripe dashboard, search each order number, verify payment. If no payment found, manually cancel the order in All Orders tab.</p>
-                </div>` : ''}
-
-                <!-- Abandoned carts -->
-                <div style="margin-bottom:30px">
-                    <h3 style="color:#4a5568;margin-bottom:5px">🛒 Abandoned Orders — Never Paid (${data.abandoned.length})</h3>
-                    <p style="color:#718096;font-size:0.85rem;margin-bottom:10px">Customers started checkout but never paid. These are NOT counted as revenue. You can cancel them to clean up and restore inventory.</p>
-                    ${data.abandoned.length === 0 ? '<p style="color:#38a169">✅ No abandoned orders — books are clean!</p>' : `
-                    <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
-                        <thead><tr style="background:#f7fafc">
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #e2e8f0">Order #</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #e2e8f0">Customer</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #e2e8f0">Status</th>
-                            <th style="padding:8px;text-align:right;border-bottom:2px solid #e2e8f0">Total</th>
-                            <th style="padding:8px;text-align:left;border-bottom:2px solid #e2e8f0">Created</th>
-                            <th style="padding:8px;border-bottom:2px solid #e2e8f0">Action</th>
-                        </tr></thead>
-                        <tbody>
-                        ${data.abandoned.map(o => `
-                            <tr style="border-bottom:1px solid #e2e8f0" id="abandoned-row-${o.id}">
-                                <td style="padding:8px;font-weight:600">${o.order_number}</td>
-                                <td style="padding:8px">${o.full_name}<br><span style="color:#718096;font-size:0.8rem">${o.email}</span></td>
-                                <td style="padding:8px"><span style="background:#e2e8f0;color:#4a5568;padding:2px 8px;border-radius:10px;font-size:0.8rem">${o.status}</span></td>
-                                <td style="padding:8px;text-align:right">$${parseFloat(o.total||0).toFixed(2)}</td>
-                                <td style="padding:8px;font-size:0.8rem;color:#718096">${new Date(o.created_at).toLocaleDateString()}</td>
-                                <td style="padding:8px">
-                                    <button onclick="cancelAbandoned(${o.id})" style="padding:5px 12px;background:#718096;color:white;border:none;border-radius:5px;cursor:pointer;font-size:0.8rem">✕ Cancel & Restore Inv.</button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                        </tbody>
-                    </table>`}
-                </div>
-
-                ${data.suspicious.length === 0 && data.mismatch.length === 0 ? `
-                <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:20px;text-align:center">
-                    <div style="font-size:2rem">✅</div>
-                    <div style="color:#276749;font-weight:600;margin-top:8px">All paid orders have Stripe confirmation — books look clean!</div>
-                </div>` : ''}
-            </div>`;
-
-            document.getElementById('tabContent').innerHTML = html;
-        }
-
-        async function fixMismatch(orderId) {
-            if (!confirm('Mark this order as paid? Only do this if you verified payment in Stripe.')) return;
-            try {
-                await api(`/api/admin/payment-audit/fix-mismatch/${orderId}`, { method: 'POST' });
-                document.getElementById(`mismatch-row-${orderId}`).style.opacity = '0.4';
-                document.getElementById(`mismatch-row-${orderId}`).innerHTML += '<td colspan="7" style="text-align:center;color:#38a169;font-weight:600">✅ Marked as Paid</td>';
-                showAlert('Order marked as paid', 'success');
-            } catch(e) {
-                showAlert(e.message);
-            }
-        }
-
-        async function cancelAbandoned(orderId) {
-            if (!confirm('Cancel this order and restore inventory? This cannot be undone.')) return;
-            try {
-                await api(`/api/admin/payment-audit/cancel-abandoned/${orderId}`, { method: 'POST' });
-                const row = document.getElementById(`abandoned-row-${orderId}`);
-                if (row) row.style.display = 'none';
-                showAlert('Order cancelled, inventory restored', 'success');
-            } catch(e) {
-                showAlert(e.message);
-            }
-        }
-
-
-        async function runCheckMinimums() {
-            const month = new Date();
-            month.setMonth(month.getMonth() - 1);
-            const monthName = month.toLocaleString('default', { month: 'long', year: 'numeric' });
-            if (!confirm(`This will check all codes with monthly minimums against ${monthName} sales and DEACTIVATE any that didn't hit their target. Continue?`)) return;
-            try {
-                const result = await api('/api/admin/discount-codes/check-minimums', { method: 'POST' });
-                let msg = `✅ Checked ${result.codes_checked} code(s) for ${result.month_checked}.\n`;
-                if (result.codes_deactivated === 0) {
-                    msg += 'All codes met their monthly minimums — nothing deactivated.';
-                } else {
-                    msg += `⚠️ ${result.codes_deactivated} code(s) deactivated:\n`;
-                    result.results.filter(r => r.action === 'deactivated').forEach(r => {
-                        msg += `  • ${r.code} (${r.referrer_name}) — $${r.net_sales_prior_month.toFixed(2)} vs $${r.monthly_minimum.toFixed(2)} minimum\n`;
-                    });
-                }
-                alert(msg);
-                loadDiscounts();
-            } catch(e) {
-                showAlert('Failed to run check: ' + e.message);
-            }
-        }
-
     </script>
 </body>
 </html>
