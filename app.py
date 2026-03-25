@@ -14,6 +14,8 @@ from io import BytesIO
 import sqlite3
 import stripe
 import json
+import threading
+import time as time_module
 
 # Initialize Stripe
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
@@ -713,6 +715,22 @@ def init_db():
     except Exception as e:
         print(f"Note: Referral transactions table: {e}")
     
+    # Cart abandonment tracking table
+    try:
+        c.execute(f'''CREATE TABLE IF NOT EXISTS saved_carts (
+            id {auto_id},
+            user_id INTEGER NOT NULL,
+            cart_json TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reminder_sent_at TIMESTAMP,
+            reminder_count INTEGER DEFAULT 0,
+            converted INTEGER DEFAULT 0,
+            UNIQUE(user_id)
+        )''')
+        conn.commit()
+    except Exception as e:
+        print(f"Note: saved_carts table: {e}")
+
     # Mobile Admin PIN table
     try:
         c.execute(f'''CREATE TABLE IF NOT EXISTS admin_pins (
@@ -1108,8 +1126,8 @@ def send_order_confirmation(order_id):
         ok, msg = send_sms(order['phone'], sms)
         log_notification(order['user_id'], order_id, 'order_confirmation', 'sms', order['phone'], 'sent' if ok else 'failed', None if ok else msg)
     
-    # Send notification to admin
-    send_new_order_admin_notification(order, items)
+    # NOTE: Admin "New Order" notification is intentionally NOT sent here.
+    # It fires only after Stripe confirms payment (in stripe_webhook -> checkout.session.completed).
 
 def send_new_order_admin_notification(order, items):
     """Send new order notification to admin email"""
@@ -2048,8 +2066,141 @@ def validate_discount():
     })
 
 # ============================================
+# CART ABANDONMENT - SAVE & REMIND
+# ============================================
+
+def send_cart_abandonment_email(user_id, cart_items):
+    """Send a reminder email to a user who left items in their cart."""
+    conn = get_db()
+    user = conn.execute('SELECT full_name, email FROM users WHERE id=?', (user_id,)).fetchone()
+    conn.close()
+    if not user or not user['email']:
+        return False
+
+    items_html = "".join([
+        f"<tr><td style='padding:8px;border-bottom:1px solid #eee;'>{i.get('name','Item')}</td>"
+        f"<td style='padding:8px;border-bottom:1px solid #eee;text-align:center;'>{i.get('quantity',1)}</td>"
+        f"<td style='padding:8px;border-bottom:1px solid #eee;text-align:right;'>${float(i.get('price',0)):.2f}</td></tr>"
+        for i in cart_items
+    ])
+
+    cart_url = CONFIG.get('APP_URL', 'https://thepeptidewizard.com')
+
+    html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px;background:#f9f9f9;">
+    <div style="background:white;padding:30px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1);">
+        <h2 style="color:#1a1a1a;">You left something behind, {user['full_name'].split()[0]}! 🧬</h2>
+        <p style="color:#555;">You had items in your cart at The Peptide Wizard. Your research is waiting — come back and complete your order.</p>
+        <table style="width:100%;border-collapse:collapse;margin:20px 0;">
+            <tr style="background:#333;color:white;">
+                <th style="padding:10px;text-align:left;">Product</th>
+                <th style="padding:10px;text-align:center;">Qty</th>
+                <th style="padding:10px;text-align:right;">Price</th>
+            </tr>
+            {items_html}
+        </table>
+        <div style="text-align:center;margin:30px 0;">
+            <a href="{cart_url}" style="background:#3b82f6;color:white;padding:14px 32px;border-radius:8px;
+               text-decoration:none;display:inline-block;font-weight:600;font-size:16px;">
+               Complete My Order →
+            </a>
+        </div>
+        <p style="color:#999;font-size:12px;text-align:center;">
+            All materials are for laboratory research purposes only. Not for human or animal consumption.
+        </p>
+    </div>
+    </body></html>"""
+
+    ok, msg = send_email(user['email'], "Your Peptide Wizard cart is waiting 🧬", html)
+    print(f"[CART ABANDON] Reminder sent to {user['email']} - {'OK' if ok else msg}")
+    return ok
+
+
+def cart_abandonment_worker():
+    """Background thread: every 30 min, find carts idle 1+ hour with no completed order, send one reminder."""
+    print("[CART ABANDON] Background worker started")
+    while True:
+        time_module.sleep(1800)  # check every 30 minutes
+        try:
+            conn = get_db()
+            # Find carts: updated more than 1 hour ago, reminder not yet sent (or last sent > 24h ago), not converted
+            cutoff = datetime.now() - timedelta(hours=1)
+            resend_cutoff = datetime.now() - timedelta(hours=24)
+            rows = conn.execute('''
+                SELECT sc.user_id, sc.cart_json, sc.reminder_count
+                FROM saved_carts sc
+                WHERE sc.converted = 0
+                  AND sc.updated_at <= ?
+                  AND (sc.reminder_sent_at IS NULL OR sc.reminder_sent_at <= ?)
+                  AND sc.reminder_count < 2
+            ''', (cutoff, resend_cutoff)).fetchall()
+
+            for row in rows:
+                try:
+                    cart_items = json.loads(row['cart_json'])
+                    if not cart_items:
+                        continue
+                    # Make sure user hasn't placed a real paid order since
+                    recent_paid = conn.execute(
+                        "SELECT id FROM orders WHERE user_id=? AND status IN ('paid','processing','shipped','delivered','fulfilled') AND created_at > ?",
+                        (row['user_id'], cutoff)
+                    ).fetchone()
+                    if recent_paid:
+                        conn.execute('UPDATE saved_carts SET converted=1 WHERE user_id=?', (row['user_id'],))
+                        conn.commit()
+                        continue
+                    ok = send_cart_abandonment_email(row['user_id'], cart_items)
+                    if ok:
+                        conn.execute('''UPDATE saved_carts
+                                        SET reminder_sent_at=CURRENT_TIMESTAMP,
+                                            reminder_count=reminder_count+1
+                                        WHERE user_id=?''', (row['user_id'],))
+                        conn.commit()
+                except Exception as e:
+                    print(f"[CART ABANDON] Error processing user {row['user_id']}: {e}")
+
+            conn.close()
+        except Exception as e:
+            print(f"[CART ABANDON] Worker error: {e}")
+
+
+@app.route('/api/cart/save', methods=['POST'])
+@login_required
+def save_cart():
+    """Save current cart state for abandonment tracking."""
+    data = request.json or {}
+    items = data.get('items', [])
+    conn = get_db()
+    if items:
+        conn.execute('''INSERT INTO saved_carts (user_id, cart_json, updated_at, reminder_sent_at, reminder_count, converted)
+                        VALUES (?, ?, CURRENT_TIMESTAMP, NULL, 0, 0)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                            cart_json=excluded.cart_json,
+                            updated_at=CURRENT_TIMESTAMP,
+                            converted=0''',
+                     (session['user_id'], json.dumps(items)))
+    else:
+        # Empty cart = clear the saved cart
+        conn.execute('DELETE FROM saved_carts WHERE user_id=?', (session['user_id'],))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/cart/clear', methods=['POST'])
+@login_required
+def clear_saved_cart():
+    """Mark cart as converted (order placed) — stops abandonment reminders."""
+    conn = get_db()
+    conn.execute('UPDATE saved_carts SET converted=1 WHERE user_id=?', (session['user_id'],))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+# ============================================
 # ROUTES - ORDERS
 # ============================================
+
 
 @app.route('/api/orders', methods=['POST'])
 @login_required
@@ -2243,6 +2394,15 @@ def create_order():
     send_order_confirmation(order_id)
     check_low_stock()
     
+    # Mark cart as converted so abandonment reminders stop
+    try:
+        conn2 = get_db()
+        conn2.execute('UPDATE saved_carts SET converted=1 WHERE user_id=?', (session['user_id'],))
+        conn2.commit()
+        conn2.close()
+    except Exception:
+        pass
+
     return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
 
 
@@ -2471,8 +2631,21 @@ def stripe_webhook():
             
             if order:
                 print(f"[STRIPE] Order {order['order_number']} marked as PAID")
-                # Send payment confirmation
+                # Send payment confirmation to customer
                 send_status_update(int(order_id), 'paid')
+                # Now send admin "New Order Received!" — payment is confirmed
+                order_dict = dict(order)
+                conn2 = get_db()
+                items_for_admin = [dict(i) for i in conn2.execute(
+                    'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
+                    (order_id,)).fetchall()]
+                user_info = conn2.execute('SELECT full_name,email,phone FROM users WHERE id=?', (order_dict['user_id'],)).fetchone()
+                conn2.close()
+                if user_info:
+                    order_dict['full_name'] = user_info['full_name']
+                    order_dict['email'] = user_info['email']
+                    order_dict['phone'] = user_info['phone']
+                send_new_order_admin_notification(order_dict, items_for_admin)
     
     elif event['type'] == 'payment_intent.payment_failed':
         session_obj = event['data']['object']
@@ -4720,125 +4893,6 @@ def import_tracking_csv():
         'errors': errors
     })
 
-@app.route('/api/admin/orders/<int:order_id>/local-fulfill', methods=['POST'])
-@admin_required
-def local_fulfill_order(order_id):
-    """Mark an order as fulfilled locally (pickup or delivery) — no tracking number needed"""
-    data = request.json or {}
-    method = data.get('method', 'pickup')  # 'pickup' or 'delivery'
-
-    if method not in ('pickup', 'delivery'):
-        return jsonify({'error': 'method must be pickup or delivery'}), 400
-
-    conn = get_db()
-    c = conn.cursor()
-
-    order = c.execute(
-        'SELECT o.*, u.email, u.full_name, u.phone FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?',
-        (order_id,)
-    ).fetchone()
-
-    if not order:
-        conn.close()
-        return jsonify({'error': 'Order not found'}), 404
-
-    order = dict(order)
-
-    fulfillment_note = 'Local Pickup - fulfilled in person' if method == 'pickup' else 'Local Delivery - delivered by owner'
-
-    # Update order status to shipped and record fulfillment note
-    existing_notes = order.get('notes') or ''
-    separator = '\n' if existing_notes else ''
-    new_notes = existing_notes + separator + fulfillment_note
-
-    c.execute(
-        "UPDATE orders SET status = 'shipped', notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (new_notes, order_id)
-    )
-    conn.commit()
-    conn.close()
-
-    # Send appropriate email
-    try:
-        send_local_fulfill_notification(order_id, method)
-    except Exception as e:
-        print(f"[ERROR] Failed to send local fulfill email for order {order_id}: {e}")
-
-    return jsonify({
-        'message': f'Order marked as {method} fulfilled',
-        'order_id': order_id,
-        'method': method
-    })
-
-
-def send_local_fulfill_notification(order_id, method):
-    """Send pickup-ready or out-for-delivery email to customer"""
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT o.*, u.full_name, u.email, u.phone FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?', (order_id,))
-    order = c.fetchone()
-    conn.close()
-
-    if not order:
-        return
-    order = dict(order)
-
-    if method == 'pickup':
-        subject = f"✅ Your Order is Ready for Pickup! - {order['order_number']}"
-        headline = "✅ Your Order is Ready for Pickup!"
-        body_line = "Your order is packed and ready. Stop by to pick it up at your convenience."
-        detail_label = "Pickup Location"
-        detail_value = "530 North St., Auburn IN 46706"
-        icon = "🏪"
-    else:
-        subject = f"🚗 Your Order is Out for Delivery! - {order['order_number']}"
-        headline = "🚗 Your Order is Out for Delivery!"
-        body_line = "Great news! Your order is on its way and will be delivered to you soon."
-        detail_label = "Delivery Address"
-        detail_value = order.get('shipping_address', 'On file').replace('\\n', ', ')
-        icon = "🚗"
-
-    html = f"""<html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-    <div style="background: linear-gradient(135deg, #1a365d 0%, #2b6cb0 100%); color: white; padding: 20px; text-align: center;">
-        <h1 style="margin: 0;">{headline}</h1>
-    </div>
-    <div style="padding: 30px; background: #f7fafc;">
-        <p style="font-size: 16px;">Hi {order['full_name']},</p>
-        <p>{body_line}</p>
-
-        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0;">
-            <p style="margin: 0 0 10px 0;"><strong>Order Number:</strong> {order['order_number']}</p>
-            <p style="margin: 0 0 5px 0;"><strong>{detail_label}:</strong></p>
-            <p style="font-size: 15px; background: #edf2f7; padding: 10px; border-radius: 4px; margin: 0;">{icon} {detail_value}</p>
-        </div>
-
-        <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 8px; margin-top: 20px;">
-            <strong>⚠️ Research Use Only</strong><br>
-            <span style="font-size: 13px;">All materials are for laboratory research purposes only. Not for human or animal consumption.</span>
-        </div>
-
-        <p style="color: #718096; font-size: 14px; margin-top: 30px;">
-            Thank you for your order!<br>
-            The Peptide Wizard Team
-        </p>
-    </div>
-    <div style="background: #1a202c; color: #a0aec0; padding: 15px; text-align: center; font-size: 12px;">
-        <p style="margin: 0;">© 2026 The Peptide Wizard™ | Operated by NH Chemicals LLC</p>
-    </div>
-    </body></html>"""
-
-    ok, msg = send_email(order['email'], subject, html)
-    ntype = 'local_pickup' if method == 'pickup' else 'local_delivery'
-    log_notification(order.get('user_id'), order_id, ntype, 'email', order['email'], 'sent' if ok else 'failed', None if ok else msg)
-
-    if order.get('phone'):
-        if method == 'pickup':
-            sms = f"Your order {order['order_number']} is ready for pickup at 530 North St., Auburn IN 46706!"
-        else:
-            sms = f"Your order {order['order_number']} is out for delivery and on its way to you!"
-        send_sms(order['phone'], sms)
-
-
 @app.route('/api/admin/orders/bulk-status', methods=['POST'])
 @admin_required  
 def bulk_update_order_status():
@@ -6197,6 +6251,11 @@ if __name__ == '__main__':
     init_db()
     if import_products():
         print("✓ Products imported (43 items)")
+
+    # Start cart abandonment reminder background worker
+    abandon_thread = threading.Thread(target=cart_abandonment_worker, daemon=True)
+    abandon_thread.start()
+    print("✓ Cart abandonment worker started")
     
     print("\n🌐 Customer: http://localhost:5000")
     print("🔧 Admin: http://localhost:5000/admin")
@@ -6214,4 +6273,13 @@ else:
     try:
         import_products()
     except Exception as e:
+        pass
+
+    # Start cart abandonment worker under gunicorn too
+    try:
+        _abandon_thread = threading.Thread(target=cart_abandonment_worker, daemon=True)
+        _abandon_thread.start()
+        print("[STARTUP] Cart abandonment worker started (gunicorn)")
+    except Exception as e:
+        print(f"[STARTUP] Cart abandonment worker failed: {e}")
         print(f"Product import error: {e}")

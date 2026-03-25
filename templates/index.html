@@ -166,7 +166,8 @@
             userCredit: 0,
             eligibleOrders: [],
             myReturns: [],
-            shippingCost: 20.00
+            shippingCost: 20.00,
+            freeShippingThreshold: 500.00
         };
 
         // API helpers
@@ -189,6 +190,18 @@
 
         function saveCart() {
             localStorage.setItem('cart', JSON.stringify(state.cart));
+            // Sync to server for cart abandonment tracking (only when logged in)
+            if (state.user) {
+                const items = state.cart.map(i => {
+                    const p = state.products.find(pr => pr.id === i.productId);
+                    return p ? { product_id: i.productId, name: p.name, quantity: i.qty, price: p.price_single } : null;
+                }).filter(Boolean);
+                fetch('/api/cart/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ items })
+                }).catch(() => {}); // silent fail - not critical
+            }
         }
         
         // Load Google Places API dynamically
@@ -229,6 +242,7 @@
             try {
                 const shippingRes = await api('/api/settings/shipping');
                 state.shippingCost = shippingRes.shipping_cost || 20.00;
+                state.freeShippingThreshold = shippingRes.free_shipping_threshold || 500.00;
                 state.salesTaxRate = shippingRes.sales_tax_rate || 7.00;
                 state.salesTaxEnabled = shippingRes.sales_tax_enabled !== false;
                 state.processingFeeRate = shippingRes.processing_fee_rate || 3.00;
@@ -1121,7 +1135,35 @@
         }
         
         function updateCheckoutTotal(subtotal, discountAmount) {
-            const shippingCost = state.shippingCost;
+            const netProductTotal = subtotal - discountAmount;
+            
+            // Free shipping if net total >= threshold
+            let shippingCost = state.shippingCost;
+            let freeShipping = false;
+            if (netProductTotal >= state.freeShippingThreshold) {
+                shippingCost = 0;
+                freeShipping = true;
+            }
+            
+            // Update shipping line display
+            const shippingLine = document.getElementById('shippingLine');
+            if (shippingLine) {
+                if (freeShipping) {
+                    shippingLine.innerHTML = `<span>Shipping:</span><span style="color: #38a169; font-weight: 600;">FREE!</span>`;
+                } else {
+                    const amountToFreeShipping = state.freeShippingThreshold - netProductTotal;
+                    shippingLine.innerHTML = `<span>Shipping:</span><span>$${shippingCost.toFixed(2)}</span>`;
+                    // Show hint if they're close to free shipping
+                    if (amountToFreeShipping <= 150 && amountToFreeShipping > 0) {
+                        const hint = document.getElementById('freeShippingHint');
+                        if (hint) {
+                            hint.textContent = `Add $${amountToFreeShipping.toFixed(0)} more for FREE shipping!`;
+                            hint.style.display = 'block';
+                        }
+                    }
+                }
+            }
+            
             const taxableAmount = subtotal - discountAmount;
             const salesTax = state.salesTaxEnabled ? (taxableAmount * (state.salesTaxRate / 100)) : 0;
             const processingFee = state.processingFeeEnabled ? (taxableAmount * (state.processingFeeRate / 100)) : 0;
@@ -1235,6 +1277,8 @@
                 state.discount = null;
                 state.referrerChoice = null;
                 saveCart();
+                // Tell server cart is converted - stops abandonment reminders
+                fetch('/api/cart/clear', { method: 'POST' }).catch(() => {});
                 
                 // Step 2: Create Stripe checkout session and redirect
                 if (result.total > 0) {
