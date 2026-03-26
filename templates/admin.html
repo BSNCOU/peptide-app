@@ -3398,8 +3398,6 @@ The Peptide Wizard Team"></textarea>
                                         <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOrderDetailModal(${o.id})">View</button>
-                                            <button class="btn btn-small" style="background:#38a169;color:white;" onclick="localFulfill(${o.id}, 'pickup')">🏪 Pickup</button>
-                                            <button class="btn btn-small" style="background:#805ad5;color:white;" onclick="localFulfill(${o.id}, 'delivery')">🚗 Delivery</button>
                                             <button class="btn btn-secondary btn-small" onclick="moveBackToProcessing(${o.id})">← Back</button>
                                         </td>
                                     </tr>
@@ -3478,25 +3476,6 @@ The Peptide Wizard Team"></textarea>
                 showAlert(err.message);
             }
         }
-
-        async function localFulfill(orderId, method) {
-            const label = method === 'pickup' ? 'Local Pickup' : 'Local Delivery';
-            const emoji = method === 'pickup' ? '🏪' : '🚗';
-            if (!confirm(`${emoji} Mark this order as ${label}?\n\nThis will mark it shipped and email the customer.`)) return;
-
-            try {
-                await api(`/api/admin/orders/${orderId}/local-fulfill`, {
-                    method: 'POST',
-                    body: JSON.stringify({ method })
-                });
-                showAlert(`${emoji} Order marked as ${label} — customer notified!`, 'success');
-                await loadOrders();
-                renderReadyToShip();
-            } catch (err) {
-                showAlert(err.message);
-            }
-        }
-        
         
         async function markOrderReadyToShip(orderId) {
             try {
@@ -4058,6 +4037,7 @@ The Peptide Wizard Team"></textarea>
                         </select>
                         <button class="btn" onclick="showCreatePOModal()">+ New PO</button>
                         <button class="btn btn-secondary" onclick="showQuickPOFromLowStock()">⚡ Quick PO from Low Stock</button>
+                        <a class="btn" style="background:#805ad5;color:white;text-decoration:none;" href="/api/admin/po/export-all-costs" download>📊 Export All Landed Costs</a>
                     </div>
                 </div>
                 
@@ -4292,17 +4272,20 @@ The Peptide Wizard Team"></textarea>
                                             <th>Units (Stock)</th>
                                             <th>Received</th>
                                             <th>Unit Cost</th>
+                                            <th>Freight Alloc.</th>
+                                            <th>Landed/Unit</th>
                                             <th>Total</th>
                                             ${isEditable ? '<th>Actions</th>' : ''}
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${po.items.length === 0 ? '<tr><td colspan="9" style="text-align: center; color: #718096;">No items yet</td></tr>' : 
+                                        ${po.items.length === 0 ? '<tr><td colspan="11" style="text-align: center; color: #718096;">No items yet</td></tr>' : 
                                             po.items.map(i => {
                                                 const packSize = i.supplier_pack_size || 1;
                                                 const totalUnits = i.quantity_ordered * packSize;
                                                 const receivedUnits = i.quantity_received * packSize;
                                                 const lineCost = i.quantity_ordered * packSize * (i.unit_cost || 0);
+                                                const hasLanded = i.landed_cost && i.landed_cost > 0;
                                                 return `
                                                 <tr style="${i.quantity_received >= i.quantity_ordered ? 'background: #c6f6d5;' : i.quantity_received > 0 ? 'background: #fefcbf;' : ''}">
                                                     <td><strong>${escapeHtml(i.sku)}</strong></td>
@@ -4312,6 +4295,8 @@ The Peptide Wizard Team"></textarea>
                                                     <td><strong>${totalUnits}</strong></td>
                                                     <td>${i.quantity_received} packs (${receivedUnits} units)</td>
                                                     <td>${isEditable ? `<input type="number" value="${parseFloat(i.unit_cost || 0).toFixed(2)}" step="0.01" min="0" style="width: 70px;" onchange="updatePOItemCost(${po.id}, ${i.id}, this.value)">` : '$' + parseFloat(i.unit_cost || 0).toFixed(2)}</td>
+                                                    <td style="color:#805ad5;">${hasLanded ? '$' + parseFloat(i.freight_allocated || 0).toFixed(4) : '<span style="color:#ccc;">—</span>'}</td>
+                                                    <td style="font-weight:600;color:${hasLanded ? '#2f855a' : '#718096'};">${hasLanded ? '$' + parseFloat(i.landed_cost).toFixed(4) : '<span style="color:#ccc;">—</span>'}</td>
                                                     <td>$${lineCost.toFixed(2)}</td>
                                                     ${isEditable ? `<td><button class="btn btn-danger btn-small" onclick="removePOItem(${po.id}, ${i.id})">✕</button></td>` : ''}
                                                 </tr>
@@ -4322,7 +4307,9 @@ The Peptide Wizard Team"></textarea>
                             </div>
                             
                             <div style="text-align: right; margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px;">
-                                <strong>Total: $${totalCost.toFixed(2)}</strong>
+                                <div>Product Cost: <strong>$${totalCost.toFixed(2)}</strong></div>
+                                ${po.freight_cost > 0 ? `<div style="color:#805ad5;">Freight: <strong>$${parseFloat(po.freight_cost).toFixed(2)}</strong></div>
+                                <div style="font-size:16px;margin-top:6px;">Landed Total: <strong>$${(totalCost + parseFloat(po.freight_cost || 0)).toFixed(2)}</strong></div>` : ''}
                             </div>
                             
                             <div style="display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;">
@@ -4333,6 +4320,7 @@ The Peptide Wizard Team"></textarea>
                                 ${po.status === 'submitted' || po.status === 'partial' ? `<button class="btn" onclick="showBackorderText(${po.id})">📱 Backorder Follow-up</button>` : ''}
                                 ${po.status !== 'closed' && po.status !== 'draft' ? `<button class="btn btn-warning" onclick="closePO(${po.id})">Close PO</button>` : ''}
                                 ${po.status === 'closed' ? `<button class="btn" onclick="reopenPO(${po.id})">Reopen PO</button>` : ''}
+                                ${(po.status === 'received' || po.status === 'closed' || po.status === 'partial') ? `<a class="btn" style="background:#805ad5;color:white;text-decoration:none;" href="/api/admin/po/${po.id}/export-costs" download>📊 Export Landed Costs CSV</a>` : ''}
                                 <button class="btn btn-danger" onclick="deletePO(${po.id})">🗑️ Delete PO</button>
                             </div>
                         </div>
@@ -4499,6 +4487,14 @@ The Peptide Wizard Team"></textarea>
                             <h3>📥 Receive Items - ${escapeHtml(po.po_number)}</h3>
                             <p style="color: #718096; margin-bottom: 15px;">Enter number of <strong>packs</strong> received (units will be calculated automatically):</p>
                             
+                            <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px;margin-bottom:16px;">
+                                <label style="font-weight:600;display:block;margin-bottom:6px;">🚚 Freight / Shipping Cost for this Shipment ($)</label>
+                                <input type="number" id="freightCostInput" min="0" step="0.01" value="0"
+                                       placeholder="0.00"
+                                       style="width:160px;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:15px;">
+                                <span style="color:#718096;font-size:13px;margin-left:10px;">Will be split across items by cost proportion</span>
+                            </div>
+
                             <div style="max-height: 400px; overflow-y: auto;">
                                 <table>
                                     <thead>
@@ -4572,13 +4568,17 @@ The Peptide Wizard Team"></textarea>
                 showAlert('No items to receive');
                 return;
             }
+
+            const freightCost = parseFloat(document.getElementById('freightCostInput')?.value) || 0;
             
             try {
-                await api(`/api/admin/po/${poId}/receive`, {
+                const result = await api(`/api/admin/po/${poId}/receive`, {
                     method: 'POST',
-                    body: JSON.stringify({ items })
+                    body: JSON.stringify({ items, freight_cost: freightCost })
                 });
-                showAlert('Items received and stock updated!', 'success');
+                let msg = 'Items received and stock updated!';
+                if (freightCost > 0) msg += ` $${freightCost.toFixed(2)} freight allocated across ${result.lines?.length || items.length} line(s).`;
+                showAlert(msg, 'success');
                 showPODetail(poId);
             } catch (err) {
                 showAlert(err.message);

@@ -339,6 +339,7 @@ def init_po_tables(c, using_postgres, auto_id):
         supplier_name TEXT DEFAULT 'Primary Supplier',
         status TEXT DEFAULT 'draft',
         notes TEXT,
+        freight_cost REAL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         submitted_at TIMESTAMP,
         received_at TIMESTAMP,
@@ -352,6 +353,8 @@ def init_po_tables(c, using_postgres, auto_id):
         quantity_ordered INTEGER NOT NULL,
         quantity_received INTEGER DEFAULT 0,
         unit_cost REAL DEFAULT 0,
+        freight_allocated REAL DEFAULT 0,
+        landed_cost REAL DEFAULT 0,
         status TEXT DEFAULT 'pending',
         notes TEXT
     )''')
@@ -651,6 +654,29 @@ def init_db():
     except Exception as e:
         print(f"Note: Column migration: {e}")
     
+    # Add freight & landed cost columns to PO tables
+    try:
+        if using_postgres:
+            c.execute("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS freight_cost REAL DEFAULT 0")
+            c.execute("ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS freight_allocated REAL DEFAULT 0")
+            c.execute("ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS landed_cost REAL DEFAULT 0")
+        else:
+            try:
+                c.execute("ALTER TABLE purchase_orders ADD COLUMN freight_cost REAL DEFAULT 0")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE purchase_order_items ADD COLUMN freight_allocated REAL DEFAULT 0")
+            except:
+                pass
+            try:
+                c.execute("ALTER TABLE purchase_order_items ADD COLUMN landed_cost REAL DEFAULT 0")
+            except:
+                pass
+        conn.commit()
+    except Exception as e:
+        print(f"Note: PO freight columns migration: {e}")
+
     # Fix any NULL active fields
     try:
         c.execute("UPDATE products SET active = 1 WHERE active IS NULL")
@@ -5890,67 +5916,128 @@ def submit_purchase_order(po_id):
 @app.route('/api/admin/po/<int:po_id>/receive', methods=['POST'])
 @admin_required
 def receive_po_items(po_id):
-    """Receive items against PO - multiplies by supplier_pack_size for stock"""
+    """Receive items against PO - allocates freight cost and updates product landed cost."""
     data = request.json
     items = data.get('items', [])
-    
+    freight_cost = float(data.get('freight_cost', 0) or 0)
+
     conn = get_db()
     c = conn.cursor()
-    
-    all_complete = True
-    
+
+    # Save freight cost on PO header
+    c.execute('UPDATE purchase_orders SET freight_cost = ? WHERE id = ?', (freight_cost, po_id))
+
+    # ── Step 1: Calculate total product cost across all received items ──────
+    # We need this first so we can allocate freight proportionally
+    line_data = []
+    total_product_cost = 0.0
+
     for item in items:
         item_id = item['id']
         qty_received = item.get('quantity_received', 0)
-        
-        # Get current item info with product pack size
+        if qty_received <= 0:
+            continue
+
         poi = c.execute('''
-            SELECT poi.*, p.supplier_pack_size 
-            FROM purchase_order_items poi 
-            JOIN products p ON poi.product_id = p.id 
+            SELECT poi.*, p.supplier_pack_size, p.cost as current_cost, p.stock as current_stock
+            FROM purchase_order_items poi
+            JOIN products p ON poi.product_id = p.id
             WHERE poi.id = ?
         ''', (item_id,)).fetchone()
         if not poi:
             continue
+
         poi_dict = dict(poi)
         pack_size = poi_dict.get('supplier_pack_size') or 1
-        
-        # Update received quantity (in packs)
-        new_total_received = poi_dict['quantity_received'] + qty_received
-        c.execute('UPDATE purchase_order_items SET quantity_received = ? WHERE id = ?', 
-                 (new_total_received, item_id))
-        
-        # Update item status
-        if new_total_received >= poi_dict['quantity_ordered']:
-            c.execute("UPDATE purchase_order_items SET status = 'received' WHERE id = ?", (item_id,))
+        units_received = qty_received * pack_size
+        line_product_cost = (poi_dict['unit_cost'] or 0) * units_received
+        total_product_cost += line_product_cost
+        line_data.append({
+            'item_id': item_id,
+            'qty_received': qty_received,
+            'units_received': units_received,
+            'unit_cost': poi_dict['unit_cost'] or 0,
+            'line_product_cost': line_product_cost,
+            'product_id': poi_dict['product_id'],
+            'quantity_ordered': poi_dict['quantity_ordered'],
+            'quantity_received_existing': poi_dict['quantity_received'],
+            'current_cost': poi_dict.get('current_cost') or 0,
+            'current_stock': poi_dict.get('current_stock') or 0,
+        })
+
+    # ── Step 2: Allocate freight to each line proportionally by cost ─────────
+    for line in line_data:
+        if total_product_cost > 0:
+            freight_share = freight_cost * (line['line_product_cost'] / total_product_cost)
+        else:
+            # If all items are $0 cost, split freight evenly
+            freight_share = freight_cost / len(line_data) if line_data else 0
+
+        freight_per_unit = freight_share / line['units_received'] if line['units_received'] > 0 else 0
+        landed_per_unit = line['unit_cost'] + freight_per_unit
+
+        line['freight_allocated'] = round(freight_share, 4)
+        line['landed_cost'] = round(landed_per_unit, 4)
+
+    # ── Step 3: Apply to DB ──────────────────────────────────────────────────
+    all_complete = True
+
+    for line in line_data:
+        new_total_received = line['quantity_received_existing'] + line['qty_received']
+
+        # Store received qty, freight allocation, landed cost on PO line
+        c.execute('''UPDATE purchase_order_items
+                     SET quantity_received = ?,
+                         freight_allocated = ?,
+                         landed_cost = ?
+                     WHERE id = ?''',
+                  (new_total_received, line['freight_allocated'], line['landed_cost'], line['item_id']))
+
+        # Update PO line status
+        if new_total_received >= line['quantity_ordered']:
+            c.execute("UPDATE purchase_order_items SET status = 'received' WHERE id = ?", (line['item_id'],))
         elif new_total_received > 0:
-            c.execute("UPDATE purchase_order_items SET status = 'partial' WHERE id = ?", (item_id,))
+            c.execute("UPDATE purchase_order_items SET status = 'partial' WHERE id = ?", (line['item_id'],))
             all_complete = False
         else:
             all_complete = False
-        
-        # Update product stock - multiply packs by pack_size to get units
-        if qty_received > 0:
-            units_to_add = qty_received * pack_size
-            c.execute('UPDATE products SET stock = stock + ? WHERE id = ?', 
-                     (units_to_add, poi_dict['product_id']))
-    
-    # Update PO status
-    if all_complete:
-        # Check if all items are received
-        remaining = c.execute('''SELECT COUNT(*) as cnt FROM purchase_order_items 
-                                WHERE po_id = ? AND quantity_received < quantity_ordered''', (po_id,)).fetchone()
-        if dict(remaining)['cnt'] == 0:
-            c.execute("UPDATE purchase_orders SET status = 'received', received_at = CURRENT_TIMESTAMP WHERE id = ?", (po_id,))
+
+        # Add stock units
+        c.execute('UPDATE products SET stock = stock + ? WHERE id = ?',
+                  (line['units_received'], line['product_id']))
+
+        # Update product.cost using weighted average:
+        # new_avg = (existing_stock * existing_cost + new_units * new_landed) / (existing_stock + new_units)
+        existing_stock = line['current_stock']
+        existing_cost = line['current_cost']
+        new_units = line['units_received']
+        new_landed = line['landed_cost']
+
+        if (existing_stock + new_units) > 0:
+            weighted_avg = ((existing_stock * existing_cost) + (new_units * new_landed)) / (existing_stock + new_units)
         else:
-            c.execute("UPDATE purchase_orders SET status = 'partial' WHERE id = ?", (po_id,))
+            weighted_avg = new_landed
+
+        c.execute('UPDATE products SET cost = ? WHERE id = ?',
+                  (round(weighted_avg, 4), line['product_id']))
+
+    # ── Step 4: Update PO status ─────────────────────────────────────────────
+    remaining = c.execute('''SELECT COUNT(*) as cnt FROM purchase_order_items
+                             WHERE po_id = ? AND quantity_received < quantity_ordered''', (po_id,)).fetchone()
+    if dict(remaining)['cnt'] == 0:
+        c.execute("UPDATE purchase_orders SET status = 'received', received_at = CURRENT_TIMESTAMP WHERE id = ?", (po_id,))
     else:
         c.execute("UPDATE purchase_orders SET status = 'partial' WHERE id = ?", (po_id,))
-    
+
     conn.commit()
     conn.close()
-    
-    return jsonify({'message': 'Items received and stock updated'})
+
+    return jsonify({
+        'message': 'Items received, freight allocated, and costs updated',
+        'freight_cost': freight_cost,
+        'lines': [{'item_id': l['item_id'], 'freight_allocated': l['freight_allocated'],
+                   'landed_cost': l['landed_cost']} for l in line_data]
+    })
 
 
 @app.route('/api/admin/po/<int:po_id>/close', methods=['POST'])
@@ -6048,7 +6135,146 @@ def get_po_whatsapp_text(po_id):
     return jsonify({'text': '\n'.join(lines), 'po_number': po_dict['po_number']})
 
 
-@app.route('/api/admin/po/<int:po_id>/backorder-text', methods=['GET'])
+@app.route('/api/admin/po/<int:po_id>/export-costs', methods=['GET'])
+@admin_required
+def export_po_costs(po_id):
+    """Export PO landed costs as CSV for accounting."""
+    import csv
+    import io
+    conn = get_db()
+    po = conn.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    po_dict = dict(po)
+
+    items = conn.execute('''
+        SELECT poi.*, p.name, p.sku, p.supplier_pack_size
+        FROM purchase_order_items poi
+        JOIN products p ON poi.product_id = p.id
+        WHERE poi.po_id = ?
+        ORDER BY p.name
+    ''', (po_id,)).fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header
+    writer.writerow([
+        'PO Number', 'Supplier', 'Received Date',
+        'SKU', 'Product Name',
+        'Packs Ordered', 'Packs Received', 'Units Per Pack', 'Units Received',
+        'Unit Cost (Product)', 'Line Product Cost',
+        'Freight Allocated', 'Landed Cost Per Unit', 'Total Landed Cost'
+    ])
+
+    freight_total = po_dict.get('freight_cost') or 0
+    received_date = po_dict.get('received_at') or po_dict.get('closed_at') or ''
+    if received_date:
+        received_date = str(received_date)[:10]
+
+    for item in items:
+        i = dict(item)
+        pack_size = i.get('supplier_pack_size') or 1
+        packs_received = i.get('quantity_received') or 0
+        units_received = packs_received * pack_size
+        unit_cost = i.get('unit_cost') or 0
+        freight_alloc = i.get('freight_allocated') or 0
+        landed = i.get('landed_cost') or 0
+        line_product_cost = unit_cost * units_received
+        total_landed = landed * units_received
+
+        writer.writerow([
+            po_dict['po_number'],
+            po_dict.get('supplier_name', ''),
+            received_date,
+            i['sku'],
+            i['name'],
+            i.get('quantity_ordered', 0),
+            packs_received,
+            pack_size,
+            units_received,
+            f"{unit_cost:.4f}",
+            f"{line_product_cost:.2f}",
+            f"{freight_alloc:.4f}",
+            f"{landed:.4f}",
+            f"{total_landed:.2f}",
+        ])
+
+    # Summary row
+    writer.writerow([])
+    writer.writerow(['', '', '', '', 'TOTAL FREIGHT', '', '', '', '', '', '', '', f"${freight_total:.2f}", '', ''])
+
+    csv_data = output.getvalue()
+    response = make_response(csv_data)
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = f'attachment; filename=PO_{po_dict["po_number"]}_landed_costs.csv'
+    return response
+
+
+@app.route('/api/admin/po/export-all-costs', methods=['GET'])
+@admin_required
+def export_all_po_costs():
+    """Export landed costs across ALL received POs as one CSV."""
+    import csv
+    import io
+    conn = get_db()
+    items = conn.execute('''
+        SELECT
+            po.po_number, po.supplier_name, po.freight_cost,
+            po.received_at, po.closed_at,
+            p.sku, p.name,
+            poi.quantity_ordered, poi.quantity_received, p.supplier_pack_size,
+            poi.unit_cost, poi.freight_allocated, poi.landed_cost
+        FROM purchase_order_items poi
+        JOIN purchase_orders po ON poi.po_id = po.id
+        JOIN products p ON poi.product_id = p.id
+        WHERE po.status IN ('received', 'closed', 'partial')
+        ORDER BY po.po_number, p.name
+    ''').fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        'PO Number', 'Supplier', 'PO Freight Cost', 'Received Date',
+        'SKU', 'Product Name',
+        'Packs Ordered', 'Packs Received', 'Units Per Pack', 'Units Received',
+        'Unit Cost (Product)', 'Line Product Cost',
+        'Freight Allocated', 'Landed Cost Per Unit', 'Total Landed Cost'
+    ])
+
+    for item in items:
+        i = dict(item)
+        pack_size = i.get('supplier_pack_size') or 1
+        packs_received = i.get('quantity_received') or 0
+        units_received = packs_received * pack_size
+        unit_cost = i.get('unit_cost') or 0
+        freight_alloc = i.get('freight_allocated') or 0
+        landed = i.get('landed_cost') or 0
+        line_product_cost = unit_cost * units_received
+        total_landed = landed * units_received
+        received_date = str(i.get('received_at') or i.get('closed_at') or '')[:10]
+
+        writer.writerow([
+            i['po_number'], i.get('supplier_name', ''),
+            f"{(i.get('freight_cost') or 0):.2f}",
+            received_date,
+            i['sku'], i['name'],
+            i.get('quantity_ordered', 0), packs_received, pack_size, units_received,
+            f"{unit_cost:.4f}", f"{line_product_cost:.2f}",
+            f"{freight_alloc:.4f}", f"{landed:.4f}", f"{total_landed:.2f}",
+        ])
+
+    csv_data = output.getvalue()
+    response = make_response(csv_data)
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = 'attachment; filename=all_po_landed_costs.csv'
+    return response
+
+
+
 @admin_required
 def get_backorder_whatsapp_text(po_id):
     """Generate WhatsApp text for backorder follow-up"""
