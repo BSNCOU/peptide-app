@@ -3197,8 +3197,8 @@ The Peptide Wizard Team"></textarea>
                                         <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOpenOrderDetailModal(${o.id})">View</button>
-                                            ${['paid', 'processing'].includes(o.status) && o.delivery_method === 'ship' ? `<button class="btn btn-success btn-small" onclick="markOrderReadyToShip(${o.id})">📦 Ready to Ship</button>` : ''}
-                                            ${['paid', 'processing', 'ready_to_ship'].includes(o.status) && o.delivery_method !== 'ship' ? `<button class="btn btn-success btn-small" onclick="markPickedUp(${o.id})">✓ Picked Up</button>` : ''}
+                                            ${['paid', 'processing'].includes(o.status) && !isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markOrderReadyToShip(${o.id})">📦 Ready to Ship</button>` : ''}
+                                            ${['paid', 'processing', 'ready_to_ship'].includes(o.status) && isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markPickedUp(${o.id})">✓ Picked Up</button>` : ''}
                                             <button class="btn btn-danger btn-small" onclick="cancelOrder(${o.id})">✗ Cancel</button>
                                         </td>
                                     </tr>
@@ -3330,10 +3330,21 @@ The Peptide Wizard Team"></textarea>
             }
         }
 
+        // Helper: treat as pickup if delivery_method isn't ship, OR address text says "pickup"
+        function isPickupOrder(o) {
+            if (o.delivery_method === 'ship') {
+                // Could still be a pickup if address was entered as "Pickup"
+                const addr = (o.shipping_address || '').toLowerCase();
+                if (addr.startsWith('pickup')) return true;
+                return false;
+            }
+            return true; // null, 'pickup', or anything else = pickup
+        }
+
         function renderReadyToShip() {
             const readyOrders = state.orders.filter(o => o.status === 'ready_to_ship');
-            const shipOrders = readyOrders.filter(o => o.delivery_method === 'ship');
-            const pickupOrders = readyOrders.filter(o => o.delivery_method !== 'ship');
+            const shipOrders   = readyOrders.filter(o => !isPickupOrder(o));
+            const pickupOrders = readyOrders.filter(o => isPickupOrder(o));
             
             const content = document.getElementById('tabContent');
             content.innerHTML = `
@@ -3451,6 +3462,8 @@ The Peptide Wizard Team"></textarea>
                                             <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                             <td class="actions">
                                                 <button class="btn btn-small" onclick="showOrderDetailModal(${o.id})">View</button>
+                                                <button class="btn btn-success btn-small" onclick="markPickedUp(${o.id})" title="Mark as fulfilled (use if this is actually a pickup)">✓ Fulfilled</button>
+                                                <button class="btn btn-secondary btn-small" onclick="fixToPickup(${o.id})" title="Reclassify this as a pickup order">🏪 Fix→Pickup</button>
                                                 <button class="btn btn-secondary btn-small" onclick="moveBackToProcessing(${o.id})">← Back</button>
                                             </td>
                                         </tr>
@@ -4022,6 +4035,20 @@ The Peptide Wizard Team"></textarea>
                 
             } catch (err) {
                 showAlert('Error: ' + err.message, 'error');
+            }
+        }
+
+        async function fixToPickup(id) {
+            try {
+                await api(`/api/admin/orders/${id}/delivery-method`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ delivery_method: 'pickup' })
+                });
+                showAlert('Order reclassified as pickup — refreshing...', 'success');
+                state.orders = await api('/api/admin/orders');
+                renderReadyToShip();
+            } catch (err) {
+                showAlert(err.message);
             }
         }
 

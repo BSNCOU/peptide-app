@@ -4168,6 +4168,21 @@ def admin_update_order_status(oid):
     conn.close()
     return jsonify({'message': 'Status updated'})
 
+
+@app.route('/api/admin/orders/<int:oid>/delivery-method', methods=['PUT'])
+@admin_required
+def admin_update_delivery_method(oid):
+    """Allow admin to correct the delivery method on an order."""
+    data = request.json
+    method = data.get('delivery_method')
+    if method not in ('ship', 'pickup'):
+        return jsonify({'error': 'delivery_method must be ship or pickup'}), 400
+    conn = get_db()
+    conn.execute('UPDATE orders SET delivery_method=?, updated_at=CURRENT_TIMESTAMP WHERE id=?', (method, oid))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': f'Delivery method updated to {method}'})
+
 # ============================================
 # EASYPOST SHIPPING INTEGRATION
 # ============================================
