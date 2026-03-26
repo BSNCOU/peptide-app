@@ -2751,7 +2751,7 @@ def download_invoice(oid):
 def admin_stats():
     conn = get_db()
     # Exclude cancelled/refunded orders from revenue
-    orders = conn.execute("SELECT COUNT(*) as count, SUM(total) as total FROM orders WHERE status NOT IN ('cancelled', 'refunded')").fetchone()
+    orders = conn.execute("SELECT COUNT(*) as count, SUM(total) as total FROM orders WHERE status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')").fetchone()
     by_status = {r['status']: r['count'] for r in conn.execute('SELECT status, COUNT(*) as count FROM orders GROUP BY status').fetchall()}
     users = conn.execute('SELECT COUNT(*) as count FROM users WHERE is_admin=0').fetchone()
     products = conn.execute('SELECT COUNT(*) as count FROM products WHERE active=1').fetchone()
@@ -3104,7 +3104,7 @@ def admin_financial_report():
             COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected,
             COALESCE(SUM(o.processing_fee), 0) as processing_fees_collected
         FROM orders o
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
         AND {date_filter}
     '''
     orders = conn.execute(orders_query).fetchone()
@@ -3115,7 +3115,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
         AND {date_filter}
     '''
     cogs = conn.execute(cogs_query).fetchone()
@@ -3135,7 +3135,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
         AND {date_filter}
         GROUP BY p.id, p.sku, p.name, p.category, p.cost, p.price_single
         ORDER BY gross_profit DESC
@@ -3153,7 +3153,7 @@ def admin_financial_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
         AND {date_filter}
         GROUP BY p.category
         ORDER BY gross_profit DESC
@@ -3225,7 +3225,7 @@ def admin_profitability_report():
             COALESCE(SUM(o.sales_tax), 0) as sales_tax_collected,
             COALESCE(SUM(o.processing_fee), 0) as processing_fees_collected
         FROM orders o
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
         AND {date_filter}
     '''
     orders = conn.execute(orders_query).fetchone()
@@ -3236,7 +3236,7 @@ def admin_profitability_report():
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         JOIN products p ON oi.product_id = p.id
-        WHERE o.status NOT IN ('cancelled', 'refunded')
+        WHERE o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
         AND {date_filter}
     '''
     cogs = conn.execute(cogs_query).fetchone()
@@ -3276,7 +3276,7 @@ def admin_profitability_report():
             SELECT COUNT(DISTINCT oi.product_id) as unique_products
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.id
-            WHERE o.status NOT IN ('cancelled', 'refunded')
+            WHERE o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
             AND {date_filter}
         '''
         unique_result = conn.execute(unique_query).fetchone()
