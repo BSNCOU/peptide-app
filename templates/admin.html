@@ -3147,9 +3147,9 @@ The Peptide Wizard Team"></textarea>
         }
 
         function renderOpenOrders() {
-            // ONLY show orders that have been PAID - not pending/abandoned carts
+            // Show paid/processing + any ready_to_ship pickup orders (they don't ship, just need pickup)
             const openOrders = state.orders.filter(o => 
-                ['paid', 'processing'].includes(o.status)
+                ['paid', 'processing', 'ready_to_ship'].includes(o.status)
             );
             
             const content = document.getElementById('tabContent');
@@ -3198,7 +3198,7 @@ The Peptide Wizard Team"></textarea>
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOpenOrderDetailModal(${o.id})">View</button>
                                             ${['paid', 'processing'].includes(o.status) && o.delivery_method === 'ship' ? `<button class="btn btn-success btn-small" onclick="markOrderReadyToShip(${o.id})">📦 Ready to Ship</button>` : ''}
-                                            ${o.delivery_method === 'pickup' ? `<button class="btn btn-success btn-small" onclick="markOrderFulfilled(${o.id})">✓ Picked Up</button>` : ''}
+                                            ${['paid', 'processing', 'ready_to_ship'].includes(o.status) && o.delivery_method !== 'ship' ? `<button class="btn btn-success btn-small" onclick="markPickedUp(${o.id})">✓ Picked Up</button>` : ''}
                                             <button class="btn btn-danger btn-small" onclick="cancelOrder(${o.id})">✗ Cancel</button>
                                         </td>
                                     </tr>
@@ -4033,8 +4033,12 @@ The Peptide Wizard Team"></textarea>
                     body: JSON.stringify({ status: 'fulfilled' })
                 });
                 showAlert('Order marked as picked up!', 'success');
-                await loadOrders();
-                renderReadyToShip();
+                state.orders = await api('/api/admin/orders');
+                if (state.currentTab === 'readyToShip') {
+                    renderReadyToShip();
+                } else {
+                    renderOpenOrders();
+                }
             } catch (err) {
                 showAlert(err.message);
             }
