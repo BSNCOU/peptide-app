@@ -5672,6 +5672,145 @@ def admin_returns_stats():
     return jsonify(stats)
 
 
+@app.route('/api/admin/users/<int:uid>/credit-statement', methods=['GET'])
+@admin_required
+def admin_get_credit_statement(uid):
+    """Get full credit history for a user."""
+    conn = get_db()
+    user = conn.execute(
+        'SELECT id, full_name, email, phone, referral_credit FROM users WHERE id=?', (uid,)
+    ).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    user_dict = dict(user)
+
+    transactions = conn.execute('''
+        SELECT rt.*, o.order_number
+        FROM referral_transactions rt
+        LEFT JOIN orders o ON rt.order_id = o.id
+        WHERE rt.user_id = ?
+        ORDER BY rt.created_at DESC
+    ''', (uid,)).fetchall()
+    conn.close()
+
+    return jsonify({
+        'user': user_dict,
+        'balance': float(user_dict['referral_credit'] or 0),
+        'transactions': [dict(t) for t in transactions]
+    })
+
+
+@app.route('/api/admin/users/<int:uid>/send-credit-statement', methods=['POST'])
+@admin_required
+def admin_send_credit_statement(uid):
+    """Email a credit statement to the customer."""
+    conn = get_db()
+    user = conn.execute(
+        'SELECT id, full_name, email, referral_credit FROM users WHERE id=?', (uid,)
+    ).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    user_dict = dict(user)
+
+    transactions = conn.execute('''
+        SELECT rt.*, o.order_number
+        FROM referral_transactions rt
+        LEFT JOIN orders o ON rt.order_id = o.id
+        WHERE rt.user_id = ?
+        ORDER BY rt.created_at DESC
+        LIMIT 50
+    ''', (uid,)).fetchall()
+    conn.close()
+
+    balance = float(user_dict['referral_credit'] or 0)
+    first_name = user_dict['full_name'].split()[0]
+
+    # Build transaction rows
+    type_labels = {
+        'earned': ('💰 Commission Earned', '#276749'),
+        'used': ('🛒 Applied to Order', '#2b6cb0'),
+        'adjustment': ('⚙️ Manual Adjustment', '#744210'),
+        'refund': ('↩️ Refund Restored', '#553c9a'),
+        'clawback': ('⚠️ Commission Reversed', '#c53030'),
+    }
+
+    rows_html = ''
+    for t in transactions:
+        t = dict(t)
+        label, color = type_labels.get(t['type'], ('📋 Transaction', '#4a5568'))
+        amount = float(t['amount'] or 0)
+        amount_str = f"+${amount:.2f}" if amount > 0 else f"-${abs(amount):.2f}"
+        amount_color = '#276749' if amount > 0 else '#c53030'
+        date_str = str(t['created_at'])[:10] if t.get('created_at') else ''
+        order_str = f"Order {t['order_number']}" if t.get('order_number') else ''
+        desc = t.get('description') or ''
+        rows_html += f"""
+        <tr>
+            <td style="padding:10px;border-bottom:1px solid #eee;font-size:13px;color:#718096;">{date_str}</td>
+            <td style="padding:10px;border-bottom:1px solid #eee;">
+                <span style="color:{color};font-weight:500;">{label}</span>
+                {'<br><small style="color:#a0aec0;">' + order_str + '</small>' if order_str else ''}
+                {'<br><small style="color:#a0aec0;">' + desc + '</small>' if desc and desc != order_str else ''}
+            </td>
+            <td style="padding:10px;border-bottom:1px solid #eee;text-align:right;font-weight:600;color:{amount_color};">{amount_str}</td>
+        </tr>"""
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="3" style="padding:20px;text-align:center;color:#a0aec0;">No transactions yet</td></tr>'
+
+    html = f"""<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;background:#f9f9f9;">
+    <div style="background:white;padding:30px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.08);">
+
+        <h2 style="color:#1a1a1a;margin:0 0 5px 0;">Your Store Credit Statement</h2>
+        <p style="color:#718096;margin:0 0 25px 0;">The Peptide Wizard</p>
+
+        <p>Hi {first_name},</p>
+        <p style="color:#555;">Here's a summary of your store credit account as requested.</p>
+
+        <div style="background:#f0fff4;border:2px solid #9ae6b4;border-radius:10px;padding:20px;text-align:center;margin:20px 0;">
+            <div style="font-size:13px;color:#276749;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Current Balance</div>
+            <div style="font-size:36px;font-weight:700;color:#276749;">${balance:.2f}</div>
+            <div style="font-size:13px;color:#48bb78;margin-top:4px;">Available to use on your next order</div>
+        </div>
+
+        <h4 style="color:#2d3748;margin:25px 0 10px 0;">Transaction History</h4>
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr style="background:#f7fafc;">
+                    <th style="padding:10px;text-align:left;font-size:12px;color:#718096;border-bottom:2px solid #e2e8f0;">DATE</th>
+                    <th style="padding:10px;text-align:left;font-size:12px;color:#718096;border-bottom:2px solid #e2e8f0;">DESCRIPTION</th>
+                    <th style="padding:10px;text-align:right;font-size:12px;color:#718096;border-bottom:2px solid #e2e8f0;">AMOUNT</th>
+                </tr>
+            </thead>
+            <tbody>{rows_html}</tbody>
+        </table>
+
+        <div style="background:#fffbeb;border:1px solid #f6e05e;border-radius:8px;padding:15px;margin-top:20px;">
+            <strong style="color:#92400e;">💡 How to use your credit</strong><br>
+            <span style="color:#78350f;font-size:14px;">At checkout, check the "Apply Store Credit" box to use your balance toward your next order.</span>
+        </div>
+
+        <p style="color:#999;font-size:12px;margin-top:25px;text-align:center;">
+            Questions? Reply to this email or log in at thepeptidewizard.com<br>
+            All materials are for laboratory research purposes only.
+        </p>
+    </div>
+    </body></html>"""
+
+    ok, msg = send_email(
+        user_dict['email'],
+        f"Your Peptide Wizard Store Credit Statement — ${balance:.2f} Available",
+        html
+    )
+
+    if ok:
+        return jsonify({'message': f'Statement sent to {user_dict["email"]}'})
+    else:
+        return jsonify({'error': f'Email failed: {msg}'}), 500
+
+
 @app.route('/api/admin/users/<int:uid>/reset-password', methods=['POST'])
 @admin_required
 def admin_reset_user_password(uid):

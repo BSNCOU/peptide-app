@@ -2303,6 +2303,19 @@ BC10,8.00</pre>
         function renderUsers() {
             const content = document.getElementById('tabContent');
             content.innerHTML = `
+                <!-- ── Credit Lookup Tool ── -->
+                <div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:20px;">
+                    <h4 style="margin:0 0 12px 0;color:#2d3748;">🔍 Credit Lookup & Statement</h4>
+                    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                        <input type="text" id="creditLookupInput" placeholder="Search by name or email..."
+                               style="flex:1;min-width:200px;padding:10px;border:1px solid #e2e8f0;border-radius:6px;font-size:14px;"
+                               oninput="filterCreditLookup(this.value)">
+                        <button class="btn btn-secondary" onclick="clearCreditLookup()">Clear</button>
+                    </div>
+                    <div id="creditLookupResults" style="margin-top:12px;"></div>
+                    <div id="creditStatementPanel" style="margin-top:16px;"></div>
+                </div>
+
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
@@ -2349,6 +2362,121 @@ BC10,8.00</pre>
                     </table>
                 </div>
             `;
+        }
+
+        function filterCreditLookup(query) {
+            const panel = document.getElementById('creditLookupResults');
+            const stmtPanel = document.getElementById('creditStatementPanel');
+            if (!query || query.length < 2) { panel.innerHTML = ''; return; }
+            const q = query.toLowerCase();
+            const matches = (state.users || []).filter(u =>
+                (u.full_name || '').toLowerCase().includes(q) ||
+                (u.email || '').toLowerCase().includes(q)
+            ).slice(0, 8);
+            if (matches.length === 0) {
+                panel.innerHTML = '<p style="color:#718096;font-size:14px;">No customers found.</p>';
+                return;
+            }
+            panel.innerHTML = matches.map(u => {
+                const credit = parseFloat(u.referral_credit || 0);
+                return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;margin-top:6px;background:#f7fafc;border-radius:8px;border:1px solid #e2e8f0;">
+                    <div>
+                        <strong>${escapeHtml(u.full_name)}</strong>
+                        <span style="color:#718096;font-size:13px;margin-left:8px;">${escapeHtml(u.email)}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="font-weight:700;color:${credit > 0 ? '#276749' : '#a0aec0'};">$${credit.toFixed(2)}</span>
+                        <button class="btn btn-small" onclick="loadCreditStatement(${u.id})">View Statement</button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function clearCreditLookup() {
+            document.getElementById('creditLookupInput').value = '';
+            document.getElementById('creditLookupResults').innerHTML = '';
+            document.getElementById('creditStatementPanel').innerHTML = '';
+        }
+
+        async function loadCreditStatement(uid) {
+            const panel = document.getElementById('creditStatementPanel');
+            panel.innerHTML = '<p style="color:#718096;padding:10px;">Loading...</p>';
+            try {
+                const data = await api(`/api/admin/users/${uid}/credit-statement`);
+                const u = data.user;
+                const txns = data.transactions || [];
+                const typeLabels = {
+                    earned:     { icon: '💰', label: 'Commission Earned',   color: '#276749' },
+                    used:       { icon: '🛒', label: 'Applied to Order',    color: '#2b6cb0' },
+                    adjustment: { icon: '⚙️', label: 'Manual Adjustment',   color: '#744210' },
+                    refund:     { icon: '↩️', label: 'Refund Restored',     color: '#553c9a' },
+                    clawback:   { icon: '⚠️', label: 'Commission Reversed', color: '#c53030' },
+                };
+                const rows = txns.length === 0
+                    ? '<tr><td colspan="3" style="text-align:center;color:#a0aec0;padding:20px;">No transactions yet</td></tr>'
+                    : txns.map(t => {
+                        const tl = typeLabels[t.type] || { icon: '📋', label: t.type, color: '#4a5568' };
+                        const amt = parseFloat(t.amount || 0);
+                        const amtStr = amt >= 0 ? `+$${amt.toFixed(2)}` : `-$${Math.abs(amt).toFixed(2)}`;
+                        const amtColor = amt >= 0 ? '#276749' : '#c53030';
+                        const date = (t.created_at || '').substring(0, 10);
+                        const orderTag = t.order_number ? `<br><small style="color:#a0aec0;">${t.order_number}</small>` : '';
+                        const desc = t.description && t.description !== t.order_number ? `<br><small style="color:#a0aec0;">${escapeHtml(t.description)}</small>` : '';
+                        return `<tr>
+                            <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px;color:#718096;">${date}</td>
+                            <td style="padding:8px;border-bottom:1px solid #eee;">
+                                <span style="color:${tl.color};">${tl.icon} ${tl.label}</span>${orderTag}${desc}
+                            </td>
+                            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;color:${amtColor};">${amtStr}</td>
+                        </tr>`;
+                    }).join('');
+
+                panel.innerHTML = `
+                    <div style="background:#f0fff4;border:2px solid #9ae6b4;border-radius:10px;padding:20px;">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
+                            <div>
+                                <div style="font-size:18px;font-weight:700;">${escapeHtml(u.full_name)}</div>
+                                <div style="color:#718096;font-size:14px;">${escapeHtml(u.email)}</div>
+                            </div>
+                            <div style="text-align:right;">
+                                <div style="font-size:13px;color:#276749;text-transform:uppercase;letter-spacing:1px;">Current Balance</div>
+                                <div style="font-size:30px;font-weight:700;color:#276749;">$${parseFloat(data.balance || 0).toFixed(2)}</div>
+                            </div>
+                        </div>
+
+                        <div style="max-height:280px;overflow-y:auto;background:white;border-radius:8px;border:1px solid #c6f6d5;">
+                            <table style="width:100%;border-collapse:collapse;">
+                                <thead style="position:sticky;top:0;background:#f7fafc;">
+                                    <tr>
+                                        <th style="padding:8px 10px;text-align:left;font-size:12px;color:#718096;border-bottom:2px solid #e2e8f0;">DATE</th>
+                                        <th style="padding:8px 10px;text-align:left;font-size:12px;color:#718096;border-bottom:2px solid #e2e8f0;">DESCRIPTION</th>
+                                        <th style="padding:8px 10px;text-align:right;font-size:12px;color:#718096;border-bottom:2px solid #e2e8f0;">AMOUNT</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        </div>
+
+                        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+                            <button class="btn btn-success" onclick="sendCreditStatement(${u.id}, '${escapeHtml(u.email)}')">
+                                📧 Send Statement to ${escapeHtml(u.email)}
+                            </button>
+                            <button class="btn btn-secondary" onclick="clearCreditLookup()">Close</button>
+                        </div>
+                    </div>`;
+            } catch (err) {
+                panel.innerHTML = `<p style="color:#e53e3e;">Error: ${err.message}</p>`;
+            }
+        }
+
+        async function sendCreditStatement(uid, email) {
+            if (!confirm(`Send credit statement to ${email}?`)) return;
+            try {
+                await api(`/api/admin/users/${uid}/send-credit-statement`, { method: 'POST' });
+                showAlert(`Statement sent to ${email}!`, 'success');
+            } catch (err) {
+                showAlert('Failed to send: ' + err.message);
+            }
         }
 
         async function showUserDetailModal(id) {
