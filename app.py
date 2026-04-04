@@ -3088,6 +3088,45 @@ def admin_email_blast_preview():
         'users': [dict(u) for u in users]
     })
 
+
+@app.route('/api/admin/email-blast/segment/never-ordered', methods=['GET'])
+@admin_required
+def email_segment_never_ordered():
+    """Users who have never placed a paid order — WELCOME30 targets."""
+    conn = get_db()
+    users = conn.execute("""
+        SELECT u.id, u.full_name, u.email
+        FROM users u
+        WHERE u.email_verified = 1 AND u.is_admin = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM orders o
+              WHERE o.user_id = u.id
+                AND o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+          )
+        ORDER BY u.full_name
+    """).fetchall()
+    conn.close()
+    return jsonify({'users': [dict(u) for u in users], 'count': len(users)})
+
+
+@app.route('/api/admin/email-blast/segment/no-referral-code', methods=['GET'])
+@admin_required
+def email_segment_no_referral_code():
+    """Users who have no referral/discount code assigned — referral program targets."""
+    conn = get_db()
+    users = conn.execute("""
+        SELECT u.id, u.full_name, u.email
+        FROM users u
+        WHERE u.email_verified = 1 AND u.is_admin = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM discount_codes dc
+              WHERE dc.referrer_user_id = u.id AND dc.active = 1
+          )
+        ORDER BY u.full_name
+    """).fetchall()
+    conn.close()
+    return jsonify({'users': [dict(u) for u in users], 'count': len(users)})
+
 @app.route('/api/admin/email-blast/send', methods=['POST'])
 @admin_required
 def admin_email_blast_send():

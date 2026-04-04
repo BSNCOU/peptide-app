@@ -2700,6 +2700,92 @@ BC10,8.00</pre>
         let emailUsers = [];
         let selectedUserIds = new Set();
         
+        async function launchCampaign(type) {
+            const campaigns = {
+                'never-ordered': {
+                    endpoint: '/api/admin/email-blast/segment/never-ordered',
+                    subject: '🎉 Welcome to The Peptide Wizard — 30% Off Your First Order',
+                    body: `Hi {{name}},
+
+Thank you for joining The Peptide Wizard! We noticed you haven't placed an order yet, and we'd love to help you get started.
+
+As a welcome gift, use code WELCOME30 at checkout for 30% off your first order — no minimum required.
+
+We carry a full catalog of high-purity research peptides including BPC-157, TB-500, NAD+, MOTS-c, and more — all rigorously tested and ready to ship.
+
+Log in and explore at thepeptidewizard.com
+
+Use code: WELCOME30
+(First-time orders only)
+
+All materials are for laboratory research purposes only. Not for human or animal consumption.
+
+— The Peptide Wizard Team`,
+                    color: '#276749',
+                    label: '🆕 Never Ordered'
+                },
+                'no-referral-code': {
+                    endpoint: '/api/admin/email-blast/segment/no-referral-code',
+                    subject: '💰 Earn 20% Store Credit — Introduce a Fellow Researcher',
+                    body: `Hi {{name}},
+
+We wanted to let you know about a way to earn store credit just by spreading the word.
+
+If you know another independent researcher who could benefit from our catalog, simply tell them to mention your name at checkout. When they place their first order, you'll automatically receive 20% of their order total as store credit — no code required on your end.
+
+How it works:
+1. Tell a colleague about The Peptide Wizard
+2. They sign up and add your name in the "Who introduced you?" field at checkout
+3. You automatically earn 20% store credit when their first order ships
+
+There's no limit — every new researcher you introduce earns you credit toward your next order.
+
+Log in at thepeptidewizard.com to shop or check your credit balance.
+
+All materials are for laboratory research purposes only. Not for human or animal consumption.
+
+— The Peptide Wizard Team`,
+                    color: '#2b4acb',
+                    label: '👋 No Referral Code'
+                }
+            };
+
+            const campaign = campaigns[type];
+            if (!campaign) return;
+
+            try {
+                showAlert('Loading segment...', 'success');
+                const result = await api(campaign.endpoint);
+                const users = result.users || [];
+
+                if (users.length === 0) {
+                    showAlert('No users match this segment right now.', 'success');
+                    return;
+                }
+
+                // Update the selected users
+                emailUsers = users;
+                selectedUserIds = new Set(users.map(u => u.id));
+
+                // Pre-fill the compose form
+                renderEmail();
+
+                // Set values after render
+                setTimeout(() => {
+                    const subjectEl = document.getElementById('emailSubject');
+                    const bodyEl = document.getElementById('emailBody');
+                    if (subjectEl) subjectEl.value = campaign.subject;
+                    if (bodyEl) bodyEl.value = campaign.body;
+                    // Scroll to compose area
+                    subjectEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 100);
+
+                showAlert(`✅ ${users.length} users loaded for "${campaign.label}" campaign. Review and send when ready.`, 'success');
+            } catch (err) {
+                showAlert('Failed to load segment: ' + err.message);
+            }
+        }
+
         async function loadEmail() {
             try {
                 // Load products if not already loaded (needed for sale products display)
@@ -2722,6 +2808,26 @@ BC10,8.00</pre>
             const selectedCount = selectedUserIds.size;
             
             content.innerHTML = `
+                <!-- ── Targeted Campaigns ── -->
+                <div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:20px;">
+                    <h3 style="margin:0 0 6px 0;">🎯 Targeted Campaigns</h3>
+                    <p style="color:#718096;font-size:14px;margin:0 0 16px 0;">One-click campaigns that auto-select the right audience and pre-fill your message.</p>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                        <div style="flex:1;min-width:260px;background:#f0fff4;border:1px solid #9ae6b4;border-radius:10px;padding:16px;">
+                            <div style="font-size:1.3rem;margin-bottom:6px;">🆕</div>
+                            <div style="font-weight:700;color:#276749;margin-bottom:4px;">Never Ordered — WELCOME30</div>
+                            <div style="font-size:13px;color:#2f855a;margin-bottom:12px;">Registered users who have never placed a paid order. Send them 30% off their first order.</div>
+                            <button class="btn btn-success btn-small" onclick="launchCampaign('never-ordered')">Load Campaign →</button>
+                        </div>
+                        <div style="flex:1;min-width:260px;background:#f0f4ff;border:1px solid #c3d3f7;border-radius:10px;padding:16px;">
+                            <div style="font-size:1.3rem;margin-bottom:6px;">👋</div>
+                            <div style="font-weight:700;color:#2b4acb;margin-bottom:4px;">No Referral Code — Refer a Friend</div>
+                            <div style="font-size:13px;color:#3c56c7;margin-bottom:12px;">Users without a referral code. Tell them they can earn 20% credit by introducing new researchers.</div>
+                            <button class="btn btn-small" style="background:#2b4acb;color:white;" onclick="launchCampaign('no-referral-code')">Load Campaign →</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
                     <div class="card">
                         <h3 style="margin-bottom: 15px;">📧 Send Email Blast</h3>
