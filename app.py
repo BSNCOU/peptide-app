@@ -791,25 +791,33 @@ def init_db():
         if using_postgres:
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS referrer_user_id INTEGER DEFAULT NULL")
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS commission_percent REAL DEFAULT 20")
+            c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS first_order_only INTEGER DEFAULT 0")
             c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_credit REAL DEFAULT 0")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
+            c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS introducer_user_id INTEGER DEFAULT NULL")
+            c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_promo INTEGER DEFAULT 0")
         else:
             try:
                 c.execute("ALTER TABLE discount_codes ADD COLUMN referrer_user_id INTEGER DEFAULT NULL")
-            except:
-                pass
+            except: pass
             try:
                 c.execute("ALTER TABLE discount_codes ADD COLUMN commission_percent REAL DEFAULT 20")
-            except:
-                pass
+            except: pass
+            try:
+                c.execute("ALTER TABLE discount_codes ADD COLUMN first_order_only INTEGER DEFAULT 0")
+            except: pass
             try:
                 c.execute("ALTER TABLE users ADD COLUMN referral_credit REAL DEFAULT 0")
-            except:
-                pass
+            except: pass
             try:
                 c.execute("ALTER TABLE orders ADD COLUMN credit_applied REAL DEFAULT 0")
-            except:
-                pass
+            except: pass
+            try:
+                c.execute("ALTER TABLE orders ADD COLUMN introducer_user_id INTEGER DEFAULT NULL")
+            except: pass
+            try:
+                c.execute("ALTER TABLE orders ADD COLUMN is_promo INTEGER DEFAULT 0")
+            except: pass
         conn.commit()
     except Exception as e:
         print(f"Note: Referral column migration: {e}")
@@ -1978,6 +1986,25 @@ def get_categories():
 # ROUTES - DISCOUNT CODES
 # ============================================
 
+@app.route('/api/search-users', methods=['GET'])
+@login_required
+def search_users():
+    """Search customers by name or email — used for casual referral introducer lookup at checkout."""
+    q = request.args.get('q', '').strip()
+    if len(q) < 2:
+        return jsonify([])
+    conn = get_db()
+    results = conn.execute(
+        """SELECT id, full_name, email FROM users
+           WHERE (full_name LIKE ? OR email LIKE ?)
+           AND id != ? AND is_admin = 0
+           LIMIT 8""",
+        (f'%{q}%', f'%{q}%', session['user_id'])
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in results])
+
+
 @app.route('/api/validate-discount', methods=['POST'])
 @login_required
 def validate_discount():
@@ -1999,6 +2026,17 @@ def validate_discount():
     if subtotal < discount['min_order_amount']:
         conn.close()
         return jsonify({'error': f"Min order ${discount['min_order_amount']:.2f} required"}), 400
+    
+    # Check first-order-only restriction
+    if discount['first_order_only']:
+        prior = conn.execute(
+            """SELECT COUNT(*) as cnt FROM orders WHERE user_id=?
+               AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')""",
+            (session['user_id'],)
+        ).fetchone()
+        if prior and prior['cnt'] > 0:
+            conn.close()
+            return jsonify({'error': 'This code is for first-time orders only.'}), 400
     
     # Check if cart has sale items - discount only applies to non-sale items
     cart_items = data.get('cart_items', [])
@@ -2314,6 +2352,16 @@ def create_order():
             AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
             AND (usage_limit IS NULL OR times_used < usage_limit)''', (data['discount_code'].upper(),)).fetchone()
         if discount and subtotal >= discount['min_order_amount']:
+            # First-order-only check
+            if discount['first_order_only']:
+                prior_paid = c.execute(
+                    """SELECT COUNT(*) as cnt FROM orders
+                       WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')""",
+                    (session['user_id'],)
+                ).fetchone()
+                if prior_paid and prior_paid['cnt'] > 0:
+                    conn.close()
+                    return jsonify({'error': 'This code is for first-time orders only.'}), 400
             discount_code_id = discount['id']
             c.execute('UPDATE discount_codes SET times_used=times_used+1 WHERE id=?', (discount['id'],))
             
@@ -2376,9 +2424,10 @@ def create_order():
     if total < 0:
         total = 0
     order_number = gen_order_num()
+    introducer_user_id = data.get('introducer_user_id') or None
     
-    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,credit_applied,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', '')))
+    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,credit_applied,total,notes,shipping_address,introducer_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', ''), introducer_user_id))
     order_id = c.lastrowid
     
     for item in order_items:
@@ -2666,11 +2715,38 @@ def stripe_webhook():
                     'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
                     (order_id,)).fetchall()]
                 user_info = conn2.execute('SELECT full_name,email,phone FROM users WHERE id=?', (order_dict['user_id'],)).fetchone()
-                conn2.close()
                 if user_info:
                     order_dict['full_name'] = user_info['full_name']
                     order_dict['email'] = user_info['email']
                     order_dict['phone'] = user_info['phone']
+
+                # ── Casual Referral: 20% credit to introducer on buyer's FIRST paid order ──
+                introducer_id = order_dict.get('introducer_user_id')
+                if introducer_id:
+                    prior_paid_count = conn2.execute(
+                        """SELECT COUNT(*) as cnt FROM orders
+                           WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+                           AND id != ?""",
+                        (order_dict['user_id'], int(order_id))
+                    ).fetchone()
+                    is_first_order = (prior_paid_count['cnt'] == 0) if prior_paid_count else True
+                    if is_first_order:
+                        commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
+                        if commission > 0:
+                            conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
+                                         (commission, introducer_id))
+                            conn2.execute(
+                                """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
+                                   VALUES (?,?,?,?,?)""",
+                                (introducer_id, int(order_id), 'earned',
+                                 commission,
+                                 f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
+                            )
+                            conn2.commit()
+                            print(f"[REFERRAL] ${commission:.2f} credit given to user {introducer_id} for introducing {order_dict['user_id']}")
+
+                conn2.commit()
+                conn2.close()
                 send_new_order_admin_notification(order_dict, items_for_admin)
     
     elif event['type'] == 'payment_intent.payment_failed':
@@ -3705,8 +3781,8 @@ def admin_add_code():
 def admin_update_code(cid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=? WHERE id=?',
-                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), cid))
+    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=?,first_order_only=? WHERE id=?',
+                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('first_order_only') else 0, cid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Code updated'})
@@ -5582,6 +5658,95 @@ def admin_complete_refund(return_id):
     conn.close()
     
     return jsonify({'message': 'Refund marked as completed'})
+
+
+@app.route('/api/admin/promo-order', methods=['POST'])
+@admin_required
+def admin_create_promo_order():
+    """Create a $0 promotional order for a customer. Stock deducts, email fires, no payment needed."""
+    data = request.json
+    user_id = data.get('user_id')
+    items = data.get('items', [])
+    notes = data.get('notes', 'Complimentary promotional order from The Peptide Wizard')
+
+    if not user_id or not items:
+        return jsonify({'error': 'user_id and items required'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Validate user
+    user = c.execute('SELECT id, full_name, email, phone FROM users WHERE id=?', (user_id,)).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({'error': 'User not found'}), 404
+    user = dict(user)
+
+    # Validate products and build line items
+    order_items = []
+    for item in items:
+        product = c.execute('SELECT * FROM products WHERE id=? AND active=1', (item['product_id'],)).fetchone()
+        if not product:
+            conn.close()
+            return jsonify({'error': f"Product {item['product_id']} not found"}), 400
+        qty = int(item.get('quantity', 1))
+        if product['stock'] < qty:
+            conn.close()
+            return jsonify({'error': f"Insufficient stock for {product['name']} (have {product['stock']}, need {qty})"}), 400
+        order_items.append({'product_id': product['id'], 'name': product['name'], 'sku': product['sku'],
+                            'quantity': qty, 'unit_price': 0.0})
+
+    order_number = gen_order_num()
+
+    # Insert $0 order, status=fulfilled, is_promo=1
+    c.execute('''INSERT INTO orders
+                 (user_id, order_number, subtotal, discount_amount, total,
+                  status, delivery_method, notes, is_promo, created_at, updated_at)
+                 VALUES (?,?,0,0,0,'fulfilled','pickup',?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
+              (user_id, order_number, notes))
+    order_id = c.lastrowid
+
+    for item in order_items:
+        c.execute('INSERT INTO order_items (order_id,product_id,quantity,unit_price,is_bulk_price) VALUES (?,?,?,0,0)',
+                  (order_id, item['product_id'], item['quantity']))
+        c.execute('UPDATE products SET stock=stock-? WHERE id=?', (item['quantity'], item['product_id']))
+
+    conn.commit()
+
+    # Build and send confirmation email to customer
+    items_html = "".join([f"""<tr>
+        <td style="padding:10px;border-bottom:1px solid #eee;">{i['name']}</td>
+        <td style="padding:10px;border-bottom:1px solid #eee;text-align:center;">{i['quantity']}</td>
+        <td style="padding:10px;border-bottom:1px solid #eee;text-align:right;color:#38a169;font-weight:600;">Complimentary</td>
+    </tr>""" for i in order_items])
+
+    html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px;background:#f9f9f9;">
+    <div style="background:white;padding:30px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1);">
+        <h2 style="color:#1a1a1a;">🎁 A Gift From The Peptide Wizard</h2>
+        <p>Hi {user['full_name'].split()[0]},</p>
+        <p>We're sending you a complimentary shipment — no action needed on your end. Here's what's on its way:</p>
+        <table style="width:100%;border-collapse:collapse;margin:20px 0;">
+            <tr style="background:#333;color:white;">
+                <th style="padding:12px;text-align:left;">Product</th>
+                <th style="padding:12px;text-align:center;">Qty</th>
+                <th style="padding:12px;text-align:right;">Price</th>
+            </tr>
+            {items_html}
+        </table>
+        <p style="font-size:14px;color:#555;">{notes}</p>
+        <div style="background:#fff3cd;border:1px solid #ffc107;padding:15px;border-radius:8px;margin-top:20px;">
+            <strong>⚠️ Research Use Only</strong><br>
+            <span style="font-size:13px;">All materials are for laboratory research purposes only. Not for human or animal consumption.</span>
+        </div>
+        <p style="color:#718096;font-size:13px;margin-top:20px;">Order reference: {order_number}</p>
+    </div>
+    </body></html>"""
+
+    send_email(user['email'], "🎁 Complimentary Order from The Peptide Wizard", html)
+    conn.close()
+
+    return jsonify({'message': f'Promo order {order_number} created and email sent to {user["email"]}',
+                    'order_number': order_number, 'order_id': order_id})
 
 
 @app.route('/api/admin/users/<int:uid>/add-credit', methods=['POST'])

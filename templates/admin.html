@@ -2102,6 +2102,13 @@ BC10,8.00</pre>
                                 <input type="date" id="discExpires" value="${d.expires_at ? d.expires_at.substring(0,10) : ''}">
                                 ${d.expires_at ? `<div style="margin-top:4px;font-size:0.82rem;color:#e53e3e;">⚠️ Currently expires: ${new Date(d.expires_at).toLocaleDateString()} — clear this if you don't want it to expire</div>` : '<div style="margin-top:4px;font-size:0.82rem;color:#38a169;">✓ No expiration set</div>'}
                             </div>
+                            <div style="background:#fff5f5;border:1px solid #fed7d7;border-radius:8px;padding:14px;margin-bottom:4px;">
+                                <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;color:#c53030;">
+                                    <input type="checkbox" id="discFirstOrder" ${d.first_order_only ? 'checked' : ''} style="width:18px;height:18px;cursor:pointer;">
+                                    🆕 First-Time Order Only
+                                </label>
+                                <p style="color:#742a2a;font-size:13px;margin:6px 0 0 28px;">If checked, this code will be rejected at checkout for anyone who has already placed a paid order. Use for new customer welcome discounts like WELCOME30.</p>
+                            </div>
                             <div style="background: #f0fff4; padding: 15px; border-radius: 8px; margin-top: 15px;">
                                 <h4 style="margin-bottom: 10px; color: #276749;">👥 Referral Settings</h4>
                                 <div class="form-row">
@@ -2143,6 +2150,7 @@ BC10,8.00</pre>
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
                         usage_limit: parseInt(document.getElementById('discLimit').value) || null,
                         expires_at: expiresVal || null,
+                        first_order_only: document.getElementById('discFirstOrder').checked ? 1 : 0,
                         referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
                         commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
                     })
@@ -2348,6 +2356,7 @@ BC10,8.00</pre>
                                         <button class="btn btn-small" onclick="showUserDetailModal(${u.id})">View</button>
                                         <button class="btn btn-secondary btn-small" onclick="showEditUserModal(${u.id})">Edit</button>
                                         <button class="btn btn-success btn-small" onclick="showAddCreditModal(${u.id}, '${escapeHtml(u.full_name).replace(/'/g, "\\'")}', ${credit})">💰 Credit</button>
+                                        <button class="btn btn-small" style="background:#805ad5;color:white;" onclick="showPromoOrderModal(${u.id}, '${escapeHtml(u.full_name).replace(/'/g, "\\'")}', '${escapeHtml(u.email).replace(/'/g, "\\'")}')">🎁 Promo</button>
                                         <button class="btn btn-warning btn-small" onclick="showResetPasswordModal(${u.id}, '${escapeHtml(u.full_name).replace(/'/g, "\\'")}', '${escapeHtml(u.email).replace(/'/g, "\\'")}')">🔐 Reset PW</button>
                                         ${!u.email_verified ? '<button class="btn btn-success btn-small" onclick="resendVerification(' + u.id + ')">Resend</button>' : ''}
                                         <button class="btn btn-small ${u.is_admin ? 'btn-warning' : 'btn-secondary'}" 
@@ -5805,6 +5814,103 @@ The Peptide Wizard Team"></textarea>
                 
             } catch (err) {
                 showAlert('Error: ' + err.message, 'error');
+            }
+        }
+
+        async function showPromoOrderModal(userId, userName, userEmail) {
+            // Load products for the picker
+            const products = state.products || await api('/api/products').catch(() => []);
+            const activeProducts = products.filter(p => p.active !== false && p.stock > 0);
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:680px;">
+                        <h3>🎁 Send Promo Order</h3>
+                        <p style="color:#718096;margin:0 0 16px 0;">
+                            <strong>${escapeHtml(userName)}</strong> — ${escapeHtml(userEmail)}<br>
+                            <small>Creates a $0 fulfilled order. Stock deducts and customer gets a gift email.</small>
+                        </p>
+
+                        <div style="background:#f7fafc;border-radius:8px;padding:16px;margin-bottom:16px;">
+                            <h4 style="margin:0 0 12px 0;">Select Products</h4>
+                            <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+                                <select id="promoProductSelect" style="flex:1;min-width:200px;padding:9px;border:1px solid #e2e8f0;border-radius:6px;">
+                                    <option value="">-- Choose product --</option>
+                                    ${activeProducts.map(p => `<option value="${p.id}" data-name="${escapeHtml(p.name)}" data-sku="${escapeHtml(p.sku)}" data-stock="${p.stock}">${escapeHtml(p.sku)} — ${escapeHtml(p.name)} (${p.stock} in stock)</option>`).join('')}
+                                </select>
+                                <input type="number" id="promoQty" value="1" min="1" style="width:70px;padding:9px;border:1px solid #e2e8f0;border-radius:6px;">
+                                <button class="btn" onclick="addPromoItem()">+ Add</button>
+                            </div>
+                            <div id="promoItemsList" style="min-height:40px;"></div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Personal Note to Customer (optional)</label>
+                            <textarea id="promoNotes" rows="2" placeholder="e.g. Thanks for being an amazing customer!"
+                                style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;font-size:14px;box-sizing:border-box;">Complimentary from The Peptide Wizard — thank you for your support!</textarea>
+                        </div>
+
+                        <div style="display:flex;gap:10px;margin-top:16px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button class="btn" style="background:#805ad5;color:white;" onclick="sendPromoOrder(${userId})">🎁 Send Promo Order & Email</button>
+                        </div>
+                    </div>
+                </div>`;
+
+            window._promoItems = [];
+            renderPromoItems();
+        }
+
+        window._promoItems = [];
+
+        function addPromoItem() {
+            const sel = document.getElementById('promoProductSelect');
+            const qty = parseInt(document.getElementById('promoQty').value) || 1;
+            if (!sel.value) { showAlert('Please select a product'); return; }
+            const opt = sel.options[sel.selectedIndex];
+            const stock = parseInt(opt.dataset.stock) || 0;
+            if (qty > stock) { showAlert(`Only ${stock} in stock`); return; }
+            const existing = window._promoItems.find(i => i.product_id == sel.value);
+            if (existing) {
+                existing.quantity = Math.min(existing.quantity + qty, stock);
+            } else {
+                window._promoItems.push({ product_id: parseInt(sel.value), name: opt.dataset.name, sku: opt.dataset.sku, quantity: qty, stock });
+            }
+            renderPromoItems();
+        }
+
+        function renderPromoItems() {
+            const el = document.getElementById('promoItemsList');
+            if (!el) return;
+            if (window._promoItems.length === 0) {
+                el.innerHTML = '<p style="color:#a0aec0;font-size:14px;margin:0;">No items added yet.</p>';
+                return;
+            }
+            el.innerHTML = window._promoItems.map((item, idx) => `
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:white;border:1px solid #e2e8f0;border-radius:6px;margin-top:6px;">
+                    <span><strong>${escapeHtml(item.sku)}</strong> — ${escapeHtml(item.name)}</span>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input type="number" value="${item.quantity}" min="1" max="${item.stock}"
+                            style="width:60px;padding:5px;border:1px solid #e2e8f0;border-radius:4px;"
+                            onchange="window._promoItems[${idx}].quantity=Math.min(parseInt(this.value)||1,${item.stock});renderPromoItems()">
+                        <button class="btn btn-danger btn-small" onclick="window._promoItems.splice(${idx},1);renderPromoItems()">✕</button>
+                    </div>
+                </div>`).join('');
+        }
+
+        async function sendPromoOrder(userId) {
+            if (window._promoItems.length === 0) { showAlert('Add at least one product'); return; }
+            const notes = document.getElementById('promoNotes').value.trim();
+            try {
+                const result = await api('/api/admin/promo-order', {
+                    method: 'POST',
+                    body: JSON.stringify({ user_id: userId, items: window._promoItems, notes })
+                });
+                closeModal();
+                showAlert(`✅ Promo order ${result.order_number} sent! Email delivered to customer.`, 'success');
+                window._promoItems = [];
+            } catch (err) {
+                showAlert('Failed: ' + err.message);
             }
         }
 

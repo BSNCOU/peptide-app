@@ -1053,6 +1053,17 @@
                                     </label>
                                 </div>
                             </div>
+
+                            <div style="background:#f0f4ff;border:1px solid #c3d3f7;border-radius:8px;padding:14px;margin-top:10px;">
+                                <label style="font-weight:600;font-size:14px;color:#2b4acb;display:block;margin-bottom:6px;">👋 Who introduced you to us? <span style="font-weight:normal;color:#718096;">(optional)</span></label>
+                                <input type="text" id="introducerSearch" placeholder="Start typing a name or email..."
+                                    style="width:100%;padding:9px;border:1px solid #c3d3f7;border-radius:6px;font-size:14px;box-sizing:border-box;"
+                                    oninput="searchIntroducer(this.value)">
+                                <div id="introducerResults" style="margin-top:6px;"></div>
+                                <input type="hidden" id="introducerUserId">
+                                <p style="font-size:12px;color:#718096;margin:6px 0 0 0;">If someone referred you, they'll earn 20% store credit as a thank-you when your first order ships.</p>
+                            </div>
+
                             <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
                                 <button type="button" class="btn btn-success" onclick="submitOrder()" style="padding: 15px; font-size: 1.1rem;">Place Order</button>
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()" style="padding: 12px;">Cancel</button>
@@ -1201,6 +1212,38 @@
             document.getElementById('checkoutTotal').textContent = '$' + total.toFixed(2);
         }
 
+        let _introducerSearchTimer = null;
+        async function searchIntroducer(query) {
+            const resultsEl = document.getElementById('introducerResults');
+            const hiddenEl = document.getElementById('introducerUserId');
+            hiddenEl.value = '';
+            if (!query || query.length < 2) { resultsEl.innerHTML = ''; return; }
+            clearTimeout(_introducerSearchTimer);
+            _introducerSearchTimer = setTimeout(async () => {
+                try {
+                    const users = await api('/api/search-users?q=' + encodeURIComponent(query));
+                    if (!users || users.length === 0) {
+                        resultsEl.innerHTML = '<p style="font-size:13px;color:#718096;margin:4px 0;">No matching customers found.</p>';
+                        return;
+                    }
+                    resultsEl.innerHTML = users.map(u => `
+                        <div onclick="selectIntroducer(${u.id}, '${escapeHtml(u.full_name)}')"
+                             style="padding:8px 12px;background:white;border:1px solid #c3d3f7;border-radius:6px;margin-top:4px;cursor:pointer;font-size:14px;"
+                             onmouseover="this.style.background='#ebf0ff'" onmouseout="this.style.background='white'">
+                            <strong>${escapeHtml(u.full_name)}</strong>
+                            <span style="color:#718096;margin-left:8px;">${escapeHtml(u.email)}</span>
+                        </div>`).join('');
+                } catch(e) { resultsEl.innerHTML = ''; }
+            }, 300);
+        }
+
+        function selectIntroducer(id, name) {
+            document.getElementById('introducerUserId').value = id;
+            document.getElementById('introducerSearch').value = name;
+            document.getElementById('introducerResults').innerHTML =
+                `<div style="font-size:13px;color:#276749;margin-top:4px;">✓ ${escapeHtml(name)} will receive 20% credit if this is your first order.</div>`;
+        }
+
         async function submitOrder() {
             // Check all acknowledgments are checked
             const ack1 = document.getElementById('ack1').checked;
@@ -1261,6 +1304,7 @@
                         shipping_address: shippingAddress,
                         shipping_address_data: addressData,
                         apply_credit: applyCredit,
+                        introducer_user_id: parseInt(document.getElementById('introducerUserId')?.value) || null,
                         final_attestation: true,
                         acknowledgments: {
                             research_only: ack1,
