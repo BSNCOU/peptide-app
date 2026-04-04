@@ -5976,6 +5976,108 @@ def admin_send_credit_statement(uid):
         return jsonify({'error': f'Email failed: {msg}'}), 500
 
 
+@app.route('/api/admin/active-carts', methods=['GET'])
+@admin_required
+def admin_get_active_carts():
+    """Get all non-converted saved carts with user info and cart contents."""
+    conn = get_db()
+    rows = conn.execute('''
+        SELECT sc.*, u.full_name, u.email, u.phone
+        FROM saved_carts sc
+        JOIN users u ON sc.user_id = u.id
+        WHERE sc.converted = 0
+          AND sc.cart_json IS NOT NULL
+          AND sc.cart_json != '[]'
+        ORDER BY sc.updated_at DESC
+    ''').fetchall()
+    conn.close()
+
+    result = []
+    for row in rows:
+        row_dict = dict(row)
+        try:
+            row_dict['items'] = json.loads(row_dict['cart_json'])
+        except Exception:
+            row_dict['items'] = []
+        del row_dict['cart_json']
+        result.append(row_dict)
+
+    return jsonify(result)
+
+
+@app.route('/api/admin/active-carts/<int:user_id>/message', methods=['POST'])
+@admin_required
+def admin_message_cart_user(user_id):
+    """Send a custom email to a user about their active cart."""
+    data = request.json
+    subject = data.get('subject', '').strip()
+    message = data.get('message', '').strip()
+
+    if not subject or not message:
+        return jsonify({'error': 'Subject and message are required'}), 400
+
+    conn = get_db()
+    user = conn.execute('SELECT full_name, email FROM users WHERE id=?', (user_id,)).fetchone()
+    cart = conn.execute('SELECT cart_json FROM saved_carts WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    user = dict(user)
+    first_name = user['full_name'].split()[0]
+
+    # Build cart items table if cart exists
+    cart_html = ''
+    if cart:
+        try:
+            items = json.loads(cart['cart_json'])
+            if items:
+                rows = ''.join([f"""<tr>
+                    <td style="padding:8px;border-bottom:1px solid #eee;">{i.get('name','')}</td>
+                    <td style="padding:8px;border-bottom:1px solid #eee;text-align:center;">{i.get('quantity',1)}</td>
+                    <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">${float(i.get('price',0)):.2f}</td>
+                </tr>""" for i in items])
+                cart_html = f"""
+                <div style="background:#f7fafc;border-radius:8px;padding:15px;margin:20px 0;">
+                    <p style="font-weight:600;margin:0 0 10px 0;color:#2d3748;">Items in your cart:</p>
+                    <table style="width:100%;border-collapse:collapse;">
+                        <tr style="background:#e2e8f0;">
+                            <th style="padding:8px;text-align:left;">Product</th>
+                            <th style="padding:8px;text-align:center;">Qty</th>
+                            <th style="padding:8px;text-align:right;">Price</th>
+                        </tr>
+                        {rows}
+                    </table>
+                </div>"""
+        except Exception:
+            pass
+
+    app_url = CONFIG.get('APP_URL', 'https://thepeptidewizard.com')
+    html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px;background:#f9f9f9;">
+    <div style="background:white;padding:30px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1);">
+        <p>Hi {first_name},</p>
+        <div style="font-size:15px;line-height:1.6;color:#2d3748;">{message.replace(chr(10), '<br>')}</div>
+        {cart_html}
+        <div style="text-align:center;margin:25px 0;">
+            <a href="{app_url}" style="background:#3b82f6;color:white;padding:14px 32px;border-radius:8px;
+               text-decoration:none;font-weight:600;font-size:15px;display:inline-block;">
+               Complete My Order →
+            </a>
+        </div>
+        <p style="color:#999;font-size:12px;text-align:center;">
+            All materials are for laboratory research purposes only. Not for human or animal consumption.
+        </p>
+    </div>
+    </body></html>"""
+
+    ok, msg = send_email(user['email'], subject, html)
+    if ok:
+        return jsonify({'message': f'Message sent to {user["email"]}'})
+    else:
+        return jsonify({'error': f'Email failed: {msg}'}), 500
+
+
 @app.route('/api/admin/users/<int:uid>/reset-password', methods=['POST'])
 @admin_required
 def admin_reset_user_password(uid):

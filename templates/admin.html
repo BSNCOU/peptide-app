@@ -125,6 +125,7 @@
                 <button onclick="showTab('email')">📧 Email</button>
                 <button onclick="showTab('notifications')">Notifications</button>
                 <button onclick="showTab('todos')">✅ To-Do</button>
+                <button onclick="showTab('activeCarts')" style="background:#805ad5;color:white;">🛒 Active Carts</button>
                 <button onclick="showTab('settings')">⚙️ Settings</button>
             </div>
             <div id="tabContent"></div>
@@ -245,7 +246,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','readyToShip','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','settings'];
+            const tabList = ['products','inventory','orders','openOrders','readyToShip','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','activeCarts','settings'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -262,6 +263,7 @@
                 case 'email': loadEmail(); break;
                 case 'notifications': loadNotifications(); break;
                 case 'todos': loadTodos(); break;
+                case 'activeCarts': loadActiveCarts(); break;
                 case 'settings': loadSettings(); break;
             }
         }
@@ -3242,6 +3244,133 @@ The Peptide Wizard Team"></textarea>
         }
 
         // Notifications
+        async function loadActiveCarts() {
+            const content = document.getElementById('tabContent');
+            content.innerHTML = '<p style="text-align:center;padding:40px;color:#718096;">Loading active carts...</p>';
+            try {
+                const carts = await api('/api/admin/active-carts');
+
+                if (carts.length === 0) {
+                    content.innerHTML = `
+                        <div style="text-align:center;padding:60px 20px;background:#f7fafc;border-radius:12px;">
+                            <div style="font-size:3rem;margin-bottom:15px;">🛒</div>
+                            <h3 style="color:#4a5568;margin:0 0 10px 0;">No Active Carts</h3>
+                            <p style="color:#718096;margin:0;">No customers have items sitting in their cart right now.</p>
+                        </div>`;
+                    return;
+                }
+
+                content.innerHTML = `
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
+                        <div>
+                            <h3 style="margin:0;color:#2d3748;">🛒 Active Carts (${carts.length})</h3>
+                            <p style="color:#718096;font-size:0.9rem;margin:4px 0 0 0;">Customers with items in their cart that haven't checked out yet</p>
+                        </div>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:12px;">
+                        ${carts.map(cart => {
+                            const items = cart.items || [];
+                            const cartTotal = items.reduce((s, i) => s + (parseFloat(i.price||0) * (i.quantity||1)), 0);
+                            const idleTime = getIdleTime(cart.updated_at);
+                            const reminderInfo = cart.reminder_count > 0
+                                ? `<span style="background:#fbd38d;color:#744210;padding:2px 8px;border-radius:10px;font-size:12px;">📧 ${cart.reminder_count} reminder${cart.reminder_count>1?'s':''} sent</span>`
+                                : '<span style="background:#e2e8f0;color:#718096;padding:2px 8px;border-radius:10px;font-size:12px;">No reminders sent</span>';
+                            return `
+                            <div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:18px;">
+                                <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+                                    <div>
+                                        <div style="font-weight:700;font-size:16px;">${escapeHtml(cart.full_name)}</div>
+                                        <div style="color:#718096;font-size:14px;">${escapeHtml(cart.email)}</div>
+                                        <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                                            <span style="background:#e8f4fd;color:#2b6cb0;padding:2px 8px;border-radius:10px;font-size:12px;">⏱ Idle ${idleTime}</span>
+                                            ${reminderInfo}
+                                        </div>
+                                    </div>
+                                    <div style="text-align:right;">
+                                        <div style="font-size:20px;font-weight:700;color:#2d3748;">$${cartTotal.toFixed(2)}</div>
+                                        <div style="font-size:13px;color:#718096;">${items.length} item${items.length!==1?'s':''}</div>
+                                    </div>
+                                </div>
+
+                                <div style="margin:12px 0;padding:10px;background:#f7fafc;border-radius:8px;">
+                                    ${items.map(i => `
+                                        <div style="display:flex;justify-content:space-between;font-size:14px;padding:3px 0;">
+                                            <span>${escapeHtml(i.name||'')}</span>
+                                            <span style="color:#718096;">×${i.quantity||1} @ $${parseFloat(i.price||0).toFixed(2)}</span>
+                                        </div>`).join('')}
+                                </div>
+
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                    <button class="btn btn-success btn-small" onclick="showCartMessageModal(${cart.user_id}, '${escapeHtml(cart.full_name)}', '${escapeHtml(cart.email)}')">
+                                        📧 Message Customer
+                                    </button>
+                                    <button class="btn btn-small" onclick="showUserDetailModal(${cart.user_id})">
+                                        View Profile
+                                    </button>
+                                </div>
+                            </div>`;
+                        }).join('')}
+                    </div>`;
+            } catch (err) {
+                content.innerHTML = `<p style="color:#e53e3e;text-align:center;padding:40px;">Error: ${err.message}</p>`;
+            }
+        }
+
+        function getIdleTime(updatedAt) {
+            if (!updatedAt) return 'unknown';
+            const diff = Date.now() - new Date(updatedAt).getTime();
+            const mins = Math.floor(diff / 60000);
+            if (mins < 60) return `${mins}m`;
+            const hrs = Math.floor(mins / 60);
+            if (hrs < 24) return `${hrs}h`;
+            return `${Math.floor(hrs / 24)}d`;
+        }
+
+        function showCartMessageModal(userId, userName, userEmail) {
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:560px;">
+                        <h3>📧 Message Customer</h3>
+                        <p style="color:#718096;margin:0 0 16px 0;">
+                            <strong>${escapeHtml(userName)}</strong> — ${escapeHtml(userEmail)}<br>
+                            <small>Their cart items will be shown at the bottom of the email automatically.</small>
+                        </p>
+                        <div class="form-group">
+                            <label>Subject</label>
+                            <input type="text" id="cartMsgSubject"
+                                value="Hey — you left something in your cart!"
+                                style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;box-sizing:border-box;">
+                        </div>
+                        <div class="form-group">
+                            <label>Message</label>
+                            <textarea id="cartMsgBody" rows="6"
+                                style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;font-size:14px;box-sizing:border-box;"
+                                placeholder="Write your personal message here...">${escapeHtml(userName.split(' ')[0])}, just wanted to reach out — looks like you had some items in your cart. Let me know if you have any questions or if there's anything I can help with!\n\nYour cart is saved and ready when you are.\n\n— The Peptide Wizard Team</textarea>
+                        </div>
+                        <div style="display:flex;gap:10px;margin-top:16px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button class="btn btn-success" onclick="sendCartMessage(${userId}, '${escapeHtml(userEmail)}')">📧 Send Message</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        async function sendCartMessage(userId, userEmail) {
+            const subject = document.getElementById('cartMsgSubject').value.trim();
+            const message = document.getElementById('cartMsgBody').value.trim();
+            if (!subject || !message) { showAlert('Subject and message required'); return; }
+            try {
+                await api(`/api/admin/active-carts/${userId}/message`, {
+                    method: 'POST',
+                    body: JSON.stringify({ subject, message })
+                });
+                closeModal();
+                showAlert(`Message sent to ${userEmail}!`, 'success');
+            } catch (err) {
+                showAlert('Failed: ' + err.message);
+            }
+        }
+
         async function loadNotifications() {
             try {
                 state.notifications = await api('/api/admin/notifications');
