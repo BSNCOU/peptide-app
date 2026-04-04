@@ -1371,12 +1371,28 @@ BC10,8.00</pre>
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                             <button class="btn" onclick="showEditOrderModal(${o.id})">✏️ Edit Order</button>
                             <button class="btn" style="background: #ed8936;" onclick="createReplacementOrder(${o.id}, '${escapeHtml(o.order_number)}')">🔄 Create Replacement</button>
+                            ${parseFloat(o.total || 0) === 0 && ['pending','pending_payment'].includes(o.status) ? `
+                                <button class="btn btn-success" onclick="markZeroTotalPaid(${o.id})" style="background:#276749;">
+                                    ✅ Mark as Paid ($0 — Credits Covered)
+                                </button>` : ''}
                         </div>
                     </div>
                 </div>
             `;
         }
         
+        async function markZeroTotalPaid(orderId) {
+            if (!confirm('Mark this $0 order as paid? The customer will receive a payment confirmation email.')) return;
+            try {
+                const result = await api(`/api/admin/orders/${orderId}/mark-paid-zero-total`, { method: 'POST' });
+                showAlert(result.message, 'success');
+                closeModal();
+                state.orders = await api('/api/admin/orders');
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
         async function createReplacementOrder(orderId, orderNumber) {
             const reason = prompt('Reason for replacement:', 'Shipping error - sent wrong items');
             if (reason === null) return; // Cancelled

@@ -2483,7 +2483,32 @@ def create_order():
     except Exception:
         pass
 
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': 'pending_payment'}), 201
+    # If total is $0 (fully covered by credits/discount), auto-mark as paid immediately
+    # No Stripe needed — credits already deducted at order creation
+    final_status = 'pending_payment'
+    if total <= 0:
+        try:
+            conn3 = get_db()
+            conn3.execute(
+                "UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (order_id,)
+            )
+            conn3.commit()
+            conn3.close()
+            send_status_update(order_id, 'paid')
+            send_new_order_admin_notification(
+                {'order_number': order_number, 'full_name': '', 'email': '', 'phone': '',
+                 'subtotal': subtotal, 'discount_amount': discount_amount, 'shipping_cost': shipping_cost,
+                 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'credit_applied': credit_applied,
+                 'total': total, 'delivery_method': delivery_method, 'shipping_address': '', 'notes': ''},
+                []
+            )
+            final_status = 'paid'
+            print(f"[ORDER] Order {order_number} auto-marked paid (${total:.2f} total, fully covered by credits)")
+        except Exception as e:
+            print(f"[ORDER] Auto-pay failed for zero-total order {order_number}: {e}")
+
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': final_status}), 201
 
 
 # ============================================
@@ -4298,6 +4323,29 @@ def admin_update_order_status(oid):
     
     conn.close()
     return jsonify({'message': 'Status updated'})
+
+
+@app.route('/api/admin/orders/<int:oid>/mark-paid-zero-total', methods=['POST'])
+@admin_required
+def admin_mark_paid_zero_total(oid):
+    """Mark a $0 order as paid — for orders fully covered by credits that got stuck in pending."""
+    conn = get_db()
+    order = conn.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    order = dict(order)
+    if float(order.get('total') or 0) > 0:
+        conn.close()
+        return jsonify({'error': f"Order total is ${order['total']:.2f} — only use this for $0 orders"}), 400
+    conn.execute(
+        "UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (oid,)
+    )
+    conn.commit()
+    conn.close()
+    send_status_update(oid, 'paid')
+    return jsonify({'message': f"Order {order['order_number']} marked as paid"})
 
 
 @app.route('/api/admin/orders/<int:oid>/delivery-method', methods=['PUT'])
