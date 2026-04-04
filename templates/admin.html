@@ -6069,9 +6069,13 @@ The Peptide Wizard Team"></textarea>
         }
 
         async function showPromoOrderModal(userId, userName, userEmail) {
-            // Load products for the picker
-            const products = state.products || await api('/api/products').catch(() => []);
-            const activeProducts = products.filter(p => p.active !== false && p.stock > 0);
+            // Always fetch fresh admin products so stock is current
+            let activeProducts = [];
+            try {
+                const products = await api('/api/admin/products');
+                activeProducts = products.filter(p => p.active !== 0 && p.active !== false && (p.stock || 0) > 0);
+            } catch(e) { showAlert('Could not load products. Try again.'); return; }
+            if (activeProducts.length === 0) { showAlert('No products in stock to send as promo.'); return; }
 
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
@@ -6087,12 +6091,12 @@ The Peptide Wizard Team"></textarea>
                             <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
                                 <select id="promoProductSelect" style="flex:1;min-width:200px;padding:9px;border:1px solid #e2e8f0;border-radius:6px;">
                                     <option value="">-- Choose product --</option>
-                                    ${activeProducts.map(p => `<option value="${p.id}" data-name="${escapeHtml(p.name)}" data-sku="${escapeHtml(p.sku)}" data-stock="${p.stock}">${escapeHtml(p.sku)} — ${escapeHtml(p.name)} (${p.stock} in stock)</option>`).join('')}
+                                    ${activeProducts.map(p => `<option value="${p.id}" data-name="${escapeHtml(p.name)}" data-sku="${escapeHtml(p.sku||p.name)}" data-stock="${p.stock}">${escapeHtml(p.sku||'')} — ${escapeHtml(p.name)} (${p.stock} in stock)</option>`).join('')}
                                 </select>
                                 <input type="number" id="promoQty" value="1" min="1" style="width:70px;padding:9px;border:1px solid #e2e8f0;border-radius:6px;">
                                 <button class="btn" onclick="addPromoItem()">+ Add</button>
                             </div>
-                            <div id="promoItemsList" style="min-height:40px;"></div>
+                            <div id="promoItemsList" style="min-height:40px;"><p style="color:#a0aec0;font-size:14px;margin:0;">No items added yet.</p></div>
                         </div>
 
                         <div class="form-group">
@@ -6108,8 +6112,6 @@ The Peptide Wizard Team"></textarea>
                     </div>
                 </div>`;
 
-            window._promoItems = [];
-            renderPromoItems();
         }
 
         window._promoItems = [];
@@ -6157,9 +6159,9 @@ The Peptide Wizard Team"></textarea>
                     method: 'POST',
                     body: JSON.stringify({ user_id: userId, items: window._promoItems, notes })
                 });
+                window._promoItems = [];
                 closeModal();
                 showAlert(`✅ Promo order ${result.order_number} sent! Email delivered to customer.`, 'success');
-                window._promoItems = [];
             } catch (err) {
                 showAlert('Failed: ' + err.message);
             }
