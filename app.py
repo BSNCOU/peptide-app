@@ -1989,15 +1989,20 @@ def get_categories():
 @app.route('/api/search-users', methods=['GET'])
 @login_required
 def search_users():
-    """Search customers by name or email — used for casual referral introducer lookup at checkout."""
+    """Search customers by name or email — used for casual referral introducer lookup at checkout.
+    Excludes users who already have their own referral code (they earn via code commission instead)."""
     q = request.args.get('q', '').strip()
     if len(q) < 2:
         return jsonify([])
     conn = get_db()
     results = conn.execute(
-        """SELECT id, full_name, email FROM users
-           WHERE (full_name LIKE ? OR email LIKE ?)
-           AND id != ? AND is_admin = 0
+        """SELECT u.id, u.full_name, u.email FROM users u
+           WHERE (u.full_name LIKE ? OR u.email LIKE ?)
+           AND u.id != ? AND u.is_admin = 0
+           AND NOT EXISTS (
+               SELECT 1 FROM discount_codes dc
+               WHERE dc.referrer_user_id = u.id AND dc.active = 1
+           )
            LIMIT 8""",
         (f'%{q}%', f'%{q}%', session['user_id'])
     ).fetchall()
@@ -2721,29 +2726,40 @@ def stripe_webhook():
                     order_dict['phone'] = user_info['phone']
 
                 # ── Casual Referral: 20% credit to introducer on buyer's FIRST paid order ──
+                # Only fires if introducer does NOT already have their own referral code
+                # (those users earn commission through their code instead)
                 introducer_id = order_dict.get('introducer_user_id')
                 if introducer_id:
-                    prior_paid_count = conn2.execute(
-                        """SELECT COUNT(*) as cnt FROM orders
-                           WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
-                           AND id != ?""",
-                        (order_dict['user_id'], int(order_id))
+                    # Check if introducer already has a referral code — if so, skip
+                    has_referral_code = conn2.execute(
+                        'SELECT id FROM discount_codes WHERE referrer_user_id=? AND active=1 LIMIT 1',
+                        (introducer_id,)
                     ).fetchone()
-                    is_first_order = (prior_paid_count['cnt'] == 0) if prior_paid_count else True
-                    if is_first_order:
-                        commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
-                        if commission > 0:
-                            conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
-                                         (commission, introducer_id))
-                            conn2.execute(
-                                """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
-                                   VALUES (?,?,?,?,?)""",
-                                (introducer_id, int(order_id), 'earned',
-                                 commission,
-                                 f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
-                            )
-                            conn2.commit()
-                            print(f"[REFERRAL] ${commission:.2f} credit given to user {introducer_id} for introducing {order_dict['user_id']}")
+
+                    if has_referral_code:
+                        print(f"[REFERRAL] Skipping casual referral for user {introducer_id} — they already have a referral code")
+                    else:
+                        prior_paid_count = conn2.execute(
+                            """SELECT COUNT(*) as cnt FROM orders
+                               WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+                               AND id != ?""",
+                            (order_dict['user_id'], int(order_id))
+                        ).fetchone()
+                        is_first_order = (prior_paid_count['cnt'] == 0) if prior_paid_count else True
+                        if is_first_order:
+                            commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
+                            if commission > 0:
+                                conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
+                                             (commission, introducer_id))
+                                conn2.execute(
+                                    """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
+                                       VALUES (?,?,?,?,?)""",
+                                    (introducer_id, int(order_id), 'earned',
+                                     commission,
+                                     f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
+                                )
+                                conn2.commit()
+                                print(f"[REFERRAL] ${commission:.2f} credit given to user {introducer_id} for introducing {order_dict['user_id']}")
 
                 conn2.commit()
                 conn2.close()
