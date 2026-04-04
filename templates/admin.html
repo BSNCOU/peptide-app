@@ -1800,6 +1800,7 @@ BC10,8.00</pre>
                                 <th>Discount</th>
                                 <th>Referrer</th>
                                 <th>Usage</th>
+                                <th>Expires</th>
                                 <th>Status</th>
                                 <th>Actions</th>
                             </tr>
@@ -1812,6 +1813,7 @@ BC10,8.00</pre>
                                     <td>${d.discount_percent > 0 ? d.discount_percent + '%' : '$' + parseFloat(d.discount_amount || 0).toFixed(2)}</td>
                                     <td>${d.referrer_name ? '<span style="color: #2b6cb0;">' + d.referrer_name + '</span><br><small style="color: #718096;">' + (d.commission_percent || 20) + '% commission</small>' : '<span style="color: #a0aec0;">-</span>'}</td>
                                     <td>${d.times_used || 0}${d.usage_limit ? ' / ' + d.usage_limit : ''}</td>
+                                    <td>${d.expires_at ? `<span style="color:${new Date(d.expires_at) < new Date() ? '#e53e3e' : '#d69e2e'};font-size:0.85rem;">${new Date(d.expires_at) < new Date() ? '⛔ Expired' : '⏳'} ${new Date(d.expires_at).toLocaleDateString()}</span>` : '<span style="color:#38a169;font-size:0.85rem;">Never</span>'}</td>
                                     <td>${d.active ? '<span class="status-badge status-paid">Active</span>' : '<span class="status-badge status-cancelled">Inactive</span>'}</td>
                                     <td class="actions">
                                         <button class="btn btn-small" onclick="showEditDiscountModal(${d.id})">Edit</button>
@@ -2095,6 +2097,11 @@ BC10,8.00</pre>
                                     <input type="number" id="discLimit" value="${d.usage_limit || ''}">
                                 </div>
                             </div>
+                            <div class="form-group">
+                                <label>Expiration Date <span style="color:#718096;font-weight:normal;font-size:0.85rem;">(leave blank = never expires)</span></label>
+                                <input type="date" id="discExpires" value="${d.expires_at ? d.expires_at.substring(0,10) : ''}">
+                                ${d.expires_at ? `<div style="margin-top:4px;font-size:0.82rem;color:#e53e3e;">⚠️ Currently expires: ${new Date(d.expires_at).toLocaleDateString()} — clear this if you don't want it to expire</div>` : '<div style="margin-top:4px;font-size:0.82rem;color:#38a169;">✓ No expiration set</div>'}
+                            </div>
                             <div style="background: #f0fff4; padding: 15px; border-radius: 8px; margin-top: 15px;">
                                 <h4 style="margin-bottom: 10px; color: #276749;">👥 Referral Settings</h4>
                                 <div class="form-row">
@@ -2125,6 +2132,7 @@ BC10,8.00</pre>
         async function updateDiscount(e, id, code) {
             e.preventDefault();
             try {
+                const expiresVal = document.getElementById('discExpires').value;
                 await api('/api/admin/discount-codes/' + id, {
                     method: 'PUT',
                     body: JSON.stringify({
@@ -2134,6 +2142,7 @@ BC10,8.00</pre>
                         discount_amount: parseFloat(document.getElementById('discAmount').value) || 0,
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
                         usage_limit: parseInt(document.getElementById('discLimit').value) || null,
+                        expires_at: expiresVal || null,
                         referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
                         commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
                     })
