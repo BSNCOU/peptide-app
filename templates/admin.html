@@ -6122,6 +6122,36 @@ The Peptide Wizard Team"></textarea>
                                 style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;font-size:14px;box-sizing:border-box;">Complimentary from The Peptide Wizard — thank you for your support!</textarea>
                         </div>
 
+                        <div style="background:#f7fafc;border-radius:8px;padding:16px;margin-bottom:4px;">
+                            <label style="font-weight:600;display:block;margin-bottom:10px;">📦 Delivery Method</label>
+                            <div style="display:flex;gap:16px;margin-bottom:12px;">
+                                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                    <input type="radio" name="promoDelivery" value="pickup" checked onchange="togglePromoAddress(this.value)">
+                                    🏪 Pickup
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                    <input type="radio" name="promoDelivery" value="ship" onchange="togglePromoAddress(this.value)">
+                                    📦 Ship to Address
+                                </label>
+                            </div>
+                            <div id="promoAddressBlock" style="display:none;">
+                                <div style="display:grid;grid-template-columns:1fr;gap:8px;">
+                                    <input type="text" id="promoStreet" placeholder="Street address"
+                                        style="width:100%;padding:9px;border:1px solid #e2e8f0;border-radius:6px;box-sizing:border-box;">
+                                    <input type="text" id="promoStreet2" placeholder="Apt, suite, etc. (optional)"
+                                        style="width:100%;padding:9px;border:1px solid #e2e8f0;border-radius:6px;box-sizing:border-box;">
+                                    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;">
+                                        <input type="text" id="promoCity" placeholder="City"
+                                            style="padding:9px;border:1px solid #e2e8f0;border-radius:6px;">
+                                        <input type="text" id="promoState" placeholder="State" maxlength="2"
+                                            style="padding:9px;border:1px solid #e2e8f0;border-radius:6px;text-transform:uppercase;">
+                                        <input type="text" id="promoZip" placeholder="ZIP"
+                                            style="padding:9px;border:1px solid #e2e8f0;border-radius:6px;">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <div style="display:flex;gap:10px;margin-top:16px;">
                             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                             <button class="btn" style="background:#805ad5;color:white;" onclick="sendPromoOrder(${userId})">🎁 Send Promo Order & Email</button>
@@ -6168,13 +6198,43 @@ The Peptide Wizard Team"></textarea>
                 </div>`).join('');
         }
 
+        function togglePromoAddress(value) {
+            const block = document.getElementById('promoAddressBlock');
+            if (block) block.style.display = value === 'ship' ? 'block' : 'none';
+        }
+
         async function sendPromoOrder(userId) {
             if (window._promoItems.length === 0) { showAlert('Add at least one product'); return; }
             const notes = document.getElementById('promoNotes').value.trim();
+
+            const deliveryRadio = document.querySelector('input[name="promoDelivery"]:checked');
+            const deliveryMethod = deliveryRadio ? deliveryRadio.value : 'pickup';
+
+            let shippingAddress = '';
+            if (deliveryMethod === 'ship') {
+                const street  = document.getElementById('promoStreet').value.trim();
+                const street2 = document.getElementById('promoStreet2').value.trim();
+                const city    = document.getElementById('promoCity').value.trim();
+                const state   = document.getElementById('promoState').value.trim().toUpperCase();
+                const zip     = document.getElementById('promoZip').value.trim();
+                if (!street || !city || !state || !zip) {
+                    showAlert('Please fill in the full shipping address (street, city, state, ZIP).'); return;
+                }
+                shippingAddress = street2
+                    ? `${street}\n${street2}\n${city}, ${state} ${zip}`
+                    : `${street}\n${city}, ${state} ${zip}`;
+            }
+
             try {
                 const result = await api('/api/admin/promo-order', {
                     method: 'POST',
-                    body: JSON.stringify({ user_id: userId, items: window._promoItems, notes })
+                    body: JSON.stringify({
+                        user_id: userId,
+                        items: window._promoItems,
+                        notes,
+                        delivery_method: deliveryMethod,
+                        shipping_address: shippingAddress
+                    })
                 });
                 window._promoItems = [];
                 closeModal();

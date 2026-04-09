@@ -5784,6 +5784,8 @@ def admin_create_promo_order():
     user_id = data.get('user_id')
     items = data.get('items', [])
     notes = data.get('notes', 'Complimentary promotional order from The Peptide Wizard')
+    delivery_method = data.get('delivery_method', 'pickup')
+    shipping_address = data.get('shipping_address', '')
 
     if not user_id or not items:
         return jsonify({'error': 'user_id and items required'}), 400
@@ -5817,9 +5819,9 @@ def admin_create_promo_order():
     # Insert $0 order, status=fulfilled, is_promo=1
     c.execute('''INSERT INTO orders
                  (user_id, order_number, subtotal, discount_amount, total,
-                  status, delivery_method, notes, is_promo, created_at, updated_at)
-                 VALUES (?,?,0,0,0,'fulfilled','pickup',?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
-              (user_id, order_number, notes))
+                  status, delivery_method, shipping_address, notes, is_promo, created_at, updated_at)
+                 VALUES (?,?,0,0,0,'fulfilled',?,?,?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
+              (user_id, order_number, delivery_method, shipping_address, notes))
     order_id = c.lastrowid
 
     for item in order_items:
@@ -5850,6 +5852,7 @@ def admin_create_promo_order():
             {items_html}
         </table>
         <p style="font-size:14px;color:#555;">{notes}</p>
+        {f'<div style="background:#e8f4fd;border:1px solid #3b82f6;padding:14px;border-radius:8px;margin:15px 0;"><strong>📦 Shipping To:</strong><br><span style="white-space:pre-line;font-size:14px;">{shipping_address}</span></div>' if delivery_method == 'ship' and shipping_address else ''}
         <div style="background:#fff3cd;border:1px solid #ffc107;padding:15px;border-radius:8px;margin-top:20px;">
             <strong>⚠️ Research Use Only</strong><br>
             <span style="font-size:13px;">All materials are for laboratory research purposes only. Not for human or animal consumption.</span>
