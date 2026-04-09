@@ -3544,9 +3544,10 @@ The Peptide Wizard Team"></textarea>
         }
 
         function renderOpenOrders() {
-            // Show paid/processing + any ready_to_ship pickup orders (they don't ship, just need pickup)
+            // Show paid/processing/ready_to_ship + pending orders with real totals (webhook may have missed)
             const openOrders = state.orders.filter(o => 
-                ['paid', 'processing', 'ready_to_ship'].includes(o.status)
+                ['paid', 'processing', 'ready_to_ship'].includes(o.status) ||
+                (o.status === 'pending' && parseFloat(o.total || 0) > 0)
             );
             
             const content = document.getElementById('tabContent');
@@ -3594,6 +3595,7 @@ The Peptide Wizard Team"></textarea>
                                         <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                         <td class="actions">
                                             <button class="btn btn-small" onclick="showOpenOrderDetailModal(${o.id})">View</button>
+                                            ${o.status === 'pending' ? `<button class="btn btn-success btn-small" onclick="manualMarkPaid(${o.id})" title="Stripe payment confirmed but webhook missed — mark as paid">✅ Mark Paid</button>` : ''}
                                             ${['paid', 'processing'].includes(o.status) && !isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markOrderReadyToShip(${o.id})">📦 Ready to Ship</button>` : ''}
                                             ${['paid', 'processing', 'ready_to_ship'].includes(o.status) && isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markPickedUp(${o.id})">✓ Picked Up</button>` : ''}
                                             <button class="btn btn-danger btn-small" onclick="cancelOrder(${o.id})">✗ Cancel</button>
@@ -4444,6 +4446,21 @@ The Peptide Wizard Team"></textarea>
                 showAlert('Order reclassified as pickup — refreshing...', 'success');
                 state.orders = await api('/api/admin/orders');
                 renderReadyToShip();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function manualMarkPaid(id) {
+            if (!confirm('Confirm Stripe payment was received and mark this order as paid?\n\nOnly do this if you have verified payment in your Stripe dashboard.')) return;
+            try {
+                await api(`/api/admin/orders/${id}/status`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ status: 'paid' })
+                });
+                showAlert('Order marked as paid and moved to Open Orders.', 'success');
+                state.orders = await api('/api/admin/orders');
+                renderOpenOrders();
             } catch (err) {
                 showAlert(err.message);
             }

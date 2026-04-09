@@ -683,6 +683,19 @@ def init_db():
         conn.commit()
     except Exception as e:
         print(f"Note: Active field fix: {e}")
+
+    # Fix orders stuck as 'pending' with a real total — they should be 'pending_payment'
+    # These were created before the status was explicitly set in the INSERT
+    try:
+        c.execute("""UPDATE orders SET status='pending_payment'
+                     WHERE status='pending' AND total > 0
+                     AND is_promo = 0""")
+        fixed = c.rowcount
+        conn.commit()
+        if fixed > 0:
+            print(f"[MIGRATION] Fixed {fixed} orders from 'pending' to 'pending_payment'")
+    except Exception as e:
+        print(f"Note: pending->pending_payment migration: {e}")
     
     # Add sale price columns to products
     try:
@@ -2431,8 +2444,8 @@ def create_order():
     order_number = gen_order_num()
     introducer_user_id = data.get('introducer_user_id') or None
     
-    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,credit_applied,total,notes,shipping_address,introducer_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', ''), introducer_user_id))
+    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,credit_applied,total,notes,shipping_address,introducer_user_id,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', ''), introducer_user_id, 'pending_payment'))
     order_id = c.lastrowid
     
     for item in order_items:
