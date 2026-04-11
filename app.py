@@ -677,6 +677,22 @@ def init_db():
     except Exception as e:
         print(f"Note: PO freight columns migration: {e}")
 
+    # Add SMS token columns to saved_carts for secure remove links
+    try:
+        if using_postgres:
+            c.execute("ALTER TABLE saved_carts ADD COLUMN IF NOT EXISTS sms_token TEXT DEFAULT NULL")
+            c.execute("ALTER TABLE saved_carts ADD COLUMN IF NOT EXISTS sms_sent_at TIMESTAMP DEFAULT NULL")
+        else:
+            try:
+                c.execute("ALTER TABLE saved_carts ADD COLUMN sms_token TEXT DEFAULT NULL")
+            except: pass
+            try:
+                c.execute("ALTER TABLE saved_carts ADD COLUMN sms_sent_at TIMESTAMP DEFAULT NULL")
+            except: pass
+        conn.commit()
+    except Exception as e:
+        print(f"Note: saved_carts SMS columns migration: {e}")
+
     # Fix any NULL active fields
     try:
         c.execute("UPDATE products SET active = 1 WHERE active IS NULL")
@@ -2197,6 +2213,41 @@ def send_cart_abandonment_email(user_id, cart_items):
     return ok
 
 
+def send_cart_abandonment_sms(user_id, cart_items):
+    """Send a cart abandonment SMS with buy and remove links."""
+    conn = get_db()
+    user = conn.execute('SELECT full_name, phone FROM users WHERE id=?', (user_id,)).fetchone()
+    if not user or not user['phone']:
+        conn.close()
+        return False
+
+    # Generate a secure one-time token for the remove link
+    token = secrets.token_urlsafe(24)
+    conn.execute('UPDATE saved_carts SET sms_token=?, sms_sent_at=CURRENT_TIMESTAMP WHERE user_id=?',
+                 (token, user_id))
+    conn.commit()
+    conn.close()
+
+    app_url = CONFIG.get('APP_URL', 'https://thepeptidewizard.com')
+    buy_url = app_url
+    remove_url = f"{app_url}/cart/remove?token={token}"
+
+    # Build a short item summary (keep SMS under 160 chars where possible)
+    first_name = user['full_name'].split()[0] if user['full_name'] else 'there'
+    item_count = len(cart_items)
+    item_summary = f"{item_count} item{'s' if item_count != 1 else ''}"
+
+    msg = (
+        f"Hi {first_name}, you left {item_summary} in your Peptide Wizard cart! "
+        f"Ready to order? {buy_url} "
+        f"Not interested? Remove cart: {remove_url}"
+    )
+
+    ok, result = send_sms(user['phone'], msg)
+    print(f"[CART ABANDON SMS] Sent to {user['phone']} - {'OK' if ok else result}")
+    return ok
+
+
 def cart_abandonment_worker():
     """Background thread: every 30 min, find carts idle 1+ hour with no completed order, send one reminder."""
     print("[CART ABANDON] Background worker started")
@@ -2230,7 +2281,17 @@ def cart_abandonment_worker():
                         conn.execute('UPDATE saved_carts SET converted=1 WHERE user_id=?', (row['user_id'],))
                         conn.commit()
                         continue
-                    ok = send_cart_abandonment_email(row['user_id'], cart_items)
+
+                    reminder_num = row['reminder_count']  # 0 = first, 1 = second
+                    if reminder_num == 0:
+                        # First reminder: SMS with buy/remove links
+                        ok = send_cart_abandonment_sms(row['user_id'], cart_items)
+                        channel = 'sms'
+                    else:
+                        # Second reminder: email follow-up
+                        ok = send_cart_abandonment_email(row['user_id'], cart_items)
+                        channel = 'email'
+
                     if ok:
                         conn.execute('''UPDATE saved_carts
                                         SET reminder_sent_at=CURRENT_TIMESTAMP,
@@ -2243,6 +2304,41 @@ def cart_abandonment_worker():
             conn.close()
         except Exception as e:
             print(f"[CART ABANDON] Worker error: {e}")
+
+
+@app.route('/cart/remove', methods=['GET'])
+def cart_remove_via_sms():
+    """Public endpoint: customer clicks the remove link in SMS to clear their cart."""
+    token = request.args.get('token', '').strip()
+    if not token:
+        return '<html><body style="font-family:Arial;text-align:center;padding:60px;"><h2>Invalid link.</h2></body></html>', 400
+
+    conn = get_db()
+    cart = conn.execute('SELECT user_id FROM saved_carts WHERE sms_token=? AND converted=0', (token,)).fetchone()
+    if not cart:
+        conn.close()
+        return '''<html><body style="font-family:Arial;text-align:center;padding:60px;background:#f9f9f9;">
+            <div style="max-width:400px;margin:0 auto;background:white;padding:40px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1);">
+                <div style="font-size:3rem;margin-bottom:16px;">🧹</div>
+                <h2 style="color:#2d3748;">Cart Already Cleared</h2>
+                <p style="color:#718096;">Your cart has already been removed or you've already placed an order.</p>
+            </div></body></html>'''
+
+    conn.execute('UPDATE saved_carts SET converted=1, sms_token=NULL WHERE user_id=?', (cart['user_id'],))
+    conn.commit()
+    conn.close()
+
+    app_url = CONFIG.get('APP_URL', 'https://thepeptidewizard.com')
+    return f'''<html><body style="font-family:Arial;text-align:center;padding:60px;background:#f9f9f9;">
+        <div style="max-width:400px;margin:0 auto;background:white;padding:40px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1);">
+            <div style="font-size:3rem;margin-bottom:16px;">✅</div>
+            <h2 style="color:#276749;">Cart Removed</h2>
+            <p style="color:#718096;">Your cart has been cleared. No worries — come back anytime!</p>
+            <a href="{app_url}" style="display:inline-block;margin-top:20px;background:#3b82f6;color:white;
+               padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
+               Visit The Peptide Wizard
+            </a>
+        </div></body></html>'''
 
 
 @app.route('/api/cart/save', methods=['POST'])
