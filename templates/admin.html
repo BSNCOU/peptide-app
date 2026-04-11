@@ -3429,6 +3429,9 @@ The Peptide Wizard Team"></textarea>
                                     <button class="btn btn-small" onclick="showUserDetailModal(${cart.user_id})">
                                         View Profile
                                     </button>
+                                    <button class="btn btn-small" style="background:#635bff;color:white;" onclick="checkStripePayments(${cart.user_id}, '${escapeHtml(cart.full_name)}', ${cart.items ? cart.items.reduce((s,i)=>s+parseFloat(i.price||0)*(i.quantity||1),0) : 0})">
+                                        💳 Check Stripe
+                                    </button>
                                 </div>
                             </div>`;
                         }).join('')}
@@ -3446,6 +3449,68 @@ The Peptide Wizard Team"></textarea>
             const hrs = Math.floor(mins / 60);
             if (hrs < 24) return `${hrs}h`;
             return `${Math.floor(hrs / 24)}d`;
+        }
+
+        async function checkStripePayments(userId, userName, cartTotal) {
+            showAlert('Checking Stripe... this may take a moment.', 'success');
+            try {
+                const data = await api(`/api/admin/active-carts/${userId}/stripe-check`);
+                const results = data.stripe_results || [];
+                const statusColors = {
+                    succeeded:      { bg: '#c6f6d5', color: '#276749', label: '✅ SUCCEEDED' },
+                    requires_payment_method: { bg: '#fed7d7', color: '#c53030', label: '❌ FAILED' },
+                    canceled:       { bg: '#fed7d7', color: '#c53030', label: '❌ CANCELLED' },
+                    processing:     { bg: '#fbd38d', color: '#744210', label: '⏳ PROCESSING' },
+                    requires_action:{ bg: '#fbd38d', color: '#744210', label: '⚠️ NEEDS ACTION' },
+                };
+
+                const rowsHtml = results.length === 0
+                    ? `<div style="text-align:center;padding:20px;color:#718096;">
+                            <div style="font-size:2rem;margin-bottom:8px;">🔍</div>
+                            No Stripe payments found for this email in the last 60 days.<br>
+                            <small>They have not attempted payment — safe to follow up.</small>
+                       </div>`
+                    : results.map(r => {
+                        const sc = statusColors[r.status] || { bg:'#e2e8f0', color:'#4a5568', label: r.status };
+                        const date = new Date(r.created * 1000).toLocaleDateString();
+                        const amtMatch = Math.abs(r.amount - cartTotal) < 2;
+                        return `<div style="padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;background:${r.status==='succeeded'?'#f0fff4':'white'}">
+                            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                                <div>
+                                    <span style="background:${sc.bg};color:${sc.color};padding:3px 10px;border-radius:10px;font-size:13px;font-weight:600;">${sc.label}</span>
+                                    ${amtMatch ? '<span style="background:#ebf8ff;color:#2b6cb0;padding:3px 8px;border-radius:10px;font-size:12px;margin-left:6px;">💡 Matches cart total</span>' : ''}
+                                </div>
+                                <div style="font-size:18px;font-weight:700;color:${r.status==='succeeded'?'#276749':'#2d3748'};">$${r.amount.toFixed(2)}</div>
+                            </div>
+                            <div style="margin-top:8px;font-size:13px;color:#718096;">
+                                <span>📅 ${date}</span>
+                                <span style="margin-left:12px;font-family:monospace;">${r.stripe_id}</span>
+                                ${r.receipt_url ? `<a href="${r.receipt_url}" target="_blank" style="margin-left:12px;color:#3b82f6;">View Receipt ↗</a>` : ''}
+                            </div>
+                            ${r.status === 'succeeded' ? `
+                                <div style="margin-top:10px;padding:8px;background:#fefcbf;border-radius:6px;font-size:13px;color:#744210;">
+                                    ⚠️ <strong>Payment confirmed in Stripe!</strong> Check All Orders for a stuck <code>pending</code> order and use the ✅ Mark Paid button.
+                                </div>` : ''}
+                        </div>`;
+                    }).join('');
+
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width:600px;">
+                            <h3>💳 Stripe Payment Check</h3>
+                            <p style="color:#718096;margin:0 0 16px 0;">
+                                <strong>${escapeHtml(userName)}</strong> — ${escapeHtml(data.user.email)}<br>
+                                <small>Cart total: $${cartTotal.toFixed(2)} · Searched last 60 days</small>
+                            </p>
+                            ${rowsHtml}
+                            <div style="margin-top:16px;">
+                                <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            </div>
+                        </div>
+                    </div>`;
+            } catch(err) {
+                showAlert('Stripe check failed: ' + err.message);
+            }
         }
 
         function showCartMessageModal(userId, userName, userEmail) {

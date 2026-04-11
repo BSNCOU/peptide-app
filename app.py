@@ -6124,6 +6124,81 @@ def admin_get_active_carts():
     return jsonify(result)
 
 
+@app.route('/api/admin/active-carts/<int:user_id>/stripe-check', methods=['GET'])
+@admin_required
+def admin_stripe_check_cart_user(user_id):
+    """Search Stripe for any payments from this cart user in the last 60 days."""
+    if not stripe.api_key:
+        return jsonify({'error': 'Stripe not configured'}), 400
+
+    conn = get_db()
+    user = conn.execute('SELECT full_name, email FROM users WHERE id=?', (user_id,)).fetchone()
+    cart = conn.execute('SELECT cart_json FROM saved_carts WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    user = dict(user)
+    cart_total = 0
+    if cart:
+        try:
+            items = json.loads(cart['cart_json'])
+            cart_total = sum(float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items)
+        except Exception:
+            pass
+
+    results = []
+    try:
+        # Search Stripe customers by email
+        customers = stripe.Customer.list(email=user['email'], limit=5)
+        for customer in customers.data:
+            # Get payment intents for this customer
+            payment_intents = stripe.PaymentIntent.list(
+                customer=customer.id,
+                limit=10,
+                created={'gte': int(__import__('time').time()) - (60 * 86400)}  # last 60 days
+            )
+            for pi in payment_intents.data:
+                results.append({
+                    'stripe_id': pi.id,
+                    'amount': pi.amount / 100,
+                    'currency': pi.currency.upper(),
+                    'status': pi.status,
+                    'created': pi.created,
+                    'description': pi.description or '',
+                    'customer_id': customer.id,
+                    'receipt_url': pi.charges.data[0].receipt_url if pi.charges and pi.charges.data else None
+                })
+
+        # Also check without a customer object (guest checkouts)
+        if not results:
+            all_pis = stripe.PaymentIntent.list(limit=100,
+                created={'gte': int(__import__('time').time()) - (60 * 86400)})
+            for pi in all_pis.data:
+                if pi.receipt_email and pi.receipt_email.lower() == user['email'].lower():
+                    results.append({
+                        'stripe_id': pi.id,
+                        'amount': pi.amount / 100,
+                        'currency': pi.currency.upper(),
+                        'status': pi.status,
+                        'created': pi.created,
+                        'description': pi.description or '',
+                        'customer_id': None,
+                        'receipt_url': pi.charges.data[0].receipt_url if pi.charges and pi.charges.data else None
+                    })
+
+    except stripe.error.StripeError as e:
+        return jsonify({'error': f'Stripe error: {str(e)}'}), 500
+
+    return jsonify({
+        'user': user,
+        'cart_total': cart_total,
+        'stripe_results': results,
+        'found': len(results) > 0
+    })
+
+
 @app.route('/api/admin/active-carts/<int:user_id>/message', methods=['POST'])
 @admin_required
 def admin_message_cart_user(user_id):
