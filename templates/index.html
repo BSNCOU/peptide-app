@@ -2126,9 +2126,10 @@
             'KLOW': { vialMg: 80, waterMl: 8, doseRangeMcg: [500, 1000], freqPerDay: 1, route: 'Sub-Q', cycleDays: 42, notes: 'BPC+GHK-CU+TB500+KPV blend. Dose is total blend amount.' }
         };
 
-        // Map product names to protocol keys
+        // Map product names to protocol keys (longest match first to avoid partial matches)
         function getProtocolForProduct(productName) {
-            for (const key in peptideProtocols) {
+            const keys = Object.keys(peptideProtocols).sort((a, b) => b.length - a.length);
+            for (const key of keys) {
                 if (productName.includes(key)) return { key, ...peptideProtocols[key] };
             }
             return null;
