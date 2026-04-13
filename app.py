@@ -2301,6 +2301,22 @@ def cart_abandonment_worker():
                 except Exception as e:
                     print(f"[CART ABANDON] Error processing user {row['user_id']}: {e}")
 
+            # ── Auto-cleanup: delete carts older than 7 days that had both reminders sent ──
+            try:
+                seven_days_ago = datetime.now() - timedelta(days=7)
+                result = conn.execute('''
+                    DELETE FROM saved_carts
+                    WHERE converted = 0
+                      AND updated_at <= ?
+                      AND reminder_count >= 2
+                ''', (seven_days_ago,))
+                deleted = result.rowcount if hasattr(result, 'rowcount') else 0
+                if deleted and deleted > 0:
+                    conn.commit()
+                    print(f"[CART ABANDON] Auto-cleaned {deleted} stale cart(s) older than 7 days")
+            except Exception as e:
+                print(f"[CART ABANDON] Cleanup error: {e}")
+
             conn.close()
         except Exception as e:
             print(f"[CART ABANDON] Worker error: {e}")
@@ -6371,6 +6387,23 @@ def admin_send_credit_statement(uid):
         return jsonify({'message': f'Statement sent to {user_dict["email"]}'})
     else:
         return jsonify({'error': f'Email failed: {msg}'}), 500
+
+
+@app.route('/api/admin/active-carts/cleanup', methods=['POST'])
+@admin_required
+def admin_cleanup_old_carts():
+    """Manually delete unconverted carts older than N days (default 7)."""
+    days = int(request.json.get('days', 7)) if request.json else 7
+    cutoff = datetime.now() - timedelta(days=days)
+    conn = get_db()
+    result = conn.execute(
+        'DELETE FROM saved_carts WHERE converted=0 AND updated_at <= ?',
+        (cutoff,)
+    )
+    deleted = result.rowcount if hasattr(result, 'rowcount') else 0
+    conn.commit()
+    conn.close()
+    return jsonify({'message': f'Removed {deleted} cart(s) older than {days} days', 'deleted': deleted})
 
 
 @app.route('/api/admin/active-carts', methods=['GET'])

@@ -3431,11 +3431,12 @@ The Peptide Wizard Team"></textarea>
                 }
 
                 content.innerHTML = `
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;flex-wrap:wrap;gap:10px;">
                         <div>
                             <h3 style="margin:0;color:#2d3748;">🛒 Active Carts (${carts.length})</h3>
-                            <p style="color:#718096;font-size:0.9rem;margin:4px 0 0 0;">Customers with items in their cart that haven't checked out yet</p>
+                            <p style="color:#718096;font-size:0.9rem;margin:4px 0 0 0;">Customers with items in their cart that haven't checked out yet · Auto-cleared after 7 days</p>
                         </div>
+                        <button class="btn btn-secondary btn-small" onclick="cleanupOldCarts()">🧹 Clear Carts 7+ Days Old</button>
                     </div>
                     <div style="display:flex;flex-direction:column;gap:12px;">
                         ${carts.map(cart => {
@@ -3486,6 +3487,20 @@ The Peptide Wizard Team"></textarea>
                     </div>`;
             } catch (err) {
                 content.innerHTML = `<p style="color:#e53e3e;text-align:center;padding:40px;">Error: ${err.message}</p>`;
+            }
+        }
+
+        async function cleanupOldCarts() {
+            if (!confirm('Remove all unconverted carts older than 7 days?\n\nThis will clear them from the Active Carts view. Customers who genuinely want to order can still do so — their account is untouched.')) return;
+            try {
+                const result = await api('/api/admin/active-carts/cleanup', {
+                    method: 'POST',
+                    body: JSON.stringify({ days: 7 })
+                });
+                showAlert(result.message, 'success');
+                loadActiveCarts();
+            } catch (err) {
+                showAlert('Cleanup failed: ' + err.message);
             }
         }
 
