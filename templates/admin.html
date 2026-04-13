@@ -205,18 +205,36 @@
                 const result = await api('/api/admin/sync-stripe-payments', { method: 'POST' });
                 const fixed = result.fixed || [];
                 const skipped = result.skipped || [];
-                let msg = result.message + '\n\n';
+
+                let html = `<div style="margin-bottom:12px;font-weight:600;">${result.message}</div>`;
                 if (fixed.length > 0) {
-                    msg += '✅ Fixed:\n' + fixed.map(o => `  ${o.order_number} — $${parseFloat(o.total).toFixed(2)}`).join('\n');
+                    html += `<div style="margin-bottom:10px;"><strong style="color:#276749;">✅ Fixed (${fixed.length}):</strong><div style="margin-top:6px;">` +
+                        fixed.map(o => `<div style="padding:4px 0;font-size:14px;">• ${escapeHtml(o.order_number)} — $${parseFloat(o.total).toFixed(2)}</div>`).join('') +
+                        '</div></div>';
                 }
                 if (skipped.length > 0) {
-                    msg += '\n\n⏳ Not paid in Stripe yet:\n' + skipped.map(o => `  ${o.order_number} (${o.stripe_status})`).join('\n');
+                    html += `<div><strong style="color:#744210;">⏳ Not paid in Stripe yet (${skipped.length}):</strong><div style="margin-top:6px;">` +
+                        skipped.map(o => `<div style="padding:4px 0;font-size:14px;color:#718096;">• ${escapeHtml(o.order_number)} (${o.stripe_status})</div>`).join('') +
+                        '</div></div>';
                 }
-                alert(msg);
+                if (fixed.length === 0 && skipped.length === 0) {
+                    html += '<div style="color:#718096;">No pending orders with Stripe sessions found.</div>';
+                }
+
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width:500px;">
+                            <h3>💳 Stripe Sync Results</h3>
+                            ${html}
+                            <div style="margin-top:20px;">
+                                <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            </div>
+                        </div>
+                    </div>`;
+
                 if (fixed.length > 0) {
-                    await loadStats();
-                    if (state.currentTab === 'openOrders') loadOpenOrders();
-                    if (state.currentTab === 'orders') loadOrders();
+                    state.orders = await api('/api/admin/orders');
+                    if (state.currentTab === 'openOrders') renderOpenOrders();
                 }
             } catch (err) {
                 showAlert('Sync failed: ' + err.message);
