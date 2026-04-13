@@ -4498,18 +4498,23 @@ def admin_update_order_status(oid):
 @app.route('/api/admin/sync-stripe-payments', methods=['POST'])
 @admin_required
 def admin_sync_stripe_payments():
-    """Check all pending/pending_payment orders against Stripe and mark paid if confirmed."""
+    """Check all pending/pending_payment orders against Stripe and mark paid if confirmed.
+    Two strategies:
+    1. Orders with stripe_session_id — retrieve session directly from Stripe
+    2. Orders without stripe_session_id — search Stripe payment intents by customer email
+    """
     if not stripe.api_key:
         return jsonify({'error': 'Stripe not configured'}), 400
 
     conn = get_db()
     stuck_orders = conn.execute("""
-        SELECT * FROM orders
-        WHERE status IN ('pending', 'pending_payment')
-          AND total > 0
-          AND stripe_session_id IS NOT NULL
-          AND stripe_session_id != ''
-        ORDER BY created_at DESC
+        SELECT o.*, u.email, u.full_name, u.phone
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.status IN ('pending', 'pending_payment')
+          AND o.total > 0
+          AND o.is_promo = 0
+        ORDER BY o.created_at DESC
     """).fetchall()
     conn.close()
 
@@ -4517,50 +4522,94 @@ def admin_sync_stripe_payments():
     skipped = []
     errors = []
 
+    def do_mark_paid(order, payment_intent_id):
+        """Mark order as paid and send notifications."""
+        conn2 = get_db()
+        conn2.execute(
+            """UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
+               stripe_payment_intent=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (payment_intent_id, order['id'])
+        )
+        conn2.commit()
+        user_info = conn2.execute(
+            'SELECT full_name,email,phone FROM users WHERE id=?', (order['user_id'],)
+        ).fetchone()
+        items_for_admin = [dict(i) for i in conn2.execute(
+            'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
+            (order['id'],)).fetchall()]
+        conn2.close()
+        order_dict = dict(order)
+        order_dict['status'] = 'paid'
+        if user_info:
+            order_dict.update({'full_name': user_info['full_name'],
+                               'email': user_info['email'],
+                               'phone': user_info['phone']})
+        try:
+            send_status_update(order['id'], 'paid')
+            send_new_order_admin_notification(order_dict, items_for_admin)
+        except Exception as e:
+            print(f"[SYNC] Notification error for {order['order_number']}: {e}")
+        fixed.append({'order_number': order['order_number'], 'total': order['total']})
+        print(f"[SYNC] ✅ Fixed {order['order_number']} — marked paid")
+
     for order in stuck_orders:
         order = dict(order)
         try:
-            cs = stripe.checkout.Session.retrieve(order['stripe_session_id'])
-            if cs.payment_status == 'paid':
-                conn2 = get_db()
-                conn2.execute(
-                    """UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
-                       stripe_payment_intent=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                    (cs.payment_intent, order['id'])
-                )
-                conn2.commit()
+            stripe_session_id = order.get('stripe_session_id')
 
-                # Get user info for notifications
-                user_info = conn2.execute(
-                    'SELECT full_name,email,phone FROM users WHERE id=?', (order['user_id'],)
-                ).fetchone()
-                items_for_admin = [dict(i) for i in conn2.execute(
-                    'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
-                    (order['id'],)).fetchall()]
-                conn2.close()
-
-                order_dict = dict(order)
-                order_dict['status'] = 'paid'
-                if user_info:
-                    order_dict.update({'full_name': user_info['full_name'],
-                                       'email': user_info['email'],
-                                       'phone': user_info['phone']})
-
-                try:
-                    send_status_update(order['id'], 'paid')
-                    send_new_order_admin_notification(order_dict, items_for_admin)
-                except Exception:
-                    pass
-
-                fixed.append({'order_number': order['order_number'], 'total': order['total']})
-                print(f"[SYNC] Fixed order {order['order_number']} — was stuck, Stripe confirmed paid")
+            if stripe_session_id:
+                # Strategy 1: Direct session lookup
+                cs = stripe.checkout.Session.retrieve(stripe_session_id)
+                if cs.payment_status == 'paid':
+                    do_mark_paid(order, cs.payment_intent)
+                else:
+                    skipped.append({'order_number': order['order_number'],
+                                    'stripe_status': cs.payment_status})
             else:
-                skipped.append({'order_number': order['order_number'], 'stripe_status': cs.payment_status})
+                # Strategy 2: Search by email + amount match
+                email = order.get('email', '')
+                order_total_cents = int(float(order['total']) * 100)
+                found_payment = None
+
+                # Search recent payment intents
+                pis = stripe.PaymentIntent.list(limit=100)
+                for pi in pis.data:
+                    if pi.status == 'succeeded' and pi.amount == order_total_cents:
+                        # Check receipt email or customer email
+                        receipt_email = pi.receipt_email or ''
+                        if receipt_email.lower() == email.lower():
+                            found_payment = pi
+                            break
+                        # Also check customer object if linked
+                        if pi.customer:
+                            try:
+                                cust = stripe.Customer.retrieve(pi.customer)
+                                if cust.email and cust.email.lower() == email.lower():
+                                    found_payment = pi
+                                    break
+                            except Exception:
+                                pass
+
+                if found_payment:
+                    # Store the session/intent on the order first
+                    conn3 = get_db()
+                    conn3.execute('UPDATE orders SET stripe_payment_intent=? WHERE id=?',
+                                  (found_payment.id, order['id']))
+                    conn3.commit()
+                    conn3.close()
+                    do_mark_paid(order, found_payment.id)
+                else:
+                    skipped.append({'order_number': order['order_number'],
+                                    'stripe_status': 'no_session_no_match'})
+
         except stripe.error.StripeError as e:
             errors.append({'order_number': order['order_number'], 'error': str(e)})
+        except Exception as e:
+            errors.append({'order_number': order['order_number'], 'error': str(e)})
+            print(f"[SYNC] Error on {order['order_number']}: {e}")
 
     return jsonify({
-        'message': f"Sync complete: {len(fixed)} fixed, {len(skipped)} not paid in Stripe, {len(errors)} errors",
+        'message': f"Sync complete: {len(fixed)} fixed, {len(skipped)} still pending in Stripe, {len(errors)} errors",
         'fixed': fixed,
         'skipped': skipped,
         'errors': errors
