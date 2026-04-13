@@ -850,6 +850,43 @@ def init_db():
         conn.commit()
     except Exception as e:
         print(f"Note: Referral column migration: {e}")
+
+    # Suggestions table
+    try:
+        c.execute(f'''CREATE TABLE IF NOT EXISTS suggestions (
+            id {auto_id},
+            user_id INTEGER,
+            name TEXT,
+            email TEXT,
+            category TEXT DEFAULT 'general',
+            suggestion TEXT NOT NULL,
+            status TEXT DEFAULT 'new',
+            admin_notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Suggestions table: {e}")
+
+    # News articles table
+    try:
+        c.execute(f'''CREATE TABLE IF NOT EXISTS news_articles (
+            id {auto_id},
+            title TEXT NOT NULL,
+            summary TEXT,
+            content TEXT NOT NULL,
+            category TEXT DEFAULT 'Research',
+            image_url TEXT,
+            source_label TEXT,
+            source_url TEXT,
+            published INTEGER DEFAULT 1,
+            featured INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        conn.commit()
+    except Exception as e:
+        print(f"Note: News articles table: {e}")
     
     # Initialize returns tables
     try:
@@ -7387,6 +7424,141 @@ def delete_todo(todo_id):
     conn.close()
     
     return jsonify({'message': 'Todo deleted'})
+
+
+# ============================================
+# SUGGESTIONS
+# ============================================
+
+@app.route('/api/suggestions', methods=['POST'])
+@login_required
+def submit_suggestion():
+    """Submit a suggestion"""
+    data = request.get_json()
+    suggestion = data.get('suggestion', '').strip()
+    category = data.get('category', 'general')
+
+    if not suggestion:
+        return jsonify({'error': 'Suggestion text is required'}), 400
+    if len(suggestion) > 2000:
+        return jsonify({'error': 'Suggestion must be under 2000 characters'}), 400
+
+    conn = get_db()
+    conn.execute('INSERT INTO suggestions (user_id, name, email, category, suggestion) VALUES (?, ?, ?, ?, ?)',
+                 (session['user_id'], session.get('full_name', ''), session.get('email', ''), category, suggestion))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'message': 'Thank you! Your suggestion has been submitted.'})
+
+@app.route('/api/suggestions', methods=['GET'])
+@login_required
+def get_my_suggestions():
+    """Get current user's suggestions"""
+    conn = get_db()
+    rows = conn.execute('SELECT id, category, suggestion, status, created_at FROM suggestions WHERE user_id = ? ORDER BY created_at DESC', (session['user_id'],)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/suggestions', methods=['GET'])
+@admin_required
+def admin_get_suggestions():
+    """Get all suggestions"""
+    conn = get_db()
+    rows = conn.execute('SELECT s.*, u.full_name as user_name, u.email as user_email FROM suggestions s LEFT JOIN users u ON s.user_id = u.id ORDER BY s.created_at DESC').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/suggestions/<int:sid>', methods=['PUT'])
+@admin_required
+def admin_update_suggestion(sid):
+    """Update suggestion status/notes"""
+    data = request.get_json()
+    conn = get_db()
+    conn.execute('UPDATE suggestions SET status = ?, admin_notes = ? WHERE id = ?',
+                 (data.get('status', 'new'), data.get('admin_notes', ''), sid))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'Suggestion updated'})
+
+@app.route('/api/admin/suggestions/<int:sid>', methods=['DELETE'])
+@admin_required
+def admin_delete_suggestion(sid):
+    """Delete a suggestion"""
+    conn = get_db()
+    conn.execute('DELETE FROM suggestions WHERE id = ?', (sid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'Suggestion deleted'})
+
+
+# ============================================
+# NEWS
+# ============================================
+
+@app.route('/api/news', methods=['GET'])
+def get_news():
+    """Get published news articles"""
+    conn = get_db()
+    rows = conn.execute('SELECT id, title, summary, content, category, image_url, source_label, source_url, featured, created_at FROM news_articles WHERE published = 1 ORDER BY featured DESC, created_at DESC').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/news', methods=['GET'])
+@admin_required
+def admin_get_news():
+    """Get all news articles"""
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM news_articles ORDER BY created_at DESC').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/news', methods=['POST'])
+@admin_required
+def admin_create_news():
+    """Create a news article"""
+    data = request.get_json()
+    title = data.get('title', '').strip()
+    content = data.get('content', '').strip()
+
+    if not title or not content:
+        return jsonify({'error': 'Title and content are required'}), 400
+
+    conn = get_db()
+    conn.execute('INSERT INTO news_articles (title, summary, content, category, image_url, source_label, source_url, published, featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                 (title, data.get('summary', ''), content, data.get('category', 'Research'),
+                  data.get('image_url', ''), data.get('source_label', ''), data.get('source_url', ''),
+                  1 if data.get('published', True) else 0, 1 if data.get('featured', False) else 0))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'Article created'})
+
+@app.route('/api/admin/news/<int:aid>', methods=['PUT'])
+@admin_required
+def admin_update_news(aid):
+    """Update a news article"""
+    data = request.get_json()
+    conn = get_db()
+    conn.execute('''UPDATE news_articles SET title=?, summary=?, content=?, category=?,
+                    image_url=?, source_label=?, source_url=?, published=?, featured=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?''',
+                 (data.get('title', ''), data.get('summary', ''), data.get('content', ''),
+                  data.get('category', 'Research'), data.get('image_url', ''),
+                  data.get('source_label', ''), data.get('source_url', ''),
+                  1 if data.get('published', True) else 0, 1 if data.get('featured', False) else 0, aid))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'Article updated'})
+
+@app.route('/api/admin/news/<int:aid>', methods=['DELETE'])
+@admin_required
+def admin_delete_news(aid):
+    """Delete a news article"""
+    conn = get_db()
+    conn.execute('DELETE FROM news_articles WHERE id = ?', (aid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'Article deleted'})
 
 
 # ============================================
