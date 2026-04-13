@@ -198,6 +198,31 @@
             showTab('products');
         }
 
+        async function syncStripePayments() {
+            if (!confirm('Check all pending orders against Stripe and auto-mark any confirmed payments as paid?\n\nThis will also send payment confirmation emails to affected customers.')) return;
+            try {
+                showAlert('Syncing with Stripe... please wait.', 'success');
+                const result = await api('/api/admin/sync-stripe-payments', { method: 'POST' });
+                const fixed = result.fixed || [];
+                const skipped = result.skipped || [];
+                let msg = result.message + '\n\n';
+                if (fixed.length > 0) {
+                    msg += '✅ Fixed:\n' + fixed.map(o => `  ${o.order_number} — $${parseFloat(o.total).toFixed(2)}`).join('\n');
+                }
+                if (skipped.length > 0) {
+                    msg += '\n\n⏳ Not paid in Stripe yet:\n' + skipped.map(o => `  ${o.order_number} (${o.stripe_status})`).join('\n');
+                }
+                alert(msg);
+                if (fixed.length > 0) {
+                    await loadStats();
+                    if (state.currentTab === 'openOrders') loadOpenOrders();
+                    if (state.currentTab === 'orders') loadOrders();
+                }
+            } catch (err) {
+                showAlert('Sync failed: ' + err.message);
+            }
+        }
+
         async function loadStats() {
             try {
                 state.stats = await api('/api/admin/stats');
@@ -240,7 +265,12 @@
                         ${s.low_stock_items.map(i => `${i.sku} (${i.stock}/${i.reorder_qty * 10})`).join(', ')}
                     </div>
                 ` : ''}
-            `;
+                <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                    <button class="btn btn-small" style="background:#635bff;color:white;" onclick="syncStripePayments()">
+                        💳 Sync Stripe Payments
+                    </button>
+                    <span style="color:#718096;font-size:13px;">Fix orders paid in Stripe but showing as pending here</span>
+                </div>`;
         }
 
         function showTab(tab) {

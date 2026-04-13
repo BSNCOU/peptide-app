@@ -2909,20 +2909,81 @@ def stripe_webhook():
 @app.route('/api/verify-payment/<int:order_id>', methods=['GET'])
 @login_required
 def verify_payment(order_id):
-    """Verify if an order has been paid (for frontend to check after redirect)"""
+    """Verify payment status. Checks DB first, then queries Stripe directly as fallback
+    so orders get marked paid even if the webhook was missed."""
     conn = get_db()
-    order = conn.execute('SELECT status, order_number FROM orders WHERE id = ? AND user_id = ?', 
-                         (order_id, session['user_id'])).fetchone()
+    order = conn.execute(
+        'SELECT * FROM orders WHERE id = ? AND user_id = ?',
+        (order_id, session['user_id'])
+    ).fetchone()
     conn.close()
-    
+
     if not order:
         return jsonify({'error': 'Order not found'}), 404
-    
+
+    order = dict(order)
+    already_paid = order['status'] in ['paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled']
+
+    if already_paid:
+        return jsonify({
+            'order_id': order_id,
+            'order_number': order['order_number'],
+            'status': order['status'],
+            'paid': True
+        })
+
+    # Not paid in DB — ask Stripe directly using the session ID
+    stripe_session_id = order.get('stripe_session_id')
+    if stripe_session_id and stripe.api_key:
+        try:
+            checkout_session = stripe.checkout.Session.retrieve(stripe_session_id)
+            if checkout_session.payment_status == 'paid':
+                print(f"[VERIFY] Stripe confirms payment for order {order['order_number']} — webhook missed, fixing now")
+                # Mark paid in DB — same logic as webhook
+                conn2 = get_db()
+                conn2.execute(
+                    """UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
+                       stripe_payment_intent=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (checkout_session.payment_intent, order_id)
+                )
+                conn2.commit()
+                conn2.close()
+
+                # Fire all the same notifications as the webhook would
+                try:
+                    send_status_update(order_id, 'paid')
+                    conn3 = get_db()
+                    items_for_admin = [dict(i) for i in conn3.execute(
+                        'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
+                        (order_id,)).fetchall()]
+                    user_info = conn3.execute('SELECT full_name,email,phone FROM users WHERE id=?',
+                                              (order['user_id'],)).fetchone()
+                    conn3.close()
+                    order_dict = dict(order)
+                    order_dict['status'] = 'paid'
+                    if user_info:
+                        order_dict.update({'full_name': user_info['full_name'],
+                                           'email': user_info['email'],
+                                           'phone': user_info['phone']})
+                    send_new_order_admin_notification(order_dict, items_for_admin)
+                except Exception as notify_err:
+                    print(f"[VERIFY] Notification error: {notify_err}")
+
+                return jsonify({
+                    'order_id': order_id,
+                    'order_number': order['order_number'],
+                    'status': 'paid',
+                    'paid': True,
+                    'recovered': True  # flag that webhook was missed
+                })
+        except stripe.error.StripeError as e:
+            print(f"[VERIFY] Stripe lookup failed for order {order_id}: {e}")
+
     return jsonify({
         'order_id': order_id,
         'order_number': order['order_number'],
         'status': order['status'],
-        'paid': order['status'] in ['paid', 'processing', 'shipped', 'delivered', 'fulfilled']
+        'paid': False
     })
 
 @app.route('/api/orders', methods=['GET'])
@@ -4432,6 +4493,78 @@ def admin_update_order_status(oid):
     
     conn.close()
     return jsonify({'message': 'Status updated'})
+
+
+@app.route('/api/admin/sync-stripe-payments', methods=['POST'])
+@admin_required
+def admin_sync_stripe_payments():
+    """Check all pending/pending_payment orders against Stripe and mark paid if confirmed."""
+    if not stripe.api_key:
+        return jsonify({'error': 'Stripe not configured'}), 400
+
+    conn = get_db()
+    stuck_orders = conn.execute("""
+        SELECT * FROM orders
+        WHERE status IN ('pending', 'pending_payment')
+          AND total > 0
+          AND stripe_session_id IS NOT NULL
+          AND stripe_session_id != ''
+        ORDER BY created_at DESC
+    """).fetchall()
+    conn.close()
+
+    fixed = []
+    skipped = []
+    errors = []
+
+    for order in stuck_orders:
+        order = dict(order)
+        try:
+            cs = stripe.checkout.Session.retrieve(order['stripe_session_id'])
+            if cs.payment_status == 'paid':
+                conn2 = get_db()
+                conn2.execute(
+                    """UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
+                       stripe_payment_intent=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (cs.payment_intent, order['id'])
+                )
+                conn2.commit()
+
+                # Get user info for notifications
+                user_info = conn2.execute(
+                    'SELECT full_name,email,phone FROM users WHERE id=?', (order['user_id'],)
+                ).fetchone()
+                items_for_admin = [dict(i) for i in conn2.execute(
+                    'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
+                    (order['id'],)).fetchall()]
+                conn2.close()
+
+                order_dict = dict(order)
+                order_dict['status'] = 'paid'
+                if user_info:
+                    order_dict.update({'full_name': user_info['full_name'],
+                                       'email': user_info['email'],
+                                       'phone': user_info['phone']})
+
+                try:
+                    send_status_update(order['id'], 'paid')
+                    send_new_order_admin_notification(order_dict, items_for_admin)
+                except Exception:
+                    pass
+
+                fixed.append({'order_number': order['order_number'], 'total': order['total']})
+                print(f"[SYNC] Fixed order {order['order_number']} — was stuck, Stripe confirmed paid")
+            else:
+                skipped.append({'order_number': order['order_number'], 'stripe_status': cs.payment_status})
+        except stripe.error.StripeError as e:
+            errors.append({'order_number': order['order_number'], 'error': str(e)})
+
+    return jsonify({
+        'message': f"Sync complete: {len(fixed)} fixed, {len(skipped)} not paid in Stripe, {len(errors)} errors",
+        'fixed': fixed,
+        'skipped': skipped,
+        'errors': errors
+    })
 
 
 @app.route('/api/admin/orders/<int:oid>/mark-paid-zero-total', methods=['POST'])
