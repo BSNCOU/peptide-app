@@ -2834,16 +2834,16 @@ def stripe_webhook():
             print(f"[STRIPE WEBHOOK] Error parsing event: {e}")
             return jsonify({'error': 'Invalid event'}), 400
     
-    # Handle the checkout.session.completed event
+    # Parse event data directly from raw JSON — avoids Stripe object type issues
+    try:
+        event_data = json.loads(payload)
+    except Exception:
+        event_data = {}
+
     if event['type'] == 'checkout.session.completed':
-        session_obj = event['data']['object']
-        # Stripe objects support dict-style AND attribute access — use dict() to normalize
-        session_data = dict(session_obj)
+        # Use raw JSON dict — fully compatible, no Stripe object type issues
+        session_data = event_data.get('data', {}).get('object', {})
         metadata = session_data.get('metadata') or {}
-        if hasattr(metadata, 'to_dict'):
-            metadata = metadata.to_dict()
-        elif not isinstance(metadata, dict):
-            metadata = dict(metadata)
         order_id = metadata.get('order_id')
         payment_intent = session_data.get('payment_intent')
 
@@ -2931,9 +2931,8 @@ def stripe_webhook():
                 # DO NOT return 500 — Stripe must always get 200
 
     elif event['type'] == 'payment_intent.payment_failed':
-        session_obj = event['data']['object']
-        session_obj_data = dict(session_obj)
-        print(f"[STRIPE] Payment failed: {session_obj_data.get('id')}")
+        failed_data = event_data.get('data', {}).get('object', {})
+        print(f"[STRIPE] Payment failed: {failed_data.get('id')}")
 
     # ALWAYS return 200 to Stripe — never let internal errors cause retries
     return jsonify({'status': 'success'})
