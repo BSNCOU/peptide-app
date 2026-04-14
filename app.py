@@ -2837,88 +2837,97 @@ def stripe_webhook():
     # Handle the checkout.session.completed event
     if event['type'] == 'checkout.session.completed':
         session_obj = event['data']['object']
-        
         order_id = session_obj.get('metadata', {}).get('order_id')
         payment_intent = session_obj.get('payment_intent')
-        
+
         if order_id:
-            conn = get_db()
-            c = conn.cursor()
-            
-            # Update order status to paid
-            c.execute('''UPDATE orders 
-                        SET status = 'paid', 
-                            stripe_payment_intent = ?,
-                            paid_at = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP 
-                        WHERE id = ?''', (payment_intent, order_id))
-            
-            conn.commit()
-            
-            # Get order for notification
-            order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
-            conn.close()
-            
-            if order:
-                print(f"[STRIPE] Order {order['order_number']} marked as PAID")
-                # Send payment confirmation to customer
-                send_status_update(int(order_id), 'paid')
-                # Now send admin "New Order Received!" — payment is confirmed
-                order_dict = dict(order)
-                conn2 = get_db()
-                items_for_admin = [dict(i) for i in conn2.execute(
-                    'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
-                    (order_id,)).fetchall()]
-                user_info = conn2.execute('SELECT full_name,email,phone FROM users WHERE id=?', (order_dict['user_id'],)).fetchone()
-                if user_info:
-                    order_dict['full_name'] = user_info['full_name']
-                    order_dict['email'] = user_info['email']
-                    order_dict['phone'] = user_info['phone']
+            try:
+                conn = get_db()
+                c = conn.cursor()
 
-                # ── Casual Referral: 20% credit to introducer on buyer's FIRST paid order ──
-                # Only fires if introducer does NOT already have their own referral code
-                # (those users earn commission through their code instead)
-                introducer_id = order_dict.get('introducer_user_id')
-                if introducer_id:
-                    # Check if introducer already has a referral code — if so, skip
-                    has_referral_code = conn2.execute(
-                        'SELECT id FROM discount_codes WHERE referrer_user_id=? AND active=1 LIMIT 1',
-                        (introducer_id,)
+                # Mark paid FIRST — before any notifications that could crash
+                c.execute("""UPDATE orders
+                            SET status = 'paid',
+                                stripe_payment_intent = ?,
+                                paid_at = CURRENT_TIMESTAMP,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?""", (payment_intent, order_id))
+                conn.commit()
+
+                order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
+                conn.close()
+
+                if order:
+                    print(f"[STRIPE] Order {order['order_number']} marked as PAID")
+                    order_dict = dict(order)
+
+                    conn2 = get_db()
+                    user_info = conn2.execute(
+                        'SELECT full_name,email,phone FROM users WHERE id=?', (order_dict['user_id'],)
                     ).fetchone()
+                    items_for_admin = [dict(i) for i in conn2.execute(
+                        'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
+                        (order_id,)).fetchall()]
+                    if user_info:
+                        order_dict['full_name'] = user_info['full_name']
+                        order_dict['email'] = user_info['email']
+                        order_dict['phone'] = user_info['phone']
 
-                    if has_referral_code:
-                        print(f"[REFERRAL] Skipping casual referral for user {introducer_id} — they already have a referral code")
-                    else:
-                        prior_paid_count = conn2.execute(
-                            """SELECT COUNT(*) as cnt FROM orders
-                               WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
-                               AND id != ?""",
-                            (order_dict['user_id'], int(order_id))
-                        ).fetchone()
-                        is_first_order = (prior_paid_count['cnt'] == 0) if prior_paid_count else True
-                        if is_first_order:
-                            commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
-                            if commission > 0:
-                                conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
-                                             (commission, introducer_id))
-                                conn2.execute(
-                                    """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
-                                       VALUES (?,?,?,?,?)""",
-                                    (introducer_id, int(order_id), 'earned',
-                                     commission,
-                                     f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
-                                )
-                                conn2.commit()
-                                print(f"[REFERRAL] ${commission:.2f} credit given to user {introducer_id} for introducing {order_dict['user_id']}")
+                    # Casual referral credit
+                    try:
+                        introducer_id = order_dict.get('introducer_user_id')
+                        if introducer_id:
+                            has_code = conn2.execute(
+                                'SELECT id FROM discount_codes WHERE referrer_user_id=? AND active=1 LIMIT 1',
+                                (introducer_id,)
+                            ).fetchone()
+                            if not has_code:
+                                prior = conn2.execute(
+                                    """SELECT COUNT(*) as cnt FROM orders
+                                       WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+                                       AND id != ?""",
+                                    (order_dict['user_id'], int(order_id))
+                                ).fetchone()
+                                if prior and prior['cnt'] == 0:
+                                    commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
+                                    if commission > 0:
+                                        conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
+                                                     (commission, introducer_id))
+                                        conn2.execute(
+                                            """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
+                                               VALUES (?,?,?,?,?)""",
+                                            (introducer_id, int(order_id), 'earned', commission,
+                                             f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
+                                        )
+                                        conn2.commit()
+                                        print(f"[REFERRAL] ${commission:.2f} credit to introducer {introducer_id}")
+                    except Exception as ref_err:
+                        print(f"[STRIPE WEBHOOK] Referral error (non-fatal): {ref_err}")
 
-                conn2.commit()
-                conn2.close()
-                send_new_order_admin_notification(order_dict, items_for_admin)
-    
+                    conn2.commit()
+                    conn2.close()
+
+                    try:
+                        send_status_update(int(order_id), 'paid')
+                    except Exception as e:
+                        print(f"[STRIPE WEBHOOK] send_status_update failed (non-fatal): {e}")
+
+                    try:
+                        send_new_order_admin_notification(order_dict, items_for_admin)
+                    except Exception as e:
+                        print(f"[STRIPE WEBHOOK] admin notification failed (non-fatal): {e}")
+
+            except Exception as e:
+                import traceback
+                print(f"[STRIPE WEBHOOK] Processing error for order {order_id}: {e}")
+                traceback.print_exc()
+                # DO NOT return 500 — Stripe must always get 200
+
     elif event['type'] == 'payment_intent.payment_failed':
         session_obj = event['data']['object']
         print(f"[STRIPE] Payment failed: {session_obj.get('id')}")
-    
+
+    # ALWAYS return 200 to Stripe — never let internal errors cause retries
     return jsonify({'status': 'success'})
 
 
