@@ -2837,8 +2837,15 @@ def stripe_webhook():
     # Handle the checkout.session.completed event
     if event['type'] == 'checkout.session.completed':
         session_obj = event['data']['object']
-        order_id = session_obj.get('metadata', {}).get('order_id')
-        payment_intent = session_obj.get('payment_intent')
+        # Stripe objects support dict-style AND attribute access — use dict() to normalize
+        session_data = dict(session_obj)
+        metadata = session_data.get('metadata') or {}
+        if hasattr(metadata, 'to_dict'):
+            metadata = metadata.to_dict()
+        elif not isinstance(metadata, dict):
+            metadata = dict(metadata)
+        order_id = metadata.get('order_id')
+        payment_intent = session_data.get('payment_intent')
 
         if order_id:
             try:
@@ -2925,7 +2932,8 @@ def stripe_webhook():
 
     elif event['type'] == 'payment_intent.payment_failed':
         session_obj = event['data']['object']
-        print(f"[STRIPE] Payment failed: {session_obj.get('id')}")
+        session_obj_data = dict(session_obj)
+        print(f"[STRIPE] Payment failed: {session_obj_data.get('id')}")
 
     # ALWAYS return 200 to Stripe — never let internal errors cause retries
     return jsonify({'status': 'success'})
