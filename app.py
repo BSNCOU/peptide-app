@@ -2852,6 +2852,15 @@ def stripe_webhook():
                 conn = get_db()
                 c = conn.cursor()
 
+                # Check current status first — never downgrade an already-advanced order
+                existing = c.execute('SELECT status FROM orders WHERE id=?', (order_id,)).fetchone()
+                if existing:
+                    current_status = existing['status'] if hasattr(existing, 'keys') else existing[0]
+                    if current_status not in ('pending', 'pending_payment'):
+                        print(f"[STRIPE WEBHOOK] Order {order_id} already at status '{current_status}' — skipping re-process")
+                        conn.close()
+                        return jsonify({'status': 'success'})
+
                 # Mark paid FIRST — before any notifications that could crash
                 c.execute("""UPDATE orders
                             SET status = 'paid',
@@ -4555,7 +4564,11 @@ def admin_sync_stripe_payments():
     errors = []
 
     def do_mark_paid(order, payment_intent_id):
-        """Mark order as paid and send notifications."""
+        """Mark order as paid and send notifications. Skips if already past pending."""
+        # Never overwrite shipped/fulfilled/processing etc.
+        if order.get('status') not in ('pending', 'pending_payment'):
+            print(f"[SYNC] Skipping {order['order_number']} — already at status '{order.get('status')}'")
+            return False
         conn2 = get_db()
         conn2.execute(
             """UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
