@@ -1490,6 +1490,13 @@ BC10,8.00</pre>
                                 <label>Tracking Number (for shipped orders)</label>
                                 <input type="text" id="trackingNumber" value="${o.tracking_number || ''}" placeholder="Enter tracking number">
                             </div>
+                            <div style="background:#fffbeb;border:1px solid #f6e05e;border-radius:8px;padding:12px;margin-bottom:10px;">
+                                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                    <input type="checkbox" id="silentUpdate" style="width:16px;height:16px;">
+                                    <span><strong>Silent update</strong> — change status without emailing the customer</span>
+                                </label>
+                                <p style="color:#744210;font-size:12px;margin:4px 0 0 28px;">Use this when correcting status after a system error, like re-setting orders that were accidentally reset to paid.</p>
+                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn btn-success">Update Status</button>
@@ -1502,16 +1509,18 @@ BC10,8.00</pre>
 
         async function updateOrderStatus(e, id) {
             e.preventDefault();
+            const silent = document.getElementById('silentUpdate')?.checked || false;
             try {
                 await api(`/api/admin/orders/${id}/status`, {
                     method: 'PUT',
                     body: JSON.stringify({
                         status: document.getElementById('orderStatus').value,
-                        tracking_number: document.getElementById('trackingNumber').value || null
+                        tracking_number: document.getElementById('trackingNumber').value || null,
+                        silent: silent
                     })
                 });
                 closeModal();
-                showAlert('Order status updated', 'success');
+                showAlert(silent ? 'Status updated silently — no email sent to customer.' : 'Order status updated', 'success');
                 loadOrders();
                 loadStats();
             } catch (err) {

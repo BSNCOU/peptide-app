@@ -4526,11 +4526,16 @@ def admin_update_order_status(oid):
                  (status, data.get('admin_notes', current_dict.get('admin_notes', '')), tracking_number, oid))
     conn.commit()
     
+    silent = data.get('silent', False)  # skip customer notification when True
+
     # Send tracking email if requested and tracking number provided
-    if send_tracking_email and tracking_number:
-        send_tracking_notification(oid, tracking_number)
-    elif current_dict['status'] != status:
-        send_status_update(oid, status)
+    if not silent:
+        if send_tracking_email and tracking_number:
+            send_tracking_notification(oid, tracking_number)
+        elif current_dict['status'] != status:
+            send_status_update(oid, status)
+    else:
+        print(f"[STATUS] Order {oid} silently updated to '{status}' — no customer notification sent")
     
     conn.close()
     return jsonify({'message': 'Status updated'})
