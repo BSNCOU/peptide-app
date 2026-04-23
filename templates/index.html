@@ -809,6 +809,8 @@
                 
                 // Check if this is their own referral code
                 if (result.is_own_code && result.commission_percent > 0) {
+                    // Stash the full API result so applyReferrerChoice can preserve allows_pickup
+                    state.discount = result;
                     showReferrerChoiceModal(result, result.non_sale_subtotal || subtotal);
                 } else {
                     state.discount = result;
@@ -901,19 +903,31 @@
                 effectiveAmount = subtotal * (effectivePercent / 100);
                 message = discountPercent + '% off + ' + commissionPercent + '% credit';
             }
-            
+
+            // Preserve allows_pickup from the originally-validated discount (if any)
+            const prevAllowsPickup = !!(state.discount && state.discount.allows_pickup);
+            const prevPickupLocations = (state.discount && state.discount.pickup_locations) || [];
+
             state.discount = {
                 code: code,
                 discount_percent: effectivePercent,
                 discount_amount: effectiveAmount,
                 message: message,
-                is_own_code: true
+                is_own_code: true,
+                allows_pickup: prevAllowsPickup,
+                pickup_locations: prevPickupLocations
             };
             state.referrerChoice = choice;
-            
+
             closeModal();
             showAlert('Discount applied: ' + message, 'success');
             renderCart();
+
+            // Reveal pickup option block if the code allows it and checkout is open
+            const pickupBlock = document.getElementById('pickupOptionBlock');
+            if (pickupBlock) {
+                pickupBlock.style.display = prevAllowsPickup ? 'block' : 'none';
+            }
         }
 
         function removeDiscount() {
