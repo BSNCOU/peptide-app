@@ -80,6 +80,26 @@ CONFIG = {
 
 DATABASE = 'research_orders.db'
 
+# ============================================
+# PICKUP LOCATIONS
+# ============================================
+PICKUP_LOCATIONS = {
+    'huntertown': {
+        'name': 'Huntertown',
+        'address': '1414 Simon Rd, Huntertown, IN',
+        'badge': '🏪 HUNTERTOWN',
+    },
+    'auburn': {
+        'name': 'Auburn',
+        'address': '530 North St, Auburn, IN 46706',
+        'badge': '🏪 AUBURN',
+    },
+}
+
+# Contact for pickup scheduling — update before go-live
+PICKUP_CONTACT_EMAIL = os.environ.get('PICKUP_CONTACT_EMAIL', 'info@thepeptidewizard.com')
+PICKUP_CONTACT_PHONE = os.environ.get('PICKUP_CONTACT_PHONE', '') or None
+
 def is_postgres():
     """Check if using PostgreSQL"""
     database_url = CONFIG.get('DATABASE_URL', '')
@@ -551,12 +571,29 @@ def init_db():
             c.execute("ALTER TABLE orders ADD COLUMN easypost_shipment_id TEXT")
         except:
             pass
-    
+        # Pickup feature columns
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN pickup_location TEXT")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN picked_up_at TIMESTAMP")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE discount_codes ADD COLUMN allows_pickup INTEGER DEFAULT 0")
+        except:
+            pass
+
     # Add EasyPost columns for PostgreSQL
     if using_postgres:
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_label_url TEXT")
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_label_zpl_url TEXT")
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS easypost_shipment_id TEXT")
+        # Pickup feature columns
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_location TEXT")
+        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS picked_up_at TIMESTAMP")
+        c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS allows_pickup INTEGER DEFAULT 0")
     
     c.execute(f'''CREATE TABLE IF NOT EXISTS order_items (
         id {auto_id},
@@ -1286,6 +1323,7 @@ def send_status_update(order_id, new_status):
     status_messages = {
         'paid': 'Your payment has been received.',
         'processing': 'Your order is being prepared.',
+        'ready_for_pickup': 'Your order is ready for pickup!',
         'shipped': f"Your order has been shipped.{' Tracking: ' + order['tracking_number'] if order.get('tracking_number') else ''}",
         'delivered': 'Your order has been delivered.',
         'cancelled': 'Your order has been cancelled.',
@@ -1298,6 +1336,63 @@ def send_status_update(order_id, new_status):
     
     if order['phone']:
         send_sms(order['phone'], f"Order {order['order_number']}: {msg}")
+
+
+def send_pickup_ready_email(order_id):
+    """Notify customer their pickup order is ready and prompt to schedule."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''SELECT o.*, u.full_name, u.email, u.phone
+                 FROM orders o JOIN users u ON o.user_id=u.id
+                 WHERE o.id=?''', (order_id,))
+    order = c.fetchone()
+    conn.close()
+    if not order:
+        return
+    order = dict(order)
+
+    loc = PICKUP_LOCATIONS.get(order.get('pickup_location'))
+    if not loc:
+        print(f"[PICKUP] No valid location on order {order_id}; skipping email.")
+        return
+
+    contact_line = 'reply to this email'
+    if PICKUP_CONTACT_PHONE:
+        contact_line += f' or text {PICKUP_CONTACT_PHONE}'
+
+    html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px;">
+    <div style="background:#10b981;color:white;padding:20px;border-radius:10px 10px 0 0;">
+        <h2 style="margin:0;">🏪 Your Order is Ready for Pickup!</h2>
+    </div>
+    <div style="background:white;padding:20px;border:1px solid #ddd;border-top:none;border-radius:0 0 10px 10px;">
+        <p>Hi {order['full_name']},</p>
+        <p>Great news — your order <strong>{order['order_number']}</strong> is ready for local pickup.</p>
+        <div style="background:#f0fdf4;border-left:4px solid #10b981;padding:14px;margin:16px 0;border-radius:4px;">
+            <p style="margin:0;"><strong>📍 Pickup Location:</strong><br>{loc['address']}</p>
+            <p style="margin:8px 0 0 0;"><strong>⏰ Hours:</strong> By appointment only</p>
+        </div>
+        <p>To schedule a pickup time, please {contact_line}.</p>
+        <p><strong>What to bring:</strong></p>
+        <ul>
+            <li>Your order number: <strong>{order['order_number']}</strong></li>
+            <li>A valid photo ID</li>
+        </ul>
+        <p style="margin-top:20px;color:#666;font-size:13px;">
+            Thanks for supporting local!<br>— The Peptide Wizard
+        </p>
+    </div>
+    </body></html>"""
+
+    send_email(order['email'], f"Ready for Pickup — Order {order['order_number']}", html)
+
+    if order.get('phone'):
+        send_sms(order['phone'],
+                 f"Order {order['order_number']} ready for pickup at {loc['address']}. Reply to schedule.")
+
+    try:
+        log_notification(order['user_id'], order_id, 'pickup_ready', 'email', order['email'], 'sent')
+    except Exception as e:
+        print(f"[PICKUP] log_notification failed: {e}")
 
 
 def send_tracking_notification(order_id, tracking_number):
@@ -2160,7 +2255,12 @@ def validate_discount():
         'combined_percent': combined_percent,
         'combined_amount': round(combined_amount, 2),
         'has_sale_items': has_sale_items,
-        'non_sale_subtotal': round(non_sale_subtotal, 2)
+        'non_sale_subtotal': round(non_sale_subtotal, 2),
+        'allows_pickup': bool(discount['allows_pickup']) if 'allows_pickup' in discount.keys() else False,
+        'pickup_locations': [
+            {'value': 'huntertown', 'label': '1414 Simon Rd, Huntertown, IN'},
+            {'value': 'auburn',     'label': '530 North St, Auburn, IN 46706'},
+        ] if ('allows_pickup' in discount.keys() and discount['allows_pickup']) else [],
     })
 
 # ============================================
@@ -2512,8 +2612,21 @@ def create_order():
     
     # Handle delivery method and shipping cost
     delivery_method = data.get('delivery_method', 'pickup')
+    pickup_location = None
     shipping_cost = 0.0
-    if delivery_method == 'ship':
+
+    if delivery_method == 'pickup':
+        # SECURITY: pickup only permitted if the applied discount code allows it
+        if not (discount_code_id and discount and ('allows_pickup' in discount.keys()) and discount['allows_pickup']):
+            conn.close()
+            return jsonify({'error': 'Local pickup requires an eligible discount code.'}), 400
+
+        pickup_location = data.get('pickup_location')
+        if pickup_location not in PICKUP_LOCATIONS:
+            conn.close()
+            return jsonify({'error': 'Please select a valid pickup location.'}), 400
+
+    elif delivery_method == 'ship':
         # Free shipping if subtotal after discounts is $500+
         net_product_total = subtotal - discount_amount
         free_shipping_threshold = float(get_setting('free_shipping_threshold', '500.00'))
@@ -2522,6 +2635,9 @@ def create_order():
             print(f"[SHIPPING] Free shipping applied - net total ${net_product_total:.2f} >= ${free_shipping_threshold:.2f}")
         else:
             shipping_cost = float(get_setting('shipping_cost', '20.00'))
+    else:
+        conn.close()
+        return jsonify({'error': 'Invalid delivery method.'}), 400
     
     # Calculate sales tax (Indiana 7% - only on product subtotal after discounts, not shipping)
     sales_tax = 0
@@ -2556,8 +2672,8 @@ def create_order():
     order_number = gen_order_num()
     introducer_user_id = data.get('introducer_user_id') or None
     
-    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,credit_applied,total,notes,shipping_address,introducer_user_id,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', ''), introducer_user_id, 'pending_payment'))
+    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,pickup_location,credit_applied,total,notes,shipping_address,introducer_user_id,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, pickup_location, credit_applied, total, data.get('notes', ''), data.get('shipping_address', ''), introducer_user_id, 'pending_payment'))
     order_id = c.lastrowid
     
     for item in order_items:
@@ -2625,7 +2741,7 @@ def create_order():
                 {'order_number': order_number, 'full_name': '', 'email': '', 'phone': '',
                  'subtotal': subtotal, 'discount_amount': discount_amount, 'shipping_cost': shipping_cost,
                  'sales_tax': sales_tax, 'processing_fee': processing_fee, 'credit_applied': credit_applied,
-                 'total': total, 'delivery_method': delivery_method, 'shipping_address': '', 'notes': ''},
+                 'total': total, 'delivery_method': delivery_method, 'pickup_location': pickup_location, 'shipping_address': '', 'notes': ''},
                 []
             )
             final_status = 'paid'
@@ -2633,7 +2749,7 @@ def create_order():
         except Exception as e:
             print(f"[ORDER] Auto-pay failed for zero-total order {order_number}: {e}")
 
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': final_status}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'pickup_location': pickup_location, 'total': total, 'status': final_status}), 201
 
 
 # ============================================
@@ -4057,8 +4173,8 @@ def admin_add_code():
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent) VALUES (?,?,?,?,?,?,?,?,?)',
-                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20)))
+        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent,allows_pickup) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('allows_pickup') else 0))
         conn.commit()
         cid = c.lastrowid
         conn.close()
@@ -4072,8 +4188,8 @@ def admin_add_code():
 def admin_update_code(cid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=?,first_order_only=? WHERE id=?',
-                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('first_order_only') else 0, cid))
+    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=?,first_order_only=?,allows_pickup=? WHERE id=?',
+                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('first_order_only') else 0, 1 if data.get('allows_pickup') else 0, cid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Code updated'})
@@ -4474,7 +4590,7 @@ def admin_update_order_status(oid):
     if not status:
         status = current_dict['status']
     
-    valid = ['pending', 'pending_payment', 'paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
+    valid = ['pending', 'pending_payment', 'paid', 'processing', 'ready_to_ship', 'ready_for_pickup', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
     if status not in valid:
         return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
     
@@ -4522,7 +4638,12 @@ def admin_update_order_status(oid):
             conn.execute('UPDATE products SET stock = stock - ? WHERE id = ?', (item['quantity'], item['product_id']))
         print(f"[INVENTORY] Deducted stock for reactivated order {oid}")
     
-    conn.execute('UPDATE orders SET status=?, admin_notes=?, tracking_number=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+    # Set picked_up_at when transitioning a pickup order to fulfilled
+    picked_up_at_sql = ''
+    if status == 'fulfilled' and current_dict.get('delivery_method') == 'pickup' and not current_dict.get('picked_up_at'):
+        picked_up_at_sql = ', picked_up_at=CURRENT_TIMESTAMP'
+
+    conn.execute(f'UPDATE orders SET status=?, admin_notes=?, tracking_number=?, updated_at=CURRENT_TIMESTAMP{picked_up_at_sql} WHERE id=?',
                  (status, data.get('admin_notes', current_dict.get('admin_notes', '')), tracking_number, oid))
     conn.commit()
     
@@ -4702,6 +4823,31 @@ def admin_update_delivery_method(oid):
     conn.commit()
     conn.close()
     return jsonify({'message': f'Delivery method updated to {method}'})
+
+
+@app.route('/api/admin/orders/<int:oid>/mark-ready-pickup', methods=['POST'])
+@admin_required
+def admin_mark_ready_pickup(oid):
+    """Mark a pickup order as ready and email the customer with pickup instructions."""
+    conn = get_db()
+    order = conn.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    if order['delivery_method'] != 'pickup':
+        conn.close()
+        return jsonify({'error': 'Not a pickup order'}), 400
+
+    conn.execute("UPDATE orders SET status='ready_for_pickup', updated_at=CURRENT_TIMESTAMP WHERE id=?", (oid,))
+    conn.commit()
+    conn.close()
+
+    try:
+        send_pickup_ready_email(oid)
+    except Exception as e:
+        print(f"[PICKUP] Ready-email failed for order {oid}: {e}")
+
+    return jsonify({'message': 'Order marked ready for pickup; customer notified.'})
 
 # ============================================
 # EASYPOST SHIPPING INTEGRATION

@@ -55,6 +55,7 @@
         .status-paid { background: #c6f6d5; color: #276749; }
         .status-processing { background: #bee3f8; color: #2b6cb0; }
         .status-ready_to_ship { background: #fbd38d; color: #744210; }
+        .status-ready_for_pickup { background: #d1fae5; color: #065f46; }
         .status-shipped { background: #e9d8fd; color: #6b46c1; }
         .status-delivered { background: #c6f6d5; color: #276749; }
         .status-fulfilled { background: #c6f6d5; color: #276749; }
@@ -1378,7 +1379,7 @@ BC10,8.00</pre>
                             </div>
                             <div>
                                 <p><strong>Status:</strong> <span class="status-badge status-${o.status}">${o.status}</span></p>
-                                <p><strong>Delivery:</strong> ${o.delivery_method === 'ship' ? '📦 Ship' : '🏪 Pickup'}</p>
+                                <p><strong>Delivery:</strong> ${deliveryDisplay(o)}</p>
                                 <p><strong>Date:</strong> ${new Date(o.created_at).toLocaleString()}</p>
                                 ${o.tracking_number ? `<p><strong>Tracking:</strong> ${o.tracking_number}</p>` : ''}
                             </div>
@@ -1479,6 +1480,7 @@ BC10,8.00</pre>
                                     <option value="paid" ${o.status==='paid'?'selected':''}>Paid</option>
                                     <option value="processing" ${o.status==='processing'?'selected':''}>Processing</option>
                                     <option value="ready_to_ship" ${o.status==='ready_to_ship'?'selected':''}>Ready to Ship</option>
+                                    <option value="ready_for_pickup" ${o.status==='ready_for_pickup'?'selected':''}>Ready for Pickup</option>
                                     <option value="shipped" ${o.status==='shipped'?'selected':''}>Shipped</option>
                                     <option value="delivered" ${o.status==='delivered'?'selected':''}>Delivered</option>
                                     <option value="fulfilled" ${o.status==='fulfilled'?'selected':''}>Fulfilled</option>
@@ -2096,6 +2098,13 @@ BC10,8.00</pre>
                                     </div>
                                 </div>
                             </div>
+                            <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:14px;margin-top:15px;">
+                                <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;color:#065f46;">
+                                    <input type="checkbox" id="discAllowsPickup" style="width:18px;height:18px;cursor:pointer;">
+                                    🏪 Allow Local Pickup
+                                </label>
+                                <p style="color:#047857;font-size:13px;margin:6px 0 0 28px;">If checked, customers using this code can choose free local pickup (Huntertown or Auburn) instead of shipping.</p>
+                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Add Code</button>
@@ -2119,7 +2128,8 @@ BC10,8.00</pre>
                         min_order_amount: parseFloat(document.getElementById('discMinOrder').value) || 0,
                         usage_limit: parseInt(document.getElementById('discLimit').value) || null,
                         referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
-                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
+                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20,
+                        allows_pickup: document.getElementById('discAllowsPickup').checked ? 1 : 0
                     })
                 });
                 closeModal();
@@ -2184,6 +2194,13 @@ BC10,8.00</pre>
                                 </label>
                                 <p style="color:#742a2a;font-size:13px;margin:6px 0 0 28px;">If checked, this code will be rejected at checkout for anyone who has already placed a paid order. Use for new customer welcome discounts like WELCOME30.</p>
                             </div>
+                            <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:14px;margin-top:8px;margin-bottom:4px;">
+                                <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;color:#065f46;">
+                                    <input type="checkbox" id="discAllowsPickup" ${d.allows_pickup ? 'checked' : ''} style="width:18px;height:18px;cursor:pointer;">
+                                    🏪 Allow Local Pickup
+                                </label>
+                                <p style="color:#047857;font-size:13px;margin:6px 0 0 28px;">If checked, customers using this code can choose free local pickup (Huntertown or Auburn) instead of shipping.</p>
+                            </div>
                             <div style="background: #f0fff4; padding: 15px; border-radius: 8px; margin-top: 15px;">
                                 <h4 style="margin-bottom: 10px; color: #276749;">👥 Referral Settings</h4>
                                 <div class="form-row">
@@ -2227,7 +2244,8 @@ BC10,8.00</pre>
                         expires_at: expiresVal || null,
                         first_order_only: document.getElementById('discFirstOrder').checked ? 1 : 0,
                         referrer_user_id: parseInt(document.getElementById('discReferrer').value) || null,
-                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20
+                        commission_percent: parseFloat(document.getElementById('discCommission').value) || 20,
+                        allows_pickup: document.getElementById('discAllowsPickup').checked ? 1 : 0
                     })
                 });
                 closeModal();
@@ -3681,9 +3699,9 @@ The Peptide Wizard Team"></textarea>
         }
 
         function renderOpenOrders() {
-            // Show paid/processing/ready_to_ship + pending orders with real totals (webhook may have missed)
+            // Show paid/processing/ready_to_ship/ready_for_pickup + pending orders with real totals (webhook may have missed)
             const openOrders = state.orders.filter(o => 
-                ['paid', 'processing', 'ready_to_ship'].includes(o.status) ||
+                ['paid', 'processing', 'ready_to_ship', 'ready_for_pickup'].includes(o.status) ||
                 (o.status === 'pending' && parseFloat(o.total || 0) > 0)
             );
             
@@ -3734,7 +3752,8 @@ The Peptide Wizard Team"></textarea>
                                             <button class="btn btn-small" onclick="showOpenOrderDetailModal(${o.id})">View</button>
                                             ${o.status === 'pending' ? `<button class="btn btn-success btn-small" onclick="manualMarkPaid(${o.id})" title="Stripe payment confirmed but webhook missed — mark as paid">✅ Mark Paid</button>` : ''}
                                             ${['paid', 'processing'].includes(o.status) && !isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markOrderReadyToShip(${o.id})">📦 Ready to Ship</button>` : ''}
-                                            ${['paid', 'processing', 'ready_to_ship'].includes(o.status) && isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markPickedUp(${o.id})">✓ Picked Up</button>` : ''}
+                                            ${['paid', 'processing'].includes(o.status) && isPickupOrder(o) ? `<button class="btn btn-small" style="background:#8b5cf6;color:white;" onclick="markReadyForPickup(${o.id})">🏪 Ready for Pickup</button>` : ''}
+                                            ${['ready_for_pickup', 'ready_to_ship'].includes(o.status) && isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markPickedUp(${o.id})">✓ Picked Up</button>` : ''}
                                             <button class="btn btn-danger btn-small" onclick="cancelOrder(${o.id})">✗ Cancel</button>
                                         </td>
                                     </tr>
@@ -3875,6 +3894,14 @@ The Peptide Wizard Team"></textarea>
                 return false;
             }
             return true; // null, 'pickup', or anything else = pickup
+        }
+
+        // Helper: format delivery info including pickup location
+        function deliveryDisplay(o) {
+            if (o.delivery_method === 'ship') return '📦 Ship';
+            if (o.pickup_location === 'huntertown') return '🏪 Pickup — Huntertown (1414 Simon Rd)';
+            if (o.pickup_location === 'auburn')     return '🏪 Pickup — Auburn (530 North St)';
+            return '🏪 Pickup';
         }
 
         function renderReadyToShip() {
@@ -4388,7 +4415,7 @@ The Peptide Wizard Team"></textarea>
                             </div>
                             <div>
                                 <p><strong>Status:</strong> <span class="status-badge status-${o.status}">${o.status}</span></p>
-                                <p><strong>Delivery:</strong> ${o.delivery_method === 'ship' ? '📦 Ship' : '🏪 Pickup'}</p>
+                                <p><strong>Delivery:</strong> ${deliveryDisplay(o)}</p>
                                 <p><strong>Date:</strong> ${new Date(o.created_at).toLocaleString()}</p>
                             </div>
                         </div>
@@ -4611,6 +4638,24 @@ The Peptide Wizard Team"></textarea>
                     body: JSON.stringify({ status: 'fulfilled' })
                 });
                 showAlert('Order marked as picked up!', 'success');
+                state.orders = await api('/api/admin/orders');
+                if (state.currentTab === 'readyToShip') {
+                    renderReadyToShip();
+                } else {
+                    renderOpenOrders();
+                }
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function markReadyForPickup(id) {
+            if (!confirm('Mark this order as ready for pickup? The customer will be emailed with pickup instructions.')) return;
+            try {
+                await api(`/api/admin/orders/${id}/mark-ready-pickup`, {
+                    method: 'POST'
+                });
+                showAlert('Customer notified. Order is awaiting pickup.', 'success');
                 state.orders = await api('/api/admin/orders');
                 if (state.currentTab === 'readyToShip') {
                     renderReadyToShip();

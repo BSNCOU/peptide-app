@@ -184,6 +184,7 @@
         }
         .status-paid { background: #48bb78; color: white; }
         .status-ready_to_ship { background: #ed8936; color: white; }
+        .status-ready_for_pickup { background: #8b5cf6; color: white; }
         .order-customer { color: #e2e8f0; margin-bottom: 8px; }
         .order-items { color: #a0aec0; font-size: 0.85rem; margin-bottom: 12px; }
         .order-actions { display: flex; gap: 10px; }
@@ -748,7 +749,7 @@
         
         function updateStats() {
             const openOrders = state.orders.filter(o => 
-                ['paid', 'processing'].includes(o.status)
+                ['paid', 'processing', 'ready_for_pickup'].includes(o.status)
             );
             const readyOrders = state.orders.filter(o => o.status === 'ready_to_ship');
             const today = new Date().toDateString();
@@ -804,7 +805,7 @@
         // Render Functions
         function renderOpenOrders() {
             const orders = state.orders.filter(o => 
-                ['paid', 'processing'].includes(o.status)
+                ['paid', 'processing', 'ready_for_pickup'].includes(o.status)
             );
             
             const container = document.getElementById('openOrdersList');
@@ -823,13 +824,19 @@
                 <div class="order-card">
                     <div class="order-header">
                         <span class="order-number">${o.order_number}</span>
-                        <span class="order-status status-${o.status}">${o.delivery_method === 'pickup' ? '🏪 Pickup' : o.status}</span>
+                        <span class="order-status status-${o.status}">${
+                            o.delivery_method === 'pickup'
+                                ? (o.pickup_location === 'huntertown' ? '🏪 HUNTERTOWN' : o.pickup_location === 'auburn' ? '🏪 AUBURN' : '🏪 Pickup')
+                                : o.status
+                        }</span>
                     </div>
                     <div class="order-customer">${o.full_name || o.customer_name}</div>
                     <div class="order-items">${o.items ? o.items.length : 0} item(s) • $${parseFloat(o.total).toFixed(2)}</div>
                     <div class="order-actions">
                         <button class="order-btn secondary" onclick="viewOrder(${o.id})">View</button>
-                        ${o.delivery_method === 'pickup' 
+                        ${o.delivery_method === 'pickup' && ['paid', 'processing'].includes(o.status)
+                            ? `<button class="order-btn primary" style="background:#8b5cf6;" onclick="markReadyForPickup(${o.id})">🏪 Ready for Pickup</button>`
+                            : o.delivery_method === 'pickup' && o.status === 'ready_for_pickup'
                             ? `<button class="order-btn primary" onclick="markPickedUp(${o.id})">✓ Picked Up</button>`
                             : `<button class="order-btn primary" onclick="markReadyToShip(${o.id})">📦 Ready</button>`
                         }
@@ -850,6 +857,22 @@
                 if (!res.ok) throw new Error(data.error || 'Failed');
                 
                 showToast('Order marked as picked up');
+                refreshData();
+            } catch(e) {
+                showToast(e.message || 'Error updating order', true);
+            }
+        }
+
+        async function markReadyForPickup(orderId) {
+            if (!confirm('Mark ready for pickup? Customer will be emailed.')) return;
+            try {
+                const res = await fetch(`/api/admin/orders/${orderId}/mark-ready-pickup`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed');
+                showToast('Customer notified. Awaiting pickup.');
                 refreshData();
             } catch(e) {
                 showToast(e.message || 'Error updating order', true);

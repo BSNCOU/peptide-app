@@ -167,7 +167,9 @@
             eligibleOrders: [],
             myReturns: [],
             shippingCost: 20.00,
-            freeShippingThreshold: 500.00
+            freeShippingThreshold: 500.00,
+            deliveryMethod: 'ship',
+            pickupLocation: null
         };
 
         // API helpers
@@ -811,6 +813,13 @@
                 } else {
                     state.discount = result;
                     state.referrerChoice = null;
+
+                    // Reveal pickup option block if the code allows it and checkout is open
+                    const pickupBlock = document.getElementById('pickupOptionBlock');
+                    if (pickupBlock) {
+                        pickupBlock.style.display = result.allows_pickup ? 'block' : 'none';
+                    }
+
                     let msg = 'Discount applied!';
                     if (result.has_sale_items) {
                         msg += ' (Note: Discount applies to non-sale items only)';
@@ -909,6 +918,19 @@
 
         function removeDiscount() {
             state.discount = null;
+            state.deliveryMethod = 'ship';
+            state.pickupLocation = null;
+            const pickupBlock = document.getElementById('pickupOptionBlock');
+            if (pickupBlock) pickupBlock.style.display = 'none';
+            const shippingSection = document.getElementById('shippingAddressSection');
+            if (shippingSection) shippingSection.style.display = 'block';
+            // Reset radio and address required state
+            const shipRadio = document.querySelector('input[name="deliveryMethodChoice"][value="ship"]');
+            if (shipRadio) shipRadio.checked = true;
+            ['addrStreet1', 'addrCity', 'addrState', 'addrZip'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.setAttribute('required', '');
+            });
             renderCart();
         }
 
@@ -967,6 +989,10 @@
                 state.userCredit = 0;
             }
 
+            // Reset delivery method when checkout opens
+            state.deliveryMethod = 'ship';
+            state.pickupLocation = null;
+
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
                     <div class="modal-content" onclick="event.stopPropagation()">
@@ -975,7 +1001,34 @@
                             <strong>Important:</strong> These materials are intended for research purposes only.
                         </div>
                         <form id="checkoutForm">
-                            <div class="form-group">
+                            <!-- Pickup option — only shown if an eligible discount code is applied -->
+                            <div id="pickupOptionBlock" style="display:none; margin-bottom:20px; padding:16px; border:2px solid #10b981; border-radius:8px; background:#f0fdf4;">
+                                <h4 style="margin:0 0 12px 0; color:#065f46;">🏪 Local Pickup Available!</h4>
+                                <p style="margin:0 0 12px 0; font-size:14px; color:#064e3b;">
+                                    This discount code qualifies you for free local pickup.
+                                </p>
+                                <label style="display:block; margin-bottom:8px; cursor:pointer;">
+                                    <input type="radio" name="deliveryMethodChoice" value="ship" checked onchange="togglePickupFields()">
+                                    <strong>Ship to me</strong> (standard shipping rates apply)
+                                </label>
+                                <label style="display:block; cursor:pointer;">
+                                    <input type="radio" name="deliveryMethodChoice" value="pickup" onchange="togglePickupFields()">
+                                    <strong>Pick up locally</strong> <span style="color:#059669;">(free)</span>
+                                </label>
+                                <div id="pickupLocationFields" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid #d1fae5;">
+                                    <label for="pickupLocationSelect" style="display:block; margin-bottom:4px; font-weight:600; color:#065f46;">
+                                        Choose pickup location:
+                                    </label>
+                                    <select id="pickupLocationSelect" onchange="state.pickupLocation = this.value" style="width:100%; padding:8px; border:1px solid #10b981; border-radius:6px;">
+                                        <option value="huntertown">1414 Simon Rd, Huntertown, IN</option>
+                                        <option value="auburn">530 North St, Auburn, IN 46706</option>
+                                    </select>
+                                    <p style="font-size:13px; color:#059669; margin-top:8px;">
+                                        📅 <em>Pickup is by appointment only. We'll email you to schedule after payment.</em>
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="form-group" id="shippingAddressSection">
                                 <label><strong>Shipping Address *</strong></label>
                                 <input type="text" id="addressAutocomplete" placeholder="Start typing your address..." autocomplete="off" style="margin-bottom: 10px;">
                                 <div id="addressFields" style="display: grid; gap: 10px;">
@@ -1081,6 +1134,12 @@
             
             // Initialize Google Places autocomplete if available
             initAddressAutocomplete();
+
+            // If a pickup-eligible discount is already applied, show the pickup block
+            if (state.discount?.allows_pickup) {
+                const pickupBlock = document.getElementById('pickupOptionBlock');
+                if (pickupBlock) pickupBlock.style.display = 'block';
+            }
         }
         
         function initAddressAutocomplete() {
@@ -1151,16 +1210,22 @@
             // Free shipping if net total >= threshold
             let shippingCost = state.shippingCost;
             let freeShipping = false;
-            if (netProductTotal >= state.freeShippingThreshold) {
+
+            // Pickup = no shipping cost
+            if (state.deliveryMethod === 'pickup') {
+                shippingCost = 0;
+                freeShipping = true;
+            } else if (netProductTotal >= state.freeShippingThreshold) {
                 shippingCost = 0;
                 freeShipping = true;
             }
-            
+
             // Update shipping line display
             const shippingLine = document.getElementById('shippingLine');
             if (shippingLine) {
                 if (freeShipping) {
-                    shippingLine.innerHTML = `<span>Shipping:</span><span style="color: #38a169; font-weight: 600;">FREE!</span>`;
+                    const label = state.deliveryMethod === 'pickup' ? '🏪 PICKUP' : 'FREE!';
+                    shippingLine.innerHTML = `<span>Shipping:</span><span style="color: #38a169; font-weight: 600;">${label}</span>`;
                 } else {
                     const amountToFreeShipping = state.freeShippingThreshold - netProductTotal;
                     shippingLine.innerHTML = `<span>Shipping:</span><span>$${shippingCost.toFixed(2)}</span>`;
@@ -1244,6 +1309,47 @@
                 `<div style="font-size:13px;color:#276749;margin-top:4px;">✓ ${escapeHtml(name)} will receive 20% credit if this is your first order.</div>`;
         }
 
+        function togglePickupFields() {
+            const selected = document.querySelector('input[name="deliveryMethodChoice"]:checked');
+            const isPickup = selected && selected.value === 'pickup';
+
+            state.deliveryMethod = isPickup ? 'pickup' : 'ship';
+            state.pickupLocation = isPickup
+                ? (document.getElementById('pickupLocationSelect')?.value || 'huntertown')
+                : null;
+
+            // Hide/show shipping address section
+            const shippingSection = document.getElementById('shippingAddressSection');
+            if (shippingSection) shippingSection.style.display = isPickup ? 'none' : 'block';
+
+            // Hide/show pickup location dropdown
+            const locFields = document.getElementById('pickupLocationFields');
+            if (locFields) locFields.style.display = isPickup ? 'block' : 'none';
+
+            // Toggle required on address fields so HTML5 validation doesn't block pickup submission
+            ['addrStreet1', 'addrCity', 'addrState', 'addrZip'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    if (isPickup) el.removeAttribute('required');
+                    else el.setAttribute('required', '');
+                }
+            });
+
+            // Recalculate totals
+            const subtotal = state.cart.reduce((sum, item) => {
+                const p = state.products.find(pp => pp.id === item.productId);
+                if (!p) return sum;
+                let price;
+                const saleMin = p.sale_min_qty || 1;
+                if (p.sale_active && p.sale_price > 0 && item.qty >= saleMin) price = p.sale_price;
+                else if (p.price_bulk && item.qty >= p.bulk_quantity) price = p.price_bulk / p.bulk_quantity;
+                else price = p.price_single;
+                return sum + price * item.qty;
+            }, 0);
+            const discountAmount = state.discount?.discount_amount || 0;
+            updateCheckoutTotal(subtotal, discountAmount);
+        }
+
         async function submitOrder() {
             // Check all acknowledgments are checked
             const ack1 = document.getElementById('ack1').checked;
@@ -1256,33 +1362,39 @@
                 showAlert('Please confirm all acknowledgments including the Terms of Service');
                 return;
             }
-            
-            // Get structured address fields
-            const street1 = document.getElementById('addrStreet1')?.value?.trim() || '';
-            const street2 = document.getElementById('addrStreet2')?.value?.trim() || '';
-            const city = document.getElementById('addrCity')?.value?.trim() || '';
-            const addrState = document.getElementById('addrState')?.value?.trim().toUpperCase() || '';
-            const zip = document.getElementById('addrZip')?.value?.trim() || '';
-            
-            if (!street1 || !city || !addrState || !zip) {
-                showAlert('Please enter a complete shipping address');
-                return;
+
+            // Branch on delivery method
+            let shippingAddress = '';
+            let addressData = null;
+
+            if (state.deliveryMethod === 'ship') {
+                // Get structured address fields
+                const street1 = document.getElementById('addrStreet1')?.value?.trim() || '';
+                const street2 = document.getElementById('addrStreet2')?.value?.trim() || '';
+                const city = document.getElementById('addrCity')?.value?.trim() || '';
+                const addrState = document.getElementById('addrState')?.value?.trim().toUpperCase() || '';
+                const zip = document.getElementById('addrZip')?.value?.trim() || '';
+
+                if (!street1 || !city || !addrState || !zip) {
+                    showAlert('Please enter a complete shipping address');
+                    return;
+                }
+
+                addressData = { street1, street2, city, state: addrState, zip };
+                shippingAddress = street2
+                    ? `${street1}\n${street2}\n${city}, ${addrState} ${zip}`
+                    : `${street1}\n${city}, ${addrState} ${zip}`;
+            } else if (state.deliveryMethod === 'pickup') {
+                // Make sure pickupLocation reflects current dropdown value
+                const locSel = document.getElementById('pickupLocationSelect');
+                if (locSel) state.pickupLocation = locSel.value;
+
+                if (!state.pickupLocation || !['huntertown', 'auburn'].includes(state.pickupLocation)) {
+                    showAlert('Please select a pickup location');
+                    return;
+                }
             }
-            
-            // Build shipping address as JSON for better parsing later
-            const addressData = {
-                street1: street1,
-                street2: street2,
-                city: city,
-                state: addrState,
-                zip: zip
-            };
-            
-            // Also create formatted string for display
-            const shippingAddress = street2 
-                ? `${street1}\n${street2}\n${city}, ${addrState} ${zip}`
-                : `${street1}\n${city}, ${addrState} ${zip}`;
-            
+
             // Check if applying credit
             const applyCreditCheckbox = document.getElementById('applyCredit');
             const applyCredit = applyCreditCheckbox && applyCreditCheckbox.checked;
@@ -1300,7 +1412,8 @@
                         items,
                         discount_code: state.discount?.code || null,
                         referrer_choice: state.referrerChoice || null,
-                        delivery_method: 'ship',
+                        delivery_method: state.deliveryMethod,
+                        pickup_location: state.pickupLocation,
                         shipping_address: shippingAddress,
                         shipping_address_data: addressData,
                         apply_credit: applyCredit,
@@ -1320,6 +1433,8 @@
                 state.cart = [];
                 state.discount = null;
                 state.referrerChoice = null;
+                state.deliveryMethod = 'ship';
+                state.pickupLocation = null;
                 saveCart();
                 // Tell server cart is converted - stops abandonment reminders
                 fetch('/api/cart/clear', { method: 'POST' }).catch(() => {});
