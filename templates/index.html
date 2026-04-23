@@ -1520,14 +1520,31 @@
             `;
         }
 
-        function showOrderDetail(orderId) {
+        async function showOrderDetail(orderId) {
             const order = state.orders.find(o => o.id === orderId);
             if (!order) return;
+
+            // Check if this order has a shipping incident (best-effort, don't block modal on failure)
+            let incidentInfo = { has_incident: false };
+            try {
+                incidentInfo = await api(`/api/orders/${orderId}/incident-info`);
+            } catch (e) { /* ignore */ }
+
+            const incidentBanner = incidentInfo.has_incident ? `
+                <div style="background:#f0fdf4;border:1px solid #86efac;border-left:4px solid #10b981;padding:14px;border-radius:6px;margin-bottom:15px;">
+                    <strong style="color:#065f46;">✅ We've got you covered!</strong>
+                    <p style="margin:6px 0 0 0;color:#047857;font-size:0.95rem;">
+                        We noticed an issue with this order and sent a replacement.
+                        ${incidentInfo.replacement_order_number ? `Your replacement order is <strong>${incidentInfo.replacement_order_number}</strong>.` : ''}
+                    </p>
+                </div>
+            ` : '';
 
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
                     <div class="modal-content">
                         <h2>Order ${order.order_number}</h2>
+                        ${incidentBanner}
                         <div class="order-detail">
                             <p><strong>Status:</strong> <span class="order-status status-${order.status}">${order.status}</span></p>
                             <p><strong>Date:</strong> ${new Date(order.created_at).toLocaleString()}</p>

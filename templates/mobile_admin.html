@@ -841,6 +841,9 @@
                             : `<button class="order-btn primary" onclick="markReadyToShip(${o.id})">📦 Ready</button>`
                         }
                     </div>
+                    <div style="margin-top:8px;">
+                        <button class="order-btn" style="background:#dc2626;color:white;width:100%;" onclick="mobileFileIncident(${o.id}, '${escapeQuote(o.order_number)}')">🚨 File Incident</button>
+                    </div>
                 </div>
             `).join('');
         }
@@ -876,6 +879,58 @@
                 refreshData();
             } catch(e) {
                 showToast(e.message || 'Error updating order', true);
+            }
+        }
+
+        function escapeQuote(s) {
+            return String(s || '').replace(/'/g, "\\'");
+        }
+
+        async function mobileFileIncident(orderId, orderNumber) {
+            const typeOptions = [
+                'lost_in_transit: Lost in transit',
+                'damaged_in_transit: Damaged in transit',
+                'wrong_item: Wrong item shipped',
+                'wrong_quantity: Wrong quantity shipped',
+                'not_received: Customer claim (not received)',
+                'return_defective: Return/defective',
+                'other: Other'
+            ];
+            const typeChoice = prompt(
+                `File incident on order ${orderNumber}?\n\nEnter incident type:\n` +
+                typeOptions.map((o,i) => `${i+1}. ${o.split(':')[1].trim()}`).join('\n') +
+                '\n\n(Enter number 1-7, or Cancel)'
+            );
+            if (!typeChoice) return;
+            const idx = parseInt(typeChoice) - 1;
+            if (isNaN(idx) || idx < 0 || idx >= typeOptions.length) {
+                showToast('Invalid choice', true);
+                return;
+            }
+            const incident_type = typeOptions[idx].split(':')[0];
+
+            const notes = prompt('Notes (optional — what happened?)', '') || '';
+            const issue_replacement = confirm('Issue replacement order now?\n\nOK = Yes (send replacement)\nCancel = No (just log incident)');
+
+            try {
+                const res = await fetch(`/api/admin/orders/${orderId}/incident`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        incident_type,
+                        incident_notes: notes,
+                        issue_replacement,
+                        insurance_provider: 'InsureShield_via_PirateShip'
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed');
+                showToast(data.replacement_order_number
+                    ? `Incident filed. Replacement ${data.replacement_order_number} created.`
+                    : 'Incident filed.');
+                refreshData();
+            } catch(e) {
+                showToast(e.message || 'Error filing incident', true);
             }
         }
         

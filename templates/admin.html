@@ -117,6 +117,7 @@
                 <button onclick="showTab('inventory')">Inventory</button>
                 <button onclick="showTab('orders')">All Orders</button>
                 <button onclick="showTab('openOrders')">Open Orders</button>
+                <button onclick="showTab('incidents')">🚨 Incidents</button>
                 <button onclick="showTab('readyToShip')">🚚 Ready to Ship</button>
                 <button onclick="showTab('purchaseOrders')">📦 Purchase Orders</button>
                 <button onclick="showTab('returns')">🔄 Returns</button>
@@ -295,7 +296,7 @@
         function showTab(tab) {
             state.currentTab = tab;
             document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-            const tabList = ['products','inventory','orders','openOrders','readyToShip','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','activeCarts','settings'];
+            const tabList = ['products','inventory','orders','openOrders','incidents','readyToShip','purchaseOrders','returns','discounts','reports','users','email','notifications','todos','activeCarts','settings'];
             document.querySelector(`.tabs button:nth-child(${tabList.indexOf(tab)+1})`).classList.add('active');
             
             switch(tab) {
@@ -303,6 +304,7 @@
                 case 'inventory': loadInventory(); break;
                 case 'orders': loadOrders(); break;
                 case 'openOrders': loadOpenOrders(); break;
+                case 'incidents': loadIncidents(); break;
                 case 'readyToShip': loadReadyToShip(); break;
                 case 'purchaseOrders': loadPurchaseOrders(); break;
                 case 'returns': loadReturns(); break;
@@ -1419,7 +1421,7 @@ BC10,8.00</pre>
                         <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                             <button class="btn" onclick="showEditOrderModal(${o.id})">✏️ Edit Order</button>
-                            <button class="btn" style="background: #ed8936;" onclick="createReplacementOrder(${o.id}, '${escapeHtml(o.order_number)}')">🔄 Create Replacement</button>
+                            <button class="btn" style="background:#dc2626;color:white;" onclick="showFileIncidentModal(${o.id})">🚨 File Incident / Replacement</button>
                             ${parseFloat(o.total || 0) === 0 && ['pending','pending_payment'].includes(o.status) ? `
                                 <button class="btn btn-success" onclick="markZeroTotalPaid(${o.id})" style="background:#276749;">
                                     ✅ Mark as Paid ($0 — Credits Covered)
@@ -3754,6 +3756,7 @@ The Peptide Wizard Team"></textarea>
                                             ${['paid', 'processing'].includes(o.status) && !isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markOrderReadyToShip(${o.id})">📦 Ready to Ship</button>` : ''}
                                             ${['paid', 'processing'].includes(o.status) && isPickupOrder(o) ? `<button class="btn btn-small" style="background:#8b5cf6;color:white;" onclick="markReadyForPickup(${o.id})">🏪 Ready for Pickup</button>` : ''}
                                             ${['ready_for_pickup', 'ready_to_ship'].includes(o.status) && isPickupOrder(o) ? `<button class="btn btn-success btn-small" onclick="markPickedUp(${o.id})">✓ Picked Up</button>` : ''}
+                                            <button class="btn btn-small" style="background:#dc2626;color:white;" onclick="showFileIncidentModal(${o.id})" title="File a shipping incident">🚨 Incident</button>
                                             <button class="btn btn-danger btn-small" onclick="cancelOrder(${o.id})">✗ Cancel</button>
                                         </td>
                                     </tr>
@@ -4666,6 +4669,330 @@ The Peptide Wizard Team"></textarea>
                 showAlert(err.message);
             }
         }
+
+        // ============================================
+        // SHIPPING INCIDENTS
+        // ============================================
+        const INCIDENT_TYPE_LABELS = {
+            'lost_in_transit': '📭 Lost in transit',
+            'damaged_in_transit': '💥 Damaged in transit',
+            'wrong_item': '🔄 Wrong item shipped',
+            'wrong_quantity': '🔢 Wrong quantity shipped',
+            'not_received': '❓ Customer claim (didn\'t receive)',
+            'return_defective': '⚠️ Return/defective',
+            'other': '📝 Other'
+        };
+        const INSURANCE_STATUS_LABELS = {
+            'not_filed': 'Not filed',
+            'filed': 'Filed — pending',
+            'approved': 'Approved — awaiting payout',
+            'paid': 'Paid',
+            'denied': 'Denied'
+        };
+        const RESOLUTION_LABELS = {
+            'pending': '⏳ Pending',
+            'replacement_sent': '✅ Replacement sent',
+            'refund_issued': '💵 Refund issued',
+            'store_credit': '💰 Store credit',
+            'no_action': '— No action'
+        };
+
+        async function showFileIncidentModal(orderId) {
+            // Find the order in state (for tracking/carrier display)
+            const o = state.orders?.find(x => x.id === orderId) || {};
+            const tracking = o.tracking_number || '';
+            const carrierGuess = guessCarrier(tracking);
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:560px;">
+                        <h3>🚨 File Shipping Incident</h3>
+                        <p style="color:#718096;margin:5px 0 15px 0;">Order <strong>${escapeHtml(o.order_number || ('#'+orderId))}</strong></p>
+
+                        <div class="form-group">
+                            <label><strong>Incident Type *</strong></label>
+                            <select id="incType" style="width:100%;padding:9px;">
+                                ${Object.entries(INCIDENT_TYPE_LABELS).map(([v, l]) =>
+                                    `<option value="${v}">${l}</option>`).join('')}
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label><strong>Details / Notes</strong></label>
+                            <textarea id="incNotes" rows="3" style="width:100%;padding:9px;" placeholder="What happened? Anything customer said?"></textarea>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Carrier</label>
+                                <select id="incCarrier" style="width:100%;padding:9px;">
+                                    <option value="">-- Unknown --</option>
+                                    <option value="UPS" ${carrierGuess==='UPS'?'selected':''}>UPS</option>
+                                    <option value="USPS" ${carrierGuess==='USPS'?'selected':''}>USPS</option>
+                                    <option value="FedEx" ${carrierGuess==='FedEx'?'selected':''}>FedEx</option>
+                                    <option value="DHL">DHL</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                                ${tracking ? `<small style="color:#718096;">Tracking: ${escapeHtml(tracking)}</small>` : ''}
+                            </div>
+                            <div class="form-group">
+                                <label>Insurance Provider</label>
+                                <select id="incInsurance" style="width:100%;padding:9px;">
+                                    <option value="">-- None / Not applicable --</option>
+                                    <option value="InsureShield_via_PirateShip" selected>InsureShield (via Pirate Ship)</option>
+                                    <option value="UPS_direct">UPS Capital direct</option>
+                                    <option value="EasyPost">EasyPost</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:14px;margin-top:10px;">
+                            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;color:#065f46;">
+                                <input type="checkbox" id="incIssueReplacement" checked style="width:18px;height:18px;cursor:pointer;">
+                                🔄 Issue replacement order now ($0, same items, inventory auto-deducted)
+                            </label>
+                            <p style="color:#047857;font-size:13px;margin:6px 0 0 28px;">If unchecked, just logs the incident — useful if customer wants refund instead, or hasn't decided.</p>
+                        </div>
+
+                        <div style="display:flex;gap:10px;margin-top:20px;">
+                            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button type="button" class="btn" style="background:#dc2626;color:white;" onclick="submitIncident(${orderId})">🚨 File Incident</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function guessCarrier(tracking) {
+            if (!tracking) return null;
+            const t = tracking.trim().toUpperCase();
+            if (t.startsWith('1Z')) return 'UPS';
+            if (t.startsWith('94') || t.startsWith('92') || t.startsWith('93') || t.startsWith('95')) return 'USPS';
+            if ((t.length === 12 || t.length === 15) && /^\d+$/.test(t)) return 'FedEx';
+            return null;
+        }
+
+        async function submitIncident(orderId) {
+            const payload = {
+                incident_type: document.getElementById('incType').value,
+                incident_notes: document.getElementById('incNotes').value,
+                carrier: document.getElementById('incCarrier').value || null,
+                insurance_provider: document.getElementById('incInsurance').value || null,
+                issue_replacement: document.getElementById('incIssueReplacement').checked
+            };
+            try {
+                const res = await api(`/api/admin/orders/${orderId}/incident`, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                closeModal();
+                if (res.replacement_order_number) {
+                    showAlert(`Incident filed. Replacement order ${res.replacement_order_number} created.`, 'success');
+                } else {
+                    showAlert('Incident filed.', 'success');
+                }
+                // Refresh data and re-render current tab
+                state.orders = await api('/api/admin/orders');
+                if (state.currentTab === 'openOrders') renderOpenOrders();
+                else if (state.currentTab === 'incidents') loadIncidents();
+                else if (state.currentTab === 'orders') loadOrders();
+            } catch (err) {
+                showAlert(err.message || 'Failed to file incident');
+            }
+        }
+
+        async function loadIncidents() {
+            try {
+                state.incidents = await api('/api/admin/incidents');
+                renderIncidents();
+            } catch (e) {
+                showAlert('Failed to load incidents');
+            }
+        }
+
+        function renderIncidents() {
+            const incidents = state.incidents || [];
+            const content = document.getElementById('tabContent');
+
+            // Summary stats
+            const total = incidents.length;
+            const pendingInsurance = incidents.filter(i => ['filed', 'approved'].includes(i.insurance_status)).length;
+            const totalClaimed = incidents.reduce((s, i) => s + (parseFloat(i.insurance_claim_amount) || 0), 0);
+            const totalPaid = incidents.reduce((s, i) => s + (parseFloat(i.insurance_payout_amount) || 0), 0);
+
+            content.innerHTML = `
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px;">
+                    <div style="background:#fef2f2;padding:15px;border-radius:8px;border-left:4px solid #dc2626;">
+                        <div style="font-size:0.85rem;color:#7f1d1d;">Total Incidents</div>
+                        <div style="font-size:1.8rem;font-weight:700;color:#7f1d1d;">${total}</div>
+                    </div>
+                    <div style="background:#fffbeb;padding:15px;border-radius:8px;border-left:4px solid #f59e0b;">
+                        <div style="font-size:0.85rem;color:#78350f;">Pending Insurance</div>
+                        <div style="font-size:1.8rem;font-weight:700;color:#78350f;">${pendingInsurance}</div>
+                    </div>
+                    <div style="background:#eff6ff;padding:15px;border-radius:8px;border-left:4px solid #3b82f6;">
+                        <div style="font-size:0.85rem;color:#1e3a8a;">Claimed</div>
+                        <div style="font-size:1.8rem;font-weight:700;color:#1e3a8a;">$${totalClaimed.toFixed(2)}</div>
+                    </div>
+                    <div style="background:#f0fdf4;padding:15px;border-radius:8px;border-left:4px solid #10b981;">
+                        <div style="font-size:0.85rem;color:#065f46;">Recovered</div>
+                        <div style="font-size:1.8rem;font-weight:700;color:#065f46;">$${totalPaid.toFixed(2)}</div>
+                    </div>
+                </div>
+
+                <h3 style="margin-bottom:10px;">🚨 Shipping Incidents</h3>
+                ${incidents.length === 0 ? '<p style="text-align:center;color:#718096;padding:40px;">No incidents logged.</p>' : `
+                    <div style="overflow-x:auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Order</th>
+                                    <th>Customer</th>
+                                    <th>Type</th>
+                                    <th>Carrier</th>
+                                    <th>Replacement</th>
+                                    <th>Insurance</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${incidents.map(i => `
+                                    <tr>
+                                        <td>${new Date(i.created_at).toLocaleDateString()}</td>
+                                        <td><strong>${escapeHtml(i.original_order_number || '#'+i.order_id)}</strong></td>
+                                        <td>${escapeHtml(i.customer_name || '—')}<br><small style="color:#718096;">${escapeHtml(i.customer_email || '')}</small></td>
+                                        <td>${INCIDENT_TYPE_LABELS[i.incident_type] || i.incident_type}</td>
+                                        <td>${i.carrier || '—'}</td>
+                                        <td>${i.replacement_order_number ? `<strong style="color:#059669;">${escapeHtml(i.replacement_order_number)}</strong>` : '<span style="color:#718096;">—</span>'}</td>
+                                        <td>
+                                            <span style="font-size:0.85rem;">${INSURANCE_STATUS_LABELS[i.insurance_status] || i.insurance_status}</span>
+                                            ${parseFloat(i.insurance_payout_amount || 0) > 0 ? `<br><small style="color:#059669;">+$${parseFloat(i.insurance_payout_amount).toFixed(2)}</small>` : ''}
+                                        </td>
+                                        <td class="actions">
+                                            <button class="btn btn-small" onclick="showEditIncidentModal(${i.id})">View/Edit</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `}
+            `;
+        }
+
+        async function showEditIncidentModal(incidentId) {
+            let i;
+            try {
+                i = await api(`/api/admin/incidents/${incidentId}`);
+            } catch (e) {
+                showAlert('Failed to load incident');
+                return;
+            }
+
+            const claimDate = i.insurance_claim_date ? String(i.insurance_claim_date).substring(0,10) : '';
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:600px;">
+                        <h3>🚨 Incident #${i.id}</h3>
+                        <p style="color:#718096;margin:5px 0 15px 0;">
+                            Order <strong>${escapeHtml(i.original_order_number || '')}</strong>
+                            ${i.replacement_order_number ? ` · Replacement <strong style="color:#059669;">${escapeHtml(i.replacement_order_number)}</strong>` : ''}
+                        </p>
+
+                        <div style="background:#f7fafc;padding:12px;border-radius:6px;margin-bottom:15px;">
+                            <p style="margin:2px 0;"><strong>Type:</strong> ${INCIDENT_TYPE_LABELS[i.incident_type] || i.incident_type}</p>
+                            <p style="margin:2px 0;"><strong>Customer:</strong> ${escapeHtml(i.customer_name || '')} (${escapeHtml(i.customer_email || '')})</p>
+                            <p style="margin:2px 0;"><strong>Carrier:</strong> ${i.carrier || '—'} ${i.tracking_number ? `· <code>${escapeHtml(i.tracking_number)}</code>` : ''}</p>
+                            <p style="margin:2px 0;"><strong>Filed:</strong> ${new Date(i.created_at).toLocaleString()}</p>
+                        </div>
+
+                        <div class="form-group">
+                            <label><strong>Incident Notes</strong></label>
+                            <textarea id="editIncNotes" rows="3" style="width:100%;padding:9px;">${escapeHtml(i.incident_notes || '')}</textarea>
+                        </div>
+
+                        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px;margin-top:10px;">
+                            <h4 style="margin:0 0 10px 0;color:#1e3a8a;">🛡️ Insurance Claim</h4>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Provider</label>
+                                    <select id="editIncInsurance" style="width:100%;padding:8px;">
+                                        <option value="">-- None --</option>
+                                        <option value="InsureShield_via_PirateShip" ${i.insurance_provider==='InsureShield_via_PirateShip'?'selected':''}>InsureShield (via Pirate Ship)</option>
+                                        <option value="UPS_direct" ${i.insurance_provider==='UPS_direct'?'selected':''}>UPS Capital direct</option>
+                                        <option value="EasyPost" ${i.insurance_provider==='EasyPost'?'selected':''}>EasyPost</option>
+                                        <option value="Other" ${i.insurance_provider==='Other'?'selected':''}>Other</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Status</label>
+                                    <select id="editIncStatus" style="width:100%;padding:8px;">
+                                        ${Object.entries(INSURANCE_STATUS_LABELS).map(([v,l]) =>
+                                            `<option value="${v}" ${i.insurance_status===v?'selected':''}>${l}</option>`).join('')}
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Claim Date</label>
+                                    <input type="date" id="editIncClaimDate" value="${claimDate}" style="width:100%;padding:8px;">
+                                </div>
+                                <div class="form-group">
+                                    <label>Claim Amount ($)</label>
+                                    <input type="number" id="editIncClaimAmt" step="0.01" value="${i.insurance_claim_amount || 0}" style="width:100%;padding:8px;">
+                                </div>
+                                <div class="form-group">
+                                    <label>Payout Amount ($)</label>
+                                    <input type="number" id="editIncPayoutAmt" step="0.01" value="${i.insurance_payout_amount || 0}" style="width:100%;padding:8px;">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group" style="margin-top:12px;">
+                            <label><strong>Resolution</strong></label>
+                            <select id="editIncResolution" style="width:100%;padding:9px;">
+                                ${Object.entries(RESOLUTION_LABELS).map(([v,l]) =>
+                                    `<option value="${v}" ${i.resolution===v?'selected':''}>${l}</option>`).join('')}
+                            </select>
+                        </div>
+
+                        <div style="display:flex;gap:10px;margin-top:20px;">
+                            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button type="button" class="btn" onclick="saveIncident(${i.id})">Save Changes</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function saveIncident(id) {
+            const status = document.getElementById('editIncStatus').value;
+            const payload = {
+                incident_notes: document.getElementById('editIncNotes').value,
+                insurance_provider: document.getElementById('editIncInsurance').value || null,
+                insurance_status: status,
+                insurance_claim_filed: status !== 'not_filed' ? 1 : 0,
+                insurance_claim_date: document.getElementById('editIncClaimDate').value || null,
+                insurance_claim_amount: parseFloat(document.getElementById('editIncClaimAmt').value) || 0,
+                insurance_payout_amount: parseFloat(document.getElementById('editIncPayoutAmt').value) || 0,
+                resolution: document.getElementById('editIncResolution').value
+            };
+            try {
+                await api(`/api/admin/incidents/${id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(payload)
+                });
+                closeModal();
+                showAlert('Incident updated', 'success');
+                loadIncidents();
+            } catch (err) {
+                showAlert(err.message || 'Failed to update');
+            }
+        }
+
 
         async function markOrderFulfilled(id) {
             if (!confirm('Mark this order as fulfilled?')) return;

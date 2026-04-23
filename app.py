@@ -351,6 +351,32 @@ def init_returns_table(c, using_postgres, auto_id):
     print("✓ Returns tables initialized")
 
 
+def init_incidents_table(c, using_postgres, auto_id):
+    """Initialize shipping_incidents table for tracking lost/damaged shipments and replacements."""
+    c.execute(f'''CREATE TABLE IF NOT EXISTS shipping_incidents (
+        id {auto_id},
+        order_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        incident_type TEXT NOT NULL,
+        incident_notes TEXT,
+        carrier TEXT,
+        tracking_number TEXT,
+        replacement_order_id INTEGER,
+        resolution TEXT DEFAULT 'pending',
+        insurance_claim_filed INTEGER DEFAULT 0,
+        insurance_provider TEXT,
+        insurance_claim_date TIMESTAMP,
+        insurance_claim_amount REAL DEFAULT 0,
+        insurance_payout_amount REAL DEFAULT 0,
+        insurance_status TEXT DEFAULT 'not_filed',
+        created_by INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+
+    print("✓ Shipping incidents table initialized")
+
+
 def init_po_tables(c, using_postgres, auto_id):
     """Initialize purchase orders tables"""
     c.execute(f'''CREATE TABLE IF NOT EXISTS purchase_orders (
@@ -894,7 +920,14 @@ def init_db():
         conn.commit()
     except Exception as e:
         print(f"Note: Returns tables: {e}")
-    
+
+    # Initialize shipping incidents table
+    try:
+        init_incidents_table(c, using_postgres, auto_id)
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Incidents table: {e}")
+
     # Initialize purchase orders tables
     try:
         init_po_tables(c, using_postgres, auto_id)
@@ -5271,6 +5304,266 @@ def create_replacement_order(oid):
         'new_order_id': new_order_id,
         'new_order_number': order_number,
         'message': f'Replacement order {order_number} created'
+    })
+
+
+# ============================================
+# SHIPPING INCIDENTS (Lost / Damaged / Replacement Tracking)
+# ============================================
+
+VALID_INCIDENT_TYPES = [
+    'lost_in_transit', 'damaged_in_transit', 'wrong_item',
+    'wrong_quantity', 'not_received', 'return_defective', 'other'
+]
+
+VALID_INSURANCE_STATUSES = ['not_filed', 'filed', 'approved', 'paid', 'denied']
+
+
+def detect_carrier_from_tracking(tracking):
+    """Best-effort carrier detection from tracking number prefix."""
+    if not tracking:
+        return None
+    t = tracking.strip().upper()
+    if t.startswith('1Z'):
+        return 'UPS'
+    if t.startswith('94') or t.startswith('92') or t.startswith('93') or t.startswith('95'):
+        return 'USPS'
+    if len(t) == 12 and t.isdigit():
+        return 'FedEx'
+    if len(t) == 15 and t.isdigit():
+        return 'FedEx'
+    return None
+
+
+@app.route('/api/admin/orders/<int:oid>/incident', methods=['POST'])
+@admin_required
+def admin_file_incident(oid):
+    """File a shipping incident against an order and optionally create a replacement."""
+    data = request.json or {}
+    incident_type = data.get('incident_type', 'other')
+    if incident_type not in VALID_INCIDENT_TYPES:
+        return jsonify({'error': f'Invalid incident_type. Use: {", ".join(VALID_INCIDENT_TYPES)}'}), 400
+
+    incident_notes = data.get('incident_notes', '') or ''
+    insurance_provider = data.get('insurance_provider') or None
+    issue_replacement = bool(data.get('issue_replacement', True))
+
+    conn = get_db()
+    c = conn.cursor()
+
+    order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    order_dict = dict(order)
+
+    # Auto-detect carrier from tracking number if not provided
+    carrier = data.get('carrier') or detect_carrier_from_tracking(order_dict.get('tracking_number'))
+    tracking_number = order_dict.get('tracking_number')
+
+    # Insert incident row
+    c.execute('''INSERT INTO shipping_incidents
+        (order_id, user_id, incident_type, incident_notes, carrier, tracking_number,
+         insurance_provider, insurance_status, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'not_filed', ?)''',
+        (oid, order_dict['user_id'], incident_type, incident_notes, carrier, tracking_number,
+         insurance_provider, session.get('user_id')))
+    incident_id = c.lastrowid
+    conn.commit()
+
+    replacement_order_id = None
+    replacement_order_number = None
+
+    # Optionally create a replacement order using existing logic
+    if issue_replacement:
+        try:
+            # Generate a new order number
+            new_order_number = 'RO-' + datetime.now().strftime('%Y%m%d%H%M%S') + '-REP'
+
+            c.execute('''INSERT INTO orders (
+                user_id, order_number, subtotal, discount_amount, shipping_cost,
+                sales_tax, processing_fee, delivery_method, total, status,
+                shipping_address, notes, admin_notes
+            ) VALUES (?, ?, 0, 0, 0, 0, 0, ?, 0, 'paid', ?, ?, ?)''',
+            (
+                order_dict['user_id'],
+                new_order_number,
+                order_dict['delivery_method'],
+                order_dict.get('shipping_address') or '',
+                f"REPLACEMENT for order {order_dict['order_number']} — incident #{incident_id}",
+                f"Replacement order created from incident #{incident_id}. Reason: {incident_type}. Original order: #{order_dict['order_number']}"
+            ))
+            replacement_order_id = c.lastrowid
+            replacement_order_number = new_order_number
+
+            # Copy items to new order
+            items = c.execute('''SELECT oi.*, p.name, p.sku
+                                 FROM order_items oi
+                                 JOIN products p ON oi.product_id = p.id
+                                 WHERE oi.order_id = ?''', (oid,)).fetchall()
+            for item in items:
+                item_dict = dict(item)
+                c.execute('''INSERT INTO order_items (order_id, product_id, quantity, unit_price)
+                             VALUES (?, ?, ?, 0)''',
+                          (replacement_order_id, item_dict['product_id'], item_dict['quantity']))
+                # Deduct inventory for replacement
+                c.execute('UPDATE products SET stock = stock - ? WHERE id = ?',
+                          (item_dict['quantity'], item_dict['product_id']))
+
+            # Link replacement back to incident
+            c.execute('UPDATE shipping_incidents SET replacement_order_id=?, resolution=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                      (replacement_order_id, 'replacement_sent', incident_id))
+
+            # Add admin note to original order
+            existing_notes = order_dict.get('admin_notes') or ''
+            new_note = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Incident #{incident_id} filed ({incident_type}). Replacement order: {new_order_number}"
+            updated_notes = f"{existing_notes}\n{new_note}".strip()
+            c.execute('UPDATE orders SET admin_notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                      (updated_notes, oid))
+
+            conn.commit()
+            print(f"[INCIDENT] #{incident_id} filed on order {order_dict['order_number']}, replacement {new_order_number}")
+        except Exception as e:
+            print(f"[INCIDENT] Replacement creation failed for incident #{incident_id}: {e}")
+            conn.rollback()
+    else:
+        # No replacement — still add a note to original order
+        existing_notes = order_dict.get('admin_notes') or ''
+        new_note = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Incident #{incident_id} filed ({incident_type}). No replacement issued."
+        updated_notes = f"{existing_notes}\n{new_note}".strip()
+        c.execute('UPDATE orders SET admin_notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                  (updated_notes, oid))
+        conn.commit()
+        print(f"[INCIDENT] #{incident_id} filed on order {order_dict['order_number']} (no replacement)")
+
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'incident_id': incident_id,
+        'replacement_order_id': replacement_order_id,
+        'replacement_order_number': replacement_order_number,
+        'message': 'Incident filed' + (f'; replacement {replacement_order_number} created.' if replacement_order_number else '.')
+    }), 201
+
+
+@app.route('/api/admin/incidents', methods=['GET'])
+@admin_required
+def admin_list_incidents():
+    """List shipping incidents with optional filters."""
+    conn = get_db()
+    q = '''SELECT i.*,
+               o.order_number as original_order_number,
+               o.total as original_total,
+               u.full_name as customer_name,
+               u.email as customer_email,
+               r.order_number as replacement_order_number
+           FROM shipping_incidents i
+           LEFT JOIN orders o ON i.order_id = o.id
+           LEFT JOIN users u ON i.user_id = u.id
+           LEFT JOIN orders r ON i.replacement_order_id = r.id
+           ORDER BY i.created_at DESC'''
+    rows = conn.execute(q).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/admin/incidents/<int:iid>', methods=['GET'])
+@admin_required
+def admin_get_incident(iid):
+    """Get single incident detail."""
+    conn = get_db()
+    row = conn.execute('''SELECT i.*,
+               o.order_number as original_order_number,
+               o.total as original_total,
+               u.full_name as customer_name,
+               u.email as customer_email,
+               r.order_number as replacement_order_number
+           FROM shipping_incidents i
+           LEFT JOIN orders o ON i.order_id = o.id
+           LEFT JOIN users u ON i.user_id = u.id
+           LEFT JOIN orders r ON i.replacement_order_id = r.id
+           WHERE i.id = ?''', (iid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'Incident not found'}), 404
+    return jsonify(dict(row))
+
+
+@app.route('/api/admin/incidents/<int:iid>', methods=['PUT'])
+@admin_required
+def admin_update_incident(iid):
+    """Update incident — mostly for insurance claim tracking."""
+    data = request.json or {}
+    conn = get_db()
+    row = conn.execute('SELECT * FROM shipping_incidents WHERE id=?', (iid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Incident not found'}), 404
+
+    fields = {}
+    if 'incident_notes' in data:
+        fields['incident_notes'] = data.get('incident_notes') or ''
+    if 'insurance_provider' in data:
+        fields['insurance_provider'] = data.get('insurance_provider') or None
+    if 'insurance_claim_filed' in data:
+        fields['insurance_claim_filed'] = 1 if data.get('insurance_claim_filed') else 0
+    if 'insurance_claim_date' in data:
+        fields['insurance_claim_date'] = data.get('insurance_claim_date') or None
+    if 'insurance_claim_amount' in data:
+        try:
+            fields['insurance_claim_amount'] = float(data.get('insurance_claim_amount') or 0)
+        except (TypeError, ValueError):
+            fields['insurance_claim_amount'] = 0
+    if 'insurance_payout_amount' in data:
+        try:
+            fields['insurance_payout_amount'] = float(data.get('insurance_payout_amount') or 0)
+        except (TypeError, ValueError):
+            fields['insurance_payout_amount'] = 0
+    if 'insurance_status' in data:
+        if data.get('insurance_status') not in VALID_INSURANCE_STATUSES:
+            conn.close()
+            return jsonify({'error': f'Invalid insurance_status. Use: {", ".join(VALID_INSURANCE_STATUSES)}'}), 400
+        fields['insurance_status'] = data.get('insurance_status')
+    if 'resolution' in data:
+        fields['resolution'] = data.get('resolution') or 'pending'
+
+    if not fields:
+        conn.close()
+        return jsonify({'error': 'No updatable fields provided'}), 400
+
+    set_clause = ', '.join([f'{k}=?' for k in fields.keys()]) + ', updated_at=CURRENT_TIMESTAMP'
+    params = list(fields.values()) + [iid]
+    conn.execute(f'UPDATE shipping_incidents SET {set_clause} WHERE id=?', params)
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'Incident updated'})
+
+
+@app.route('/api/orders/<int:oid>/incident-info', methods=['GET'])
+@login_required
+def customer_order_incident_info(oid):
+    """Customer-facing: check if an order has an incident/replacement for display."""
+    conn = get_db()
+    order = conn.execute('SELECT user_id FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order or order['user_id'] != session['user_id']:
+        conn.close()
+        return jsonify({'has_incident': False})
+    row = conn.execute('''SELECT i.id, i.incident_type, i.resolution, i.replacement_order_id,
+                                 r.order_number as replacement_order_number
+                          FROM shipping_incidents i
+                          LEFT JOIN orders r ON i.replacement_order_id = r.id
+                          WHERE i.order_id = ?
+                          ORDER BY i.created_at DESC LIMIT 1''', (oid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'has_incident': False})
+    return jsonify({
+        'has_incident': True,
+        'incident_type': row['incident_type'],
+        'resolution': row['resolution'],
+        'replacement_order_id': row['replacement_order_id'],
+        'replacement_order_number': row['replacement_order_number']
     })
 
 
