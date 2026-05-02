@@ -2227,6 +2227,53 @@ def cart_abandonment_worker():
                 except Exception as e:
                     print(f"[CART ABANDON] Error processing user {row['user_id']}: {e}")
 
+            # ── Auto-cancel pending_payment orders older than 48 hours ──────────
+            try:
+                cutoff_48h = datetime.now() - timedelta(hours=48)
+                stale_orders = conn.execute("""
+                    SELECT id, order_number, user_id FROM orders
+                    WHERE status IN ('pending', 'pending_payment')
+                      AND total > 0
+                      AND is_promo = 0
+                      AND created_at <= ?
+                """, (cutoff_48h,)).fetchall()
+
+                for order in stale_orders:
+                    o = dict(order)
+                    # Restore inventory for each item
+                    conn.execute("""
+                        UPDATE products p SET stock = stock + (
+                            SELECT COALESCE(SUM(oi.quantity), 0)
+                            FROM order_items oi WHERE oi.order_id = ? AND oi.product_id = p.id
+                        ) WHERE id IN (SELECT product_id FROM order_items WHERE order_id = ?)
+                    """, (o['id'], o['id']))
+                    conn.execute(
+                        "UPDATE orders SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (o['id'],)
+                    )
+                    print(f"[PENDING CLEANUP] Auto-cancelled stale order {o['order_number']} (48h no payment)")
+
+                if stale_orders:
+                    conn.commit()
+                    print(f"[PENDING CLEANUP] Auto-cancelled {len(stale_orders)} stale pending order(s)")
+            except Exception as e:
+                print(f"[PENDING CLEANUP] Error: {e}")
+
+            # ── Auto-cleanup: delete carts older than 7 days ──────────────────
+            try:
+                seven_days_ago = datetime.now() - timedelta(days=7)
+                result = conn.execute('''
+                    DELETE FROM saved_carts
+                    WHERE converted = 0
+                      AND updated_at <= ?
+                      AND reminder_count >= 2
+                ''', (seven_days_ago,))
+                if hasattr(result, 'rowcount') and result.rowcount > 0:
+                    conn.commit()
+                    print(f"[CART ABANDON] Auto-cleaned {result.rowcount} stale cart(s) older than 7 days")
+            except Exception as e:
+                print(f"[CART ABANDON] Cleanup error: {e}")
+
             conn.close()
         except Exception as e:
             print(f"[CART ABANDON] Worker error: {e}")
