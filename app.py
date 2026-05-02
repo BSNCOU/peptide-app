@@ -3824,6 +3824,108 @@ def admin_referrals_report():
             'referrers': [dict(r) for r in referrers]
         })
 
+
+
+@app.route('/api/admin/reports/stripe-reconciliation', methods=['GET'])
+@admin_required
+def admin_stripe_reconciliation():
+    """Compare app order totals against Stripe payment records."""
+    if not stripe.api_key:
+        return jsonify({'error': 'Stripe not configured'}), 400
+
+    conn = get_db()
+    app_orders = conn.execute("""
+        SELECT o.id, o.order_number, o.total, o.status,
+               o.stripe_payment_intent, o.created_at,
+               u.full_name, u.email
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+          AND o.is_promo = 0 AND o.total > 0
+        ORDER BY o.created_at DESC
+    """).fetchall()
+    conn.close()
+
+    stripe_payments = {}
+    try:
+        has_more = True
+        starting_after = None
+        while has_more:
+            kwargs = {'limit': 100}
+            if starting_after:
+                kwargs['starting_after'] = starting_after
+            result = stripe.PaymentIntent.list(**kwargs)
+            for pi in result.data:
+                if pi.status == 'succeeded':
+                    stripe_payments[pi.id] = {
+                        'id': pi.id, 'amount': pi.amount / 100,
+                        'receipt_email': pi.receipt_email or '',
+                        'created': pi.created, 'matched': False
+                    }
+            has_more = result.has_more
+            if has_more and result.data:
+                starting_after = result.data[-1].id
+    except stripe.error.StripeError as e:
+        return jsonify({'error': f'Stripe error: {str(e)}'}), 500
+
+    matched, app_only, amount_mismatch = [], [], []
+
+    for order in app_orders:
+        o = dict(order)
+        pi_id = o.get('stripe_payment_intent')
+        app_total = float(o['total'] or 0)
+
+        if pi_id and pi_id in stripe_payments:
+            sp = stripe_payments[pi_id]
+            sp['matched'] = True
+            diff = round(abs(app_total - sp['amount']), 2)
+            entry = {'order_number': o['order_number'], 'customer': o['full_name'],
+                     'email': o['email'], 'app_total': app_total,
+                     'stripe_amount': sp['amount'], 'stripe_id': pi_id,
+                     'status': o['status'], 'date': str(o['created_at'])[:10]}
+            if diff > 0.05:
+                entry['difference'] = round(sp['amount'] - app_total, 2)
+                amount_mismatch.append(entry)
+            else:
+                matched.append(entry)
+        else:
+            found = False
+            for pid, sp in stripe_payments.items():
+                if not sp['matched'] and abs(sp['amount'] - app_total) < 0.05 and sp['receipt_email'].lower() == o['email'].lower():
+                    sp['matched'] = True
+                    matched.append({'order_number': o['order_number'], 'customer': o['full_name'],
+                                    'app_total': app_total, 'stripe_amount': sp['amount'],
+                                    'stripe_id': pid, 'note': 'Matched by email+amount',
+                                    'date': str(o['created_at'])[:10]})
+                    found = True
+                    break
+            if not found:
+                app_only.append({'order_number': o['order_number'], 'customer': o['full_name'],
+                                 'email': o['email'], 'app_total': app_total,
+                                 'status': o['status'], 'date': str(o['created_at'])[:10],
+                                 'note': 'No Stripe payment — manual/pre-Stripe/Venmo'})
+
+    stripe_only = [{'stripe_id': pid, 'amount': sp['amount'], 'receipt_email': sp['receipt_email'],
+                    'note': 'Stripe payment with no matching app order'}
+                   for pid, sp in stripe_payments.items() if not sp['matched']]
+
+    app_total_sum = sum(float(o.get('app_total',0)) for o in matched+amount_mismatch+app_only)
+    stripe_total_sum = sum(float(o.get('stripe_amount',o.get('amount',0))) for o in matched+amount_mismatch+stripe_only)
+
+    return jsonify({
+        'summary': {
+            'app_paid_order_count': len(app_orders),
+            'app_total': round(app_total_sum, 2),
+            'stripe_total': round(stripe_total_sum, 2),
+            'difference': round(stripe_total_sum - app_total_sum, 2),
+            'matched_count': len(matched),
+            'app_only_count': len(app_only),
+            'stripe_only_count': len(stripe_only),
+            'mismatch_count': len(amount_mismatch)
+        },
+        'matched': matched, 'app_only': app_only,
+        'stripe_only': stripe_only, 'amount_mismatch': amount_mismatch
+    })
 @app.route('/api/admin/discount-codes', methods=['GET'])
 @admin_required
 def admin_get_codes():
