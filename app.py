@@ -80,26 +80,6 @@ CONFIG = {
 
 DATABASE = 'research_orders.db'
 
-# ============================================
-# PICKUP LOCATIONS
-# ============================================
-PICKUP_LOCATIONS = {
-    'huntertown': {
-        'name': 'Huntertown',
-        'address': '1414 Simon Rd, Huntertown, IN',
-        'badge': '🏪 HUNTERTOWN',
-    },
-    'auburn': {
-        'name': 'Auburn',
-        'address': '530 North St, Auburn, IN 46706',
-        'badge': '🏪 AUBURN',
-    },
-}
-
-# Contact for pickup scheduling — update before go-live
-PICKUP_CONTACT_EMAIL = os.environ.get('PICKUP_CONTACT_EMAIL', 'info@thepeptidewizard.com')
-PICKUP_CONTACT_PHONE = os.environ.get('PICKUP_CONTACT_PHONE', '') or None
-
 def is_postgres():
     """Check if using PostgreSQL"""
     database_url = CONFIG.get('DATABASE_URL', '')
@@ -351,32 +331,6 @@ def init_returns_table(c, using_postgres, auto_id):
     print("✓ Returns tables initialized")
 
 
-def init_incidents_table(c, using_postgres, auto_id):
-    """Initialize shipping_incidents table for tracking lost/damaged shipments and replacements."""
-    c.execute(f'''CREATE TABLE IF NOT EXISTS shipping_incidents (
-        id {auto_id},
-        order_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        incident_type TEXT NOT NULL,
-        incident_notes TEXT,
-        carrier TEXT,
-        tracking_number TEXT,
-        replacement_order_id INTEGER,
-        resolution TEXT DEFAULT 'pending',
-        insurance_claim_filed INTEGER DEFAULT 0,
-        insurance_provider TEXT,
-        insurance_claim_date TIMESTAMP,
-        insurance_claim_amount REAL DEFAULT 0,
-        insurance_payout_amount REAL DEFAULT 0,
-        insurance_status TEXT DEFAULT 'not_filed',
-        created_by INTEGER,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-
-    print("✓ Shipping incidents table initialized")
-
-
 def init_po_tables(c, using_postgres, auto_id):
     """Initialize purchase orders tables"""
     c.execute(f'''CREATE TABLE IF NOT EXISTS purchase_orders (
@@ -597,29 +551,12 @@ def init_db():
             c.execute("ALTER TABLE orders ADD COLUMN easypost_shipment_id TEXT")
         except:
             pass
-        # Pickup feature columns
-        try:
-            c.execute("ALTER TABLE orders ADD COLUMN pickup_location TEXT")
-        except:
-            pass
-        try:
-            c.execute("ALTER TABLE orders ADD COLUMN picked_up_at TIMESTAMP")
-        except:
-            pass
-        try:
-            c.execute("ALTER TABLE discount_codes ADD COLUMN allows_pickup INTEGER DEFAULT 0")
-        except:
-            pass
-
+    
     # Add EasyPost columns for PostgreSQL
     if using_postgres:
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_label_url TEXT")
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_label_zpl_url TEXT")
         c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS easypost_shipment_id TEXT")
-        # Pickup feature columns
-        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_location TEXT")
-        c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS picked_up_at TIMESTAMP")
-        c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS allows_pickup INTEGER DEFAULT 0")
     
     c.execute(f'''CREATE TABLE IF NOT EXISTS order_items (
         id {auto_id},
@@ -740,41 +677,12 @@ def init_db():
     except Exception as e:
         print(f"Note: PO freight columns migration: {e}")
 
-    # Add SMS token columns to saved_carts for secure remove links
-    try:
-        if using_postgres:
-            c.execute("ALTER TABLE saved_carts ADD COLUMN IF NOT EXISTS sms_token TEXT DEFAULT NULL")
-            c.execute("ALTER TABLE saved_carts ADD COLUMN IF NOT EXISTS sms_sent_at TIMESTAMP DEFAULT NULL")
-        else:
-            try:
-                c.execute("ALTER TABLE saved_carts ADD COLUMN sms_token TEXT DEFAULT NULL")
-            except: pass
-            try:
-                c.execute("ALTER TABLE saved_carts ADD COLUMN sms_sent_at TIMESTAMP DEFAULT NULL")
-            except: pass
-        conn.commit()
-    except Exception as e:
-        print(f"Note: saved_carts SMS columns migration: {e}")
-
     # Fix any NULL active fields
     try:
         c.execute("UPDATE products SET active = 1 WHERE active IS NULL")
         conn.commit()
     except Exception as e:
         print(f"Note: Active field fix: {e}")
-
-    # Fix orders stuck as 'pending' with a real total — they should be 'pending_payment'
-    # These were created before the status was explicitly set in the INSERT
-    try:
-        c.execute("""UPDATE orders SET status='pending_payment'
-                     WHERE status='pending' AND total > 0
-                     AND is_promo = 0""")
-        fixed = c.rowcount
-        conn.commit()
-        if fixed > 0:
-            print(f"[MIGRATION] Fixed {fixed} orders from 'pending' to 'pending_payment'")
-    except Exception as e:
-        print(f"Note: pending->pending_payment migration: {e}")
     
     # Add sale price columns to products
     try:
@@ -920,14 +828,7 @@ def init_db():
         conn.commit()
     except Exception as e:
         print(f"Note: Returns tables: {e}")
-
-    # Initialize shipping incidents table
-    try:
-        init_incidents_table(c, using_postgres, auto_id)
-        conn.commit()
-    except Exception as e:
-        print(f"Note: Incidents table: {e}")
-
+    
     # Initialize purchase orders tables
     try:
         init_po_tables(c, using_postgres, auto_id)
@@ -1356,7 +1257,6 @@ def send_status_update(order_id, new_status):
     status_messages = {
         'paid': 'Your payment has been received.',
         'processing': 'Your order is being prepared.',
-        'ready_for_pickup': 'Your order is ready for pickup!',
         'shipped': f"Your order has been shipped.{' Tracking: ' + order['tracking_number'] if order.get('tracking_number') else ''}",
         'delivered': 'Your order has been delivered.',
         'cancelled': 'Your order has been cancelled.',
@@ -1369,63 +1269,6 @@ def send_status_update(order_id, new_status):
     
     if order['phone']:
         send_sms(order['phone'], f"Order {order['order_number']}: {msg}")
-
-
-def send_pickup_ready_email(order_id):
-    """Notify customer their pickup order is ready and prompt to schedule."""
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''SELECT o.*, u.full_name, u.email, u.phone
-                 FROM orders o JOIN users u ON o.user_id=u.id
-                 WHERE o.id=?''', (order_id,))
-    order = c.fetchone()
-    conn.close()
-    if not order:
-        return
-    order = dict(order)
-
-    loc = PICKUP_LOCATIONS.get(order.get('pickup_location'))
-    if not loc:
-        print(f"[PICKUP] No valid location on order {order_id}; skipping email.")
-        return
-
-    contact_line = 'reply to this email'
-    if PICKUP_CONTACT_PHONE:
-        contact_line += f' or text {PICKUP_CONTACT_PHONE}'
-
-    html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px;">
-    <div style="background:#10b981;color:white;padding:20px;border-radius:10px 10px 0 0;">
-        <h2 style="margin:0;">🏪 Your Order is Ready for Pickup!</h2>
-    </div>
-    <div style="background:white;padding:20px;border:1px solid #ddd;border-top:none;border-radius:0 0 10px 10px;">
-        <p>Hi {order['full_name']},</p>
-        <p>Great news — your order <strong>{order['order_number']}</strong> is ready for local pickup.</p>
-        <div style="background:#f0fdf4;border-left:4px solid #10b981;padding:14px;margin:16px 0;border-radius:4px;">
-            <p style="margin:0;"><strong>📍 Pickup Location:</strong><br>{loc['address']}</p>
-            <p style="margin:8px 0 0 0;"><strong>⏰ Hours:</strong> By appointment only</p>
-        </div>
-        <p>To schedule a pickup time, please {contact_line}.</p>
-        <p><strong>What to bring:</strong></p>
-        <ul>
-            <li>Your order number: <strong>{order['order_number']}</strong></li>
-            <li>A valid photo ID</li>
-        </ul>
-        <p style="margin-top:20px;color:#666;font-size:13px;">
-            Thanks for supporting local!<br>— The Peptide Wizard
-        </p>
-    </div>
-    </body></html>"""
-
-    send_email(order['email'], f"Ready for Pickup — Order {order['order_number']}", html)
-
-    if order.get('phone'):
-        send_sms(order['phone'],
-                 f"Order {order['order_number']} ready for pickup at {loc['address']}. Reply to schedule.")
-
-    try:
-        log_notification(order['user_id'], order_id, 'pickup_ready', 'email', order['email'], 'sent')
-    except Exception as e:
-        print(f"[PICKUP] log_notification failed: {e}")
 
 
 def send_tracking_notification(order_id, tracking_number):
@@ -2288,12 +2131,7 @@ def validate_discount():
         'combined_percent': combined_percent,
         'combined_amount': round(combined_amount, 2),
         'has_sale_items': has_sale_items,
-        'non_sale_subtotal': round(non_sale_subtotal, 2),
-        'allows_pickup': bool(discount['allows_pickup']) if 'allows_pickup' in discount.keys() else False,
-        'pickup_locations': [
-            {'value': 'huntertown', 'label': '1414 Simon Rd, Huntertown, IN'},
-            {'value': 'auburn',     'label': '530 North St, Auburn, IN 46706'},
-        ] if ('allows_pickup' in discount.keys() and discount['allows_pickup']) else [],
+        'non_sale_subtotal': round(non_sale_subtotal, 2)
     })
 
 # ============================================
@@ -2346,41 +2184,6 @@ def send_cart_abandonment_email(user_id, cart_items):
     return ok
 
 
-def send_cart_abandonment_sms(user_id, cart_items):
-    """Send a cart abandonment SMS with buy and remove links."""
-    conn = get_db()
-    user = conn.execute('SELECT full_name, phone FROM users WHERE id=?', (user_id,)).fetchone()
-    if not user or not user['phone']:
-        conn.close()
-        return False
-
-    # Generate a secure one-time token for the remove link
-    token = secrets.token_urlsafe(24)
-    conn.execute('UPDATE saved_carts SET sms_token=?, sms_sent_at=CURRENT_TIMESTAMP WHERE user_id=?',
-                 (token, user_id))
-    conn.commit()
-    conn.close()
-
-    app_url = CONFIG.get('APP_URL', 'https://thepeptidewizard.com')
-    buy_url = app_url
-    remove_url = f"{app_url}/cart/remove?token={token}"
-
-    # Build a short item summary (keep SMS under 160 chars where possible)
-    first_name = user['full_name'].split()[0] if user['full_name'] else 'there'
-    item_count = len(cart_items)
-    item_summary = f"{item_count} item{'s' if item_count != 1 else ''}"
-
-    msg = (
-        f"Hi {first_name}, you left {item_summary} in your Peptide Wizard cart! "
-        f"Ready to order? {buy_url} "
-        f"Not interested? Remove cart: {remove_url}"
-    )
-
-    ok, result = send_sms(user['phone'], msg)
-    print(f"[CART ABANDON SMS] Sent to {user['phone']} - {'OK' if ok else result}")
-    return ok
-
-
 def cart_abandonment_worker():
     """Background thread: every 30 min, find carts idle 1+ hour with no completed order, send one reminder."""
     print("[CART ABANDON] Background worker started")
@@ -2414,17 +2217,7 @@ def cart_abandonment_worker():
                         conn.execute('UPDATE saved_carts SET converted=1 WHERE user_id=?', (row['user_id'],))
                         conn.commit()
                         continue
-
-                    reminder_num = row['reminder_count']  # 0 = first, 1 = second
-                    if reminder_num == 0:
-                        # First reminder: SMS with buy/remove links
-                        ok = send_cart_abandonment_sms(row['user_id'], cart_items)
-                        channel = 'sms'
-                    else:
-                        # Second reminder: email follow-up
-                        ok = send_cart_abandonment_email(row['user_id'], cart_items)
-                        channel = 'email'
-
+                    ok = send_cart_abandonment_email(row['user_id'], cart_items)
                     if ok:
                         conn.execute('''UPDATE saved_carts
                                         SET reminder_sent_at=CURRENT_TIMESTAMP,
@@ -2434,60 +2227,9 @@ def cart_abandonment_worker():
                 except Exception as e:
                     print(f"[CART ABANDON] Error processing user {row['user_id']}: {e}")
 
-            # ── Auto-cleanup: delete carts older than 7 days that had both reminders sent ──
-            try:
-                seven_days_ago = datetime.now() - timedelta(days=7)
-                result = conn.execute('''
-                    DELETE FROM saved_carts
-                    WHERE converted = 0
-                      AND updated_at <= ?
-                      AND reminder_count >= 2
-                ''', (seven_days_ago,))
-                deleted = result.rowcount if hasattr(result, 'rowcount') else 0
-                if deleted and deleted > 0:
-                    conn.commit()
-                    print(f"[CART ABANDON] Auto-cleaned {deleted} stale cart(s) older than 7 days")
-            except Exception as e:
-                print(f"[CART ABANDON] Cleanup error: {e}")
-
             conn.close()
         except Exception as e:
             print(f"[CART ABANDON] Worker error: {e}")
-
-
-@app.route('/cart/remove', methods=['GET'])
-def cart_remove_via_sms():
-    """Public endpoint: customer clicks the remove link in SMS to clear their cart."""
-    token = request.args.get('token', '').strip()
-    if not token:
-        return '<html><body style="font-family:Arial;text-align:center;padding:60px;"><h2>Invalid link.</h2></body></html>', 400
-
-    conn = get_db()
-    cart = conn.execute('SELECT user_id FROM saved_carts WHERE sms_token=? AND converted=0', (token,)).fetchone()
-    if not cart:
-        conn.close()
-        return '''<html><body style="font-family:Arial;text-align:center;padding:60px;background:#f9f9f9;">
-            <div style="max-width:400px;margin:0 auto;background:white;padding:40px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1);">
-                <div style="font-size:3rem;margin-bottom:16px;">🧹</div>
-                <h2 style="color:#2d3748;">Cart Already Cleared</h2>
-                <p style="color:#718096;">Your cart has already been removed or you've already placed an order.</p>
-            </div></body></html>'''
-
-    conn.execute('UPDATE saved_carts SET converted=1, sms_token=NULL WHERE user_id=?', (cart['user_id'],))
-    conn.commit()
-    conn.close()
-
-    app_url = CONFIG.get('APP_URL', 'https://thepeptidewizard.com')
-    return f'''<html><body style="font-family:Arial;text-align:center;padding:60px;background:#f9f9f9;">
-        <div style="max-width:400px;margin:0 auto;background:white;padding:40px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1);">
-            <div style="font-size:3rem;margin-bottom:16px;">✅</div>
-            <h2 style="color:#276749;">Cart Removed</h2>
-            <p style="color:#718096;">Your cart has been cleared. No worries — come back anytime!</p>
-            <a href="{app_url}" style="display:inline-block;margin-top:20px;background:#3b82f6;color:white;
-               padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-               Visit The Peptide Wizard
-            </a>
-        </div></body></html>'''
 
 
 @app.route('/api/cart/save', methods=['POST'])
@@ -2645,21 +2387,8 @@ def create_order():
     
     # Handle delivery method and shipping cost
     delivery_method = data.get('delivery_method', 'pickup')
-    pickup_location = None
     shipping_cost = 0.0
-
-    if delivery_method == 'pickup':
-        # SECURITY: pickup only permitted if the applied discount code allows it
-        if not (discount_code_id and discount and ('allows_pickup' in discount.keys()) and discount['allows_pickup']):
-            conn.close()
-            return jsonify({'error': 'Local pickup requires an eligible discount code.'}), 400
-
-        pickup_location = data.get('pickup_location')
-        if pickup_location not in PICKUP_LOCATIONS:
-            conn.close()
-            return jsonify({'error': 'Please select a valid pickup location.'}), 400
-
-    elif delivery_method == 'ship':
+    if delivery_method == 'ship':
         # Free shipping if subtotal after discounts is $500+
         net_product_total = subtotal - discount_amount
         free_shipping_threshold = float(get_setting('free_shipping_threshold', '500.00'))
@@ -2668,9 +2397,6 @@ def create_order():
             print(f"[SHIPPING] Free shipping applied - net total ${net_product_total:.2f} >= ${free_shipping_threshold:.2f}")
         else:
             shipping_cost = float(get_setting('shipping_cost', '20.00'))
-    else:
-        conn.close()
-        return jsonify({'error': 'Invalid delivery method.'}), 400
     
     # Calculate sales tax (Indiana 7% - only on product subtotal after discounts, not shipping)
     sales_tax = 0
@@ -2705,8 +2431,8 @@ def create_order():
     order_number = gen_order_num()
     introducer_user_id = data.get('introducer_user_id') or None
     
-    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,pickup_location,credit_applied,total,notes,shipping_address,introducer_user_id,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, pickup_location, credit_applied, total, data.get('notes', ''), data.get('shipping_address', ''), introducer_user_id, 'pending_payment'))
+    c.execute('INSERT INTO orders (user_id,order_number,subtotal,discount_amount,discount_code_id,shipping_cost,sales_tax,processing_fee,delivery_method,credit_applied,total,notes,shipping_address,introducer_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+              (session['user_id'], order_number, subtotal, discount_amount, discount_code_id, shipping_cost, sales_tax, processing_fee, delivery_method, credit_applied, total, data.get('notes', ''), data.get('shipping_address', ''), introducer_user_id))
     order_id = c.lastrowid
     
     for item in order_items:
@@ -2774,7 +2500,7 @@ def create_order():
                 {'order_number': order_number, 'full_name': '', 'email': '', 'phone': '',
                  'subtotal': subtotal, 'discount_amount': discount_amount, 'shipping_cost': shipping_cost,
                  'sales_tax': sales_tax, 'processing_fee': processing_fee, 'credit_applied': credit_applied,
-                 'total': total, 'delivery_method': delivery_method, 'pickup_location': pickup_location, 'shipping_address': '', 'notes': ''},
+                 'total': total, 'delivery_method': delivery_method, 'shipping_address': '', 'notes': ''},
                 []
             )
             final_status = 'paid'
@@ -2782,7 +2508,7 @@ def create_order():
         except Exception as e:
             print(f"[ORDER] Auto-pay failed for zero-total order {order_number}: {e}")
 
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'pickup_location': pickup_location, 'total': total, 'status': final_status}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': final_status}), 201
 
 
 # ============================================
@@ -2983,197 +2709,111 @@ def stripe_webhook():
             print(f"[STRIPE WEBHOOK] Error parsing event: {e}")
             return jsonify({'error': 'Invalid event'}), 400
     
-    # Parse event data directly from raw JSON — avoids Stripe object type issues
-    try:
-        event_data = json.loads(payload)
-    except Exception:
-        event_data = {}
-
+    # Handle the checkout.session.completed event
     if event['type'] == 'checkout.session.completed':
-        # Use raw JSON dict — fully compatible, no Stripe object type issues
-        session_data = event_data.get('data', {}).get('object', {})
-        metadata = session_data.get('metadata') or {}
-        order_id = metadata.get('order_id')
-        payment_intent = session_data.get('payment_intent')
-
+        session_obj = event['data']['object']
+        
+        order_id = session_obj.get('metadata', {}).get('order_id')
+        payment_intent = session_obj.get('payment_intent')
+        
         if order_id:
-            try:
-                conn = get_db()
-                c = conn.cursor()
+            conn = get_db()
+            c = conn.cursor()
+            
+            # Update order status to paid
+            c.execute('''UPDATE orders 
+                        SET status = 'paid', 
+                            stripe_payment_intent = ?,
+                            paid_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP 
+                        WHERE id = ?''', (payment_intent, order_id))
+            
+            conn.commit()
+            
+            # Get order for notification
+            order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
+            conn.close()
+            
+            if order:
+                print(f"[STRIPE] Order {order['order_number']} marked as PAID")
+                # Send payment confirmation to customer
+                send_status_update(int(order_id), 'paid')
+                # Now send admin "New Order Received!" — payment is confirmed
+                order_dict = dict(order)
+                conn2 = get_db()
+                items_for_admin = [dict(i) for i in conn2.execute(
+                    'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
+                    (order_id,)).fetchall()]
+                user_info = conn2.execute('SELECT full_name,email,phone FROM users WHERE id=?', (order_dict['user_id'],)).fetchone()
+                if user_info:
+                    order_dict['full_name'] = user_info['full_name']
+                    order_dict['email'] = user_info['email']
+                    order_dict['phone'] = user_info['phone']
 
-                # Check current status first — never downgrade an already-advanced order
-                existing = c.execute('SELECT status FROM orders WHERE id=?', (order_id,)).fetchone()
-                if existing:
-                    current_status = existing['status'] if hasattr(existing, 'keys') else existing[0]
-                    if current_status not in ('pending', 'pending_payment'):
-                        print(f"[STRIPE WEBHOOK] Order {order_id} already at status '{current_status}' — skipping re-process")
-                        conn.close()
-                        return jsonify({'status': 'success'})
-
-                # Mark paid FIRST — before any notifications that could crash
-                c.execute("""UPDATE orders
-                            SET status = 'paid',
-                                stripe_payment_intent = ?,
-                                paid_at = CURRENT_TIMESTAMP,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?""", (payment_intent, order_id))
-                conn.commit()
-
-                order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
-                conn.close()
-
-                if order:
-                    print(f"[STRIPE] Order {order['order_number']} marked as PAID")
-                    order_dict = dict(order)
-
-                    conn2 = get_db()
-                    user_info = conn2.execute(
-                        'SELECT full_name,email,phone FROM users WHERE id=?', (order_dict['user_id'],)
+                # ── Casual Referral: 20% credit to introducer on buyer's FIRST paid order ──
+                # Only fires if introducer does NOT already have their own referral code
+                # (those users earn commission through their code instead)
+                introducer_id = order_dict.get('introducer_user_id')
+                if introducer_id:
+                    # Check if introducer already has a referral code — if so, skip
+                    has_referral_code = conn2.execute(
+                        'SELECT id FROM discount_codes WHERE referrer_user_id=? AND active=1 LIMIT 1',
+                        (introducer_id,)
                     ).fetchone()
-                    items_for_admin = [dict(i) for i in conn2.execute(
-                        'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
-                        (order_id,)).fetchall()]
-                    if user_info:
-                        order_dict['full_name'] = user_info['full_name']
-                        order_dict['email'] = user_info['email']
-                        order_dict['phone'] = user_info['phone']
 
-                    # Casual referral credit
-                    try:
-                        introducer_id = order_dict.get('introducer_user_id')
-                        if introducer_id:
-                            has_code = conn2.execute(
-                                'SELECT id FROM discount_codes WHERE referrer_user_id=? AND active=1 LIMIT 1',
-                                (introducer_id,)
-                            ).fetchone()
-                            if not has_code:
-                                prior = conn2.execute(
-                                    """SELECT COUNT(*) as cnt FROM orders
-                                       WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
-                                       AND id != ?""",
-                                    (order_dict['user_id'], int(order_id))
-                                ).fetchone()
-                                if prior and prior['cnt'] == 0:
-                                    commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
-                                    if commission > 0:
-                                        conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
-                                                     (commission, introducer_id))
-                                        conn2.execute(
-                                            """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
-                                               VALUES (?,?,?,?,?)""",
-                                            (introducer_id, int(order_id), 'earned', commission,
-                                             f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
-                                        )
-                                        conn2.commit()
-                                        print(f"[REFERRAL] ${commission:.2f} credit to introducer {introducer_id}")
-                    except Exception as ref_err:
-                        print(f"[STRIPE WEBHOOK] Referral error (non-fatal): {ref_err}")
+                    if has_referral_code:
+                        print(f"[REFERRAL] Skipping casual referral for user {introducer_id} — they already have a referral code")
+                    else:
+                        prior_paid_count = conn2.execute(
+                            """SELECT COUNT(*) as cnt FROM orders
+                               WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+                               AND id != ?""",
+                            (order_dict['user_id'], int(order_id))
+                        ).fetchone()
+                        is_first_order = (prior_paid_count['cnt'] == 0) if prior_paid_count else True
+                        if is_first_order:
+                            commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
+                            if commission > 0:
+                                conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
+                                             (commission, introducer_id))
+                                conn2.execute(
+                                    """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
+                                       VALUES (?,?,?,?,?)""",
+                                    (introducer_id, int(order_id), 'earned',
+                                     commission,
+                                     f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
+                                )
+                                conn2.commit()
+                                print(f"[REFERRAL] ${commission:.2f} credit given to user {introducer_id} for introducing {order_dict['user_id']}")
 
-                    conn2.commit()
-                    conn2.close()
-
-                    try:
-                        send_status_update(int(order_id), 'paid')
-                    except Exception as e:
-                        print(f"[STRIPE WEBHOOK] send_status_update failed (non-fatal): {e}")
-
-                    try:
-                        send_new_order_admin_notification(order_dict, items_for_admin)
-                    except Exception as e:
-                        print(f"[STRIPE WEBHOOK] admin notification failed (non-fatal): {e}")
-
-            except Exception as e:
-                import traceback
-                print(f"[STRIPE WEBHOOK] Processing error for order {order_id}: {e}")
-                traceback.print_exc()
-                # DO NOT return 500 — Stripe must always get 200
-
+                conn2.commit()
+                conn2.close()
+                send_new_order_admin_notification(order_dict, items_for_admin)
+    
     elif event['type'] == 'payment_intent.payment_failed':
-        failed_data = event_data.get('data', {}).get('object', {})
-        print(f"[STRIPE] Payment failed: {failed_data.get('id')}")
-
-    # ALWAYS return 200 to Stripe — never let internal errors cause retries
+        session_obj = event['data']['object']
+        print(f"[STRIPE] Payment failed: {session_obj.get('id')}")
+    
     return jsonify({'status': 'success'})
 
 
 @app.route('/api/verify-payment/<int:order_id>', methods=['GET'])
 @login_required
 def verify_payment(order_id):
-    """Verify payment status. Checks DB first, then queries Stripe directly as fallback
-    so orders get marked paid even if the webhook was missed."""
+    """Verify if an order has been paid (for frontend to check after redirect)"""
     conn = get_db()
-    order = conn.execute(
-        'SELECT * FROM orders WHERE id = ? AND user_id = ?',
-        (order_id, session['user_id'])
-    ).fetchone()
+    order = conn.execute('SELECT status, order_number FROM orders WHERE id = ? AND user_id = ?', 
+                         (order_id, session['user_id'])).fetchone()
     conn.close()
-
+    
     if not order:
         return jsonify({'error': 'Order not found'}), 404
-
-    order = dict(order)
-    already_paid = order['status'] in ['paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled']
-
-    if already_paid:
-        return jsonify({
-            'order_id': order_id,
-            'order_number': order['order_number'],
-            'status': order['status'],
-            'paid': True
-        })
-
-    # Not paid in DB — ask Stripe directly using the session ID
-    stripe_session_id = order.get('stripe_session_id')
-    if stripe_session_id and stripe.api_key:
-        try:
-            checkout_session = stripe.checkout.Session.retrieve(stripe_session_id)
-            if checkout_session.payment_status == 'paid':
-                print(f"[VERIFY] Stripe confirms payment for order {order['order_number']} — webhook missed, fixing now")
-                # Mark paid in DB — same logic as webhook
-                conn2 = get_db()
-                conn2.execute(
-                    """UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
-                       stripe_payment_intent=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                    (checkout_session.payment_intent, order_id)
-                )
-                conn2.commit()
-                conn2.close()
-
-                # Fire all the same notifications as the webhook would
-                try:
-                    send_status_update(order_id, 'paid')
-                    conn3 = get_db()
-                    items_for_admin = [dict(i) for i in conn3.execute(
-                        'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
-                        (order_id,)).fetchall()]
-                    user_info = conn3.execute('SELECT full_name,email,phone FROM users WHERE id=?',
-                                              (order['user_id'],)).fetchone()
-                    conn3.close()
-                    order_dict = dict(order)
-                    order_dict['status'] = 'paid'
-                    if user_info:
-                        order_dict.update({'full_name': user_info['full_name'],
-                                           'email': user_info['email'],
-                                           'phone': user_info['phone']})
-                    send_new_order_admin_notification(order_dict, items_for_admin)
-                except Exception as notify_err:
-                    print(f"[VERIFY] Notification error: {notify_err}")
-
-                return jsonify({
-                    'order_id': order_id,
-                    'order_number': order['order_number'],
-                    'status': 'paid',
-                    'paid': True,
-                    'recovered': True  # flag that webhook was missed
-                })
-        except stripe.error.StripeError as e:
-            print(f"[VERIFY] Stripe lookup failed for order {order_id}: {e}")
-
+    
     return jsonify({
         'order_id': order_id,
         'order_number': order['order_number'],
         'status': order['status'],
-        'paid': False
+        'paid': order['status'] in ['paid', 'processing', 'shipped', 'delivered', 'fulfilled']
     })
 
 @app.route('/api/orders', methods=['GET'])
@@ -4036,10 +3676,11 @@ def admin_orders_report():
     if start_date and end_date:
         date_filter = f"DATE(created_at) >= '{start_date}' AND DATE(created_at) <= '{end_date}'"
     
-    # Get totals
+    # Get totals — only count actually paid orders, not pending/cart/abandoned
+    PAID_STATUSES = "('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')"
     totals = conn.execute(f'''
         SELECT COUNT(*) as total_orders, COALESCE(SUM(total), 0) as total_revenue
-        FROM orders WHERE {date_filter}
+        FROM orders WHERE status IN {PAID_STATUSES} AND {date_filter}
     ''').fetchone()
     
     # Get by status
@@ -4081,7 +3722,7 @@ def admin_discounts_report():
                COALESCE(SUM(o.total), 0) as total_revenue
         FROM orders o
         JOIN discount_codes dc ON o.discount_code_id = dc.id
-        WHERE o.status != 'cancelled' AND {date_filter}
+        WHERE o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled') AND {date_filter}
         GROUP BY dc.code
         ORDER BY times_used DESC
     ''').fetchall()
@@ -4093,7 +3734,7 @@ def admin_discounts_report():
                COALESCE(SUM(o.total), 0) as total_revenue
         FROM orders o
         WHERE o.discount_code_id IS NOT NULL
-        AND o.status != 'cancelled'
+        AND o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
         AND {date_filter}
     ''').fetchone()
     
@@ -4206,8 +3847,8 @@ def admin_add_code():
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent,allows_pickup) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('allows_pickup') else 0))
+        c.execute('INSERT INTO discount_codes (code,description,discount_percent,discount_amount,min_order_amount,usage_limit,expires_at,referrer_user_id,commission_percent) VALUES (?,?,?,?,?,?,?,?,?)',
+                  (data['code'].upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20)))
         conn.commit()
         cid = c.lastrowid
         conn.close()
@@ -4221,8 +3862,8 @@ def admin_add_code():
 def admin_update_code(cid):
     data = request.json
     conn = get_db()
-    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=?,first_order_only=?,allows_pickup=? WHERE id=?',
-                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('first_order_only') else 0, 1 if data.get('allows_pickup') else 0, cid))
+    conn.execute('UPDATE discount_codes SET code=?,description=?,discount_percent=?,discount_amount=?,min_order_amount=?,usage_limit=?,active=?,expires_at=?,referrer_user_id=?,commission_percent=?,first_order_only=? WHERE id=?',
+                 (data.get('code','').upper(), data.get('description',''), data.get('discount_percent',0), data.get('discount_amount',0), data.get('min_order_amount',0), data.get('usage_limit'), 1 if data.get('active',True) else 0, data.get('expires_at'), data.get('referrer_user_id'), data.get('commission_percent', 20), 1 if data.get('first_order_only') else 0, cid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Code updated'})
@@ -4623,7 +4264,7 @@ def admin_update_order_status(oid):
     if not status:
         status = current_dict['status']
     
-    valid = ['pending', 'pending_payment', 'paid', 'processing', 'ready_to_ship', 'ready_for_pickup', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
+    valid = ['pending', 'pending_payment', 'paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled', 'cancelled', 'refunded']
     if status not in valid:
         return jsonify({'error': f'Invalid status. Use: {", ".join(valid)}'}), 400
     
@@ -4671,153 +4312,18 @@ def admin_update_order_status(oid):
             conn.execute('UPDATE products SET stock = stock - ? WHERE id = ?', (item['quantity'], item['product_id']))
         print(f"[INVENTORY] Deducted stock for reactivated order {oid}")
     
-    # Set picked_up_at when transitioning a pickup order to fulfilled
-    picked_up_at_sql = ''
-    if status == 'fulfilled' and current_dict.get('delivery_method') == 'pickup' and not current_dict.get('picked_up_at'):
-        picked_up_at_sql = ', picked_up_at=CURRENT_TIMESTAMP'
-
-    conn.execute(f'UPDATE orders SET status=?, admin_notes=?, tracking_number=?, updated_at=CURRENT_TIMESTAMP{picked_up_at_sql} WHERE id=?',
+    conn.execute('UPDATE orders SET status=?, admin_notes=?, tracking_number=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
                  (status, data.get('admin_notes', current_dict.get('admin_notes', '')), tracking_number, oid))
     conn.commit()
     
-    silent = data.get('silent', False)  # skip customer notification when True
-
     # Send tracking email if requested and tracking number provided
-    if not silent:
-        if send_tracking_email and tracking_number:
-            send_tracking_notification(oid, tracking_number)
-        elif current_dict['status'] != status:
-            send_status_update(oid, status)
-    else:
-        print(f"[STATUS] Order {oid} silently updated to '{status}' — no customer notification sent")
+    if send_tracking_email and tracking_number:
+        send_tracking_notification(oid, tracking_number)
+    elif current_dict['status'] != status:
+        send_status_update(oid, status)
     
     conn.close()
     return jsonify({'message': 'Status updated'})
-
-
-@app.route('/api/admin/sync-stripe-payments', methods=['POST'])
-@admin_required
-def admin_sync_stripe_payments():
-    """Check all pending/pending_payment orders against Stripe and mark paid if confirmed.
-    Two strategies:
-    1. Orders with stripe_session_id — retrieve session directly from Stripe
-    2. Orders without stripe_session_id — search Stripe payment intents by customer email
-    """
-    if not stripe.api_key:
-        return jsonify({'error': 'Stripe not configured'}), 400
-
-    conn = get_db()
-    stuck_orders = conn.execute("""
-        SELECT o.*, u.email, u.full_name, u.phone
-        FROM orders o
-        JOIN users u ON o.user_id = u.id
-        WHERE o.status IN ('pending', 'pending_payment')
-          AND o.total > 0
-          AND o.is_promo = 0
-        ORDER BY o.created_at DESC
-    """).fetchall()
-    conn.close()
-
-    fixed = []
-    skipped = []
-    errors = []
-
-    def do_mark_paid(order, payment_intent_id):
-        """Mark order as paid and send notifications. Skips if already past pending."""
-        # Never overwrite shipped/fulfilled/processing etc.
-        if order.get('status') not in ('pending', 'pending_payment'):
-            print(f"[SYNC] Skipping {order['order_number']} — already at status '{order.get('status')}'")
-            return False
-        conn2 = get_db()
-        conn2.execute(
-            """UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
-               stripe_payment_intent=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-            (payment_intent_id, order['id'])
-        )
-        conn2.commit()
-        user_info = conn2.execute(
-            'SELECT full_name,email,phone FROM users WHERE id=?', (order['user_id'],)
-        ).fetchone()
-        items_for_admin = [dict(i) for i in conn2.execute(
-            'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
-            (order['id'],)).fetchall()]
-        conn2.close()
-        order_dict = dict(order)
-        order_dict['status'] = 'paid'
-        if user_info:
-            order_dict.update({'full_name': user_info['full_name'],
-                               'email': user_info['email'],
-                               'phone': user_info['phone']})
-        try:
-            send_status_update(order['id'], 'paid')
-            send_new_order_admin_notification(order_dict, items_for_admin)
-        except Exception as e:
-            print(f"[SYNC] Notification error for {order['order_number']}: {e}")
-        fixed.append({'order_number': order['order_number'], 'total': order['total']})
-        print(f"[SYNC] ✅ Fixed {order['order_number']} — marked paid")
-
-    for order in stuck_orders:
-        order = dict(order)
-        try:
-            stripe_session_id = order.get('stripe_session_id')
-
-            if stripe_session_id:
-                # Strategy 1: Direct session lookup
-                cs = stripe.checkout.Session.retrieve(stripe_session_id)
-                if cs.payment_status == 'paid':
-                    do_mark_paid(order, cs.payment_intent)
-                else:
-                    skipped.append({'order_number': order['order_number'],
-                                    'stripe_status': cs.payment_status})
-            else:
-                # Strategy 2: Search by email + amount match
-                email = order.get('email', '')
-                order_total_cents = int(float(order['total']) * 100)
-                found_payment = None
-
-                # Search recent payment intents
-                pis = stripe.PaymentIntent.list(limit=100)
-                for pi in pis.data:
-                    if pi.status == 'succeeded' and pi.amount == order_total_cents:
-                        # Check receipt email or customer email
-                        receipt_email = pi.receipt_email or ''
-                        if receipt_email.lower() == email.lower():
-                            found_payment = pi
-                            break
-                        # Also check customer object if linked
-                        if pi.customer:
-                            try:
-                                cust = stripe.Customer.retrieve(pi.customer)
-                                if cust.email and cust.email.lower() == email.lower():
-                                    found_payment = pi
-                                    break
-                            except Exception:
-                                pass
-
-                if found_payment:
-                    # Store the session/intent on the order first
-                    conn3 = get_db()
-                    conn3.execute('UPDATE orders SET stripe_payment_intent=? WHERE id=?',
-                                  (found_payment.id, order['id']))
-                    conn3.commit()
-                    conn3.close()
-                    do_mark_paid(order, found_payment.id)
-                else:
-                    skipped.append({'order_number': order['order_number'],
-                                    'stripe_status': 'no_session_no_match'})
-
-        except stripe.error.StripeError as e:
-            errors.append({'order_number': order['order_number'], 'error': str(e)})
-        except Exception as e:
-            errors.append({'order_number': order['order_number'], 'error': str(e)})
-            print(f"[SYNC] Error on {order['order_number']}: {e}")
-
-    return jsonify({
-        'message': f"Sync complete: {len(fixed)} fixed, {len(skipped)} still pending in Stripe, {len(errors)} errors",
-        'fixed': fixed,
-        'skipped': skipped,
-        'errors': errors
-    })
 
 
 @app.route('/api/admin/orders/<int:oid>/mark-paid-zero-total', methods=['POST'])
@@ -4856,31 +4362,6 @@ def admin_update_delivery_method(oid):
     conn.commit()
     conn.close()
     return jsonify({'message': f'Delivery method updated to {method}'})
-
-
-@app.route('/api/admin/orders/<int:oid>/mark-ready-pickup', methods=['POST'])
-@admin_required
-def admin_mark_ready_pickup(oid):
-    """Mark a pickup order as ready and email the customer with pickup instructions."""
-    conn = get_db()
-    order = conn.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
-    if not order:
-        conn.close()
-        return jsonify({'error': 'Order not found'}), 404
-    if order['delivery_method'] != 'pickup':
-        conn.close()
-        return jsonify({'error': 'Not a pickup order'}), 400
-
-    conn.execute("UPDATE orders SET status='ready_for_pickup', updated_at=CURRENT_TIMESTAMP WHERE id=?", (oid,))
-    conn.commit()
-    conn.close()
-
-    try:
-        send_pickup_ready_email(oid)
-    except Exception as e:
-        print(f"[PICKUP] Ready-email failed for order {oid}: {e}")
-
-    return jsonify({'message': 'Order marked ready for pickup; customer notified.'})
 
 # ============================================
 # EASYPOST SHIPPING INTEGRATION
@@ -5304,266 +4785,6 @@ def create_replacement_order(oid):
         'new_order_id': new_order_id,
         'new_order_number': order_number,
         'message': f'Replacement order {order_number} created'
-    })
-
-
-# ============================================
-# SHIPPING INCIDENTS (Lost / Damaged / Replacement Tracking)
-# ============================================
-
-VALID_INCIDENT_TYPES = [
-    'lost_in_transit', 'damaged_in_transit', 'wrong_item',
-    'wrong_quantity', 'not_received', 'return_defective', 'other'
-]
-
-VALID_INSURANCE_STATUSES = ['not_filed', 'filed', 'approved', 'paid', 'denied']
-
-
-def detect_carrier_from_tracking(tracking):
-    """Best-effort carrier detection from tracking number prefix."""
-    if not tracking:
-        return None
-    t = tracking.strip().upper()
-    if t.startswith('1Z'):
-        return 'UPS'
-    if t.startswith('94') or t.startswith('92') or t.startswith('93') or t.startswith('95'):
-        return 'USPS'
-    if len(t) == 12 and t.isdigit():
-        return 'FedEx'
-    if len(t) == 15 and t.isdigit():
-        return 'FedEx'
-    return None
-
-
-@app.route('/api/admin/orders/<int:oid>/incident', methods=['POST'])
-@admin_required
-def admin_file_incident(oid):
-    """File a shipping incident against an order and optionally create a replacement."""
-    data = request.json or {}
-    incident_type = data.get('incident_type', 'other')
-    if incident_type not in VALID_INCIDENT_TYPES:
-        return jsonify({'error': f'Invalid incident_type. Use: {", ".join(VALID_INCIDENT_TYPES)}'}), 400
-
-    incident_notes = data.get('incident_notes', '') or ''
-    insurance_provider = data.get('insurance_provider') or None
-    issue_replacement = bool(data.get('issue_replacement', True))
-
-    conn = get_db()
-    c = conn.cursor()
-
-    order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
-    if not order:
-        conn.close()
-        return jsonify({'error': 'Order not found'}), 404
-    order_dict = dict(order)
-
-    # Auto-detect carrier from tracking number if not provided
-    carrier = data.get('carrier') or detect_carrier_from_tracking(order_dict.get('tracking_number'))
-    tracking_number = order_dict.get('tracking_number')
-
-    # Insert incident row
-    c.execute('''INSERT INTO shipping_incidents
-        (order_id, user_id, incident_type, incident_notes, carrier, tracking_number,
-         insurance_provider, insurance_status, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'not_filed', ?)''',
-        (oid, order_dict['user_id'], incident_type, incident_notes, carrier, tracking_number,
-         insurance_provider, session.get('user_id')))
-    incident_id = c.lastrowid
-    conn.commit()
-
-    replacement_order_id = None
-    replacement_order_number = None
-
-    # Optionally create a replacement order using existing logic
-    if issue_replacement:
-        try:
-            # Generate a new order number
-            new_order_number = 'RO-' + datetime.now().strftime('%Y%m%d%H%M%S') + '-REP'
-
-            c.execute('''INSERT INTO orders (
-                user_id, order_number, subtotal, discount_amount, shipping_cost,
-                sales_tax, processing_fee, delivery_method, total, status,
-                shipping_address, notes, admin_notes
-            ) VALUES (?, ?, 0, 0, 0, 0, 0, ?, 0, 'paid', ?, ?, ?)''',
-            (
-                order_dict['user_id'],
-                new_order_number,
-                order_dict['delivery_method'],
-                order_dict.get('shipping_address') or '',
-                f"REPLACEMENT for order {order_dict['order_number']} — incident #{incident_id}",
-                f"Replacement order created from incident #{incident_id}. Reason: {incident_type}. Original order: #{order_dict['order_number']}"
-            ))
-            replacement_order_id = c.lastrowid
-            replacement_order_number = new_order_number
-
-            # Copy items to new order
-            items = c.execute('''SELECT oi.*, p.name, p.sku
-                                 FROM order_items oi
-                                 JOIN products p ON oi.product_id = p.id
-                                 WHERE oi.order_id = ?''', (oid,)).fetchall()
-            for item in items:
-                item_dict = dict(item)
-                c.execute('''INSERT INTO order_items (order_id, product_id, quantity, unit_price)
-                             VALUES (?, ?, ?, 0)''',
-                          (replacement_order_id, item_dict['product_id'], item_dict['quantity']))
-                # Deduct inventory for replacement
-                c.execute('UPDATE products SET stock = stock - ? WHERE id = ?',
-                          (item_dict['quantity'], item_dict['product_id']))
-
-            # Link replacement back to incident
-            c.execute('UPDATE shipping_incidents SET replacement_order_id=?, resolution=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                      (replacement_order_id, 'replacement_sent', incident_id))
-
-            # Add admin note to original order
-            existing_notes = order_dict.get('admin_notes') or ''
-            new_note = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Incident #{incident_id} filed ({incident_type}). Replacement order: {new_order_number}"
-            updated_notes = f"{existing_notes}\n{new_note}".strip()
-            c.execute('UPDATE orders SET admin_notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                      (updated_notes, oid))
-
-            conn.commit()
-            print(f"[INCIDENT] #{incident_id} filed on order {order_dict['order_number']}, replacement {new_order_number}")
-        except Exception as e:
-            print(f"[INCIDENT] Replacement creation failed for incident #{incident_id}: {e}")
-            conn.rollback()
-    else:
-        # No replacement — still add a note to original order
-        existing_notes = order_dict.get('admin_notes') or ''
-        new_note = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Incident #{incident_id} filed ({incident_type}). No replacement issued."
-        updated_notes = f"{existing_notes}\n{new_note}".strip()
-        c.execute('UPDATE orders SET admin_notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                  (updated_notes, oid))
-        conn.commit()
-        print(f"[INCIDENT] #{incident_id} filed on order {order_dict['order_number']} (no replacement)")
-
-    conn.close()
-
-    return jsonify({
-        'success': True,
-        'incident_id': incident_id,
-        'replacement_order_id': replacement_order_id,
-        'replacement_order_number': replacement_order_number,
-        'message': 'Incident filed' + (f'; replacement {replacement_order_number} created.' if replacement_order_number else '.')
-    }), 201
-
-
-@app.route('/api/admin/incidents', methods=['GET'])
-@admin_required
-def admin_list_incidents():
-    """List shipping incidents with optional filters."""
-    conn = get_db()
-    q = '''SELECT i.*,
-               o.order_number as original_order_number,
-               o.total as original_total,
-               u.full_name as customer_name,
-               u.email as customer_email,
-               r.order_number as replacement_order_number
-           FROM shipping_incidents i
-           LEFT JOIN orders o ON i.order_id = o.id
-           LEFT JOIN users u ON i.user_id = u.id
-           LEFT JOIN orders r ON i.replacement_order_id = r.id
-           ORDER BY i.created_at DESC'''
-    rows = conn.execute(q).fetchall()
-    conn.close()
-    return jsonify([dict(r) for r in rows])
-
-
-@app.route('/api/admin/incidents/<int:iid>', methods=['GET'])
-@admin_required
-def admin_get_incident(iid):
-    """Get single incident detail."""
-    conn = get_db()
-    row = conn.execute('''SELECT i.*,
-               o.order_number as original_order_number,
-               o.total as original_total,
-               u.full_name as customer_name,
-               u.email as customer_email,
-               r.order_number as replacement_order_number
-           FROM shipping_incidents i
-           LEFT JOIN orders o ON i.order_id = o.id
-           LEFT JOIN users u ON i.user_id = u.id
-           LEFT JOIN orders r ON i.replacement_order_id = r.id
-           WHERE i.id = ?''', (iid,)).fetchone()
-    conn.close()
-    if not row:
-        return jsonify({'error': 'Incident not found'}), 404
-    return jsonify(dict(row))
-
-
-@app.route('/api/admin/incidents/<int:iid>', methods=['PUT'])
-@admin_required
-def admin_update_incident(iid):
-    """Update incident — mostly for insurance claim tracking."""
-    data = request.json or {}
-    conn = get_db()
-    row = conn.execute('SELECT * FROM shipping_incidents WHERE id=?', (iid,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({'error': 'Incident not found'}), 404
-
-    fields = {}
-    if 'incident_notes' in data:
-        fields['incident_notes'] = data.get('incident_notes') or ''
-    if 'insurance_provider' in data:
-        fields['insurance_provider'] = data.get('insurance_provider') or None
-    if 'insurance_claim_filed' in data:
-        fields['insurance_claim_filed'] = 1 if data.get('insurance_claim_filed') else 0
-    if 'insurance_claim_date' in data:
-        fields['insurance_claim_date'] = data.get('insurance_claim_date') or None
-    if 'insurance_claim_amount' in data:
-        try:
-            fields['insurance_claim_amount'] = float(data.get('insurance_claim_amount') or 0)
-        except (TypeError, ValueError):
-            fields['insurance_claim_amount'] = 0
-    if 'insurance_payout_amount' in data:
-        try:
-            fields['insurance_payout_amount'] = float(data.get('insurance_payout_amount') or 0)
-        except (TypeError, ValueError):
-            fields['insurance_payout_amount'] = 0
-    if 'insurance_status' in data:
-        if data.get('insurance_status') not in VALID_INSURANCE_STATUSES:
-            conn.close()
-            return jsonify({'error': f'Invalid insurance_status. Use: {", ".join(VALID_INSURANCE_STATUSES)}'}), 400
-        fields['insurance_status'] = data.get('insurance_status')
-    if 'resolution' in data:
-        fields['resolution'] = data.get('resolution') or 'pending'
-
-    if not fields:
-        conn.close()
-        return jsonify({'error': 'No updatable fields provided'}), 400
-
-    set_clause = ', '.join([f'{k}=?' for k in fields.keys()]) + ', updated_at=CURRENT_TIMESTAMP'
-    params = list(fields.values()) + [iid]
-    conn.execute(f'UPDATE shipping_incidents SET {set_clause} WHERE id=?', params)
-    conn.commit()
-    conn.close()
-    return jsonify({'message': 'Incident updated'})
-
-
-@app.route('/api/orders/<int:oid>/incident-info', methods=['GET'])
-@login_required
-def customer_order_incident_info(oid):
-    """Customer-facing: check if an order has an incident/replacement for display."""
-    conn = get_db()
-    order = conn.execute('SELECT user_id FROM orders WHERE id=?', (oid,)).fetchone()
-    if not order or order['user_id'] != session['user_id']:
-        conn.close()
-        return jsonify({'has_incident': False})
-    row = conn.execute('''SELECT i.id, i.incident_type, i.resolution, i.replacement_order_id,
-                                 r.order_number as replacement_order_number
-                          FROM shipping_incidents i
-                          LEFT JOIN orders r ON i.replacement_order_id = r.id
-                          WHERE i.order_id = ?
-                          ORDER BY i.created_at DESC LIMIT 1''', (oid,)).fetchone()
-    conn.close()
-    if not row:
-        return jsonify({'has_incident': False})
-    return jsonify({
-        'has_incident': True,
-        'incident_type': row['incident_type'],
-        'resolution': row['resolution'],
-        'replacement_order_id': row['replacement_order_id'],
-        'replacement_order_number': row['replacement_order_number']
     })
 
 
@@ -6551,8 +5772,6 @@ def admin_create_promo_order():
     user_id = data.get('user_id')
     items = data.get('items', [])
     notes = data.get('notes', 'Complimentary promotional order from The Peptide Wizard')
-    delivery_method = data.get('delivery_method', 'pickup')
-    shipping_address = data.get('shipping_address', '')
 
     if not user_id or not items:
         return jsonify({'error': 'user_id and items required'}), 400
@@ -6586,9 +5805,9 @@ def admin_create_promo_order():
     # Insert $0 order, status=fulfilled, is_promo=1
     c.execute('''INSERT INTO orders
                  (user_id, order_number, subtotal, discount_amount, total,
-                  status, delivery_method, shipping_address, notes, is_promo, created_at, updated_at)
-                 VALUES (?,?,0,0,0,'fulfilled',?,?,?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
-              (user_id, order_number, delivery_method, shipping_address, notes))
+                  status, delivery_method, notes, is_promo, created_at, updated_at)
+                 VALUES (?,?,0,0,0,'fulfilled','pickup',?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
+              (user_id, order_number, notes))
     order_id = c.lastrowid
 
     for item in order_items:
@@ -6619,7 +5838,6 @@ def admin_create_promo_order():
             {items_html}
         </table>
         <p style="font-size:14px;color:#555;">{notes}</p>
-        {f'<div style="background:#e8f4fd;border:1px solid #3b82f6;padding:14px;border-radius:8px;margin:15px 0;"><strong>📦 Shipping To:</strong><br><span style="white-space:pre-line;font-size:14px;">{shipping_address}</span></div>' if delivery_method == 'ship' and shipping_address else ''}
         <div style="background:#fff3cd;border:1px solid #ffc107;padding:15px;border-radius:8px;margin-top:20px;">
             <strong>⚠️ Research Use Only</strong><br>
             <span style="font-size:13px;">All materials are for laboratory research purposes only. Not for human or animal consumption.</span>
@@ -6862,23 +6080,6 @@ def admin_send_credit_statement(uid):
         return jsonify({'error': f'Email failed: {msg}'}), 500
 
 
-@app.route('/api/admin/active-carts/cleanup', methods=['POST'])
-@admin_required
-def admin_cleanup_old_carts():
-    """Manually delete unconverted carts older than N days (default 7)."""
-    days = int(request.json.get('days', 7)) if request.json else 7
-    cutoff = datetime.now() - timedelta(days=days)
-    conn = get_db()
-    result = conn.execute(
-        'DELETE FROM saved_carts WHERE converted=0 AND updated_at <= ?',
-        (cutoff,)
-    )
-    deleted = result.rowcount if hasattr(result, 'rowcount') else 0
-    conn.commit()
-    conn.close()
-    return jsonify({'message': f'Removed {deleted} cart(s) older than {days} days', 'deleted': deleted})
-
-
 @app.route('/api/admin/active-carts', methods=['GET'])
 @admin_required
 def admin_get_active_carts():
@@ -6906,81 +6107,6 @@ def admin_get_active_carts():
         result.append(row_dict)
 
     return jsonify(result)
-
-
-@app.route('/api/admin/active-carts/<int:user_id>/stripe-check', methods=['GET'])
-@admin_required
-def admin_stripe_check_cart_user(user_id):
-    """Search Stripe for any payments from this cart user in the last 60 days."""
-    if not stripe.api_key:
-        return jsonify({'error': 'Stripe not configured'}), 400
-
-    conn = get_db()
-    user = conn.execute('SELECT full_name, email FROM users WHERE id=?', (user_id,)).fetchone()
-    cart = conn.execute('SELECT cart_json FROM saved_carts WHERE user_id=?', (user_id,)).fetchone()
-    conn.close()
-
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-
-    user = dict(user)
-    cart_total = 0
-    if cart:
-        try:
-            items = json.loads(cart['cart_json'])
-            cart_total = sum(float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items)
-        except Exception:
-            pass
-
-    results = []
-    try:
-        # Search Stripe customers by email
-        customers = stripe.Customer.list(email=user['email'], limit=5)
-        for customer in customers.data:
-            # Get payment intents for this customer
-            payment_intents = stripe.PaymentIntent.list(
-                customer=customer.id,
-                limit=10,
-                created={'gte': int(__import__('time').time()) - (60 * 86400)}  # last 60 days
-            )
-            for pi in payment_intents.data:
-                results.append({
-                    'stripe_id': pi.id,
-                    'amount': pi.amount / 100,
-                    'currency': pi.currency.upper(),
-                    'status': pi.status,
-                    'created': pi.created,
-                    'description': pi.description or '',
-                    'customer_id': customer.id,
-                    'receipt_url': pi.charges.data[0].receipt_url if pi.charges and pi.charges.data else None
-                })
-
-        # Also check without a customer object (guest checkouts)
-        if not results:
-            all_pis = stripe.PaymentIntent.list(limit=100,
-                created={'gte': int(__import__('time').time()) - (60 * 86400)})
-            for pi in all_pis.data:
-                if pi.receipt_email and pi.receipt_email.lower() == user['email'].lower():
-                    results.append({
-                        'stripe_id': pi.id,
-                        'amount': pi.amount / 100,
-                        'currency': pi.currency.upper(),
-                        'status': pi.status,
-                        'created': pi.created,
-                        'description': pi.description or '',
-                        'customer_id': None,
-                        'receipt_url': pi.charges.data[0].receipt_url if pi.charges and pi.charges.data else None
-                    })
-
-    except stripe.error.StripeError as e:
-        return jsonify({'error': f'Stripe error: {str(e)}'}), 500
-
-    return jsonify({
-        'user': user,
-        'cart_total': cart_total,
-        'stripe_results': results,
-        'found': len(results) > 0
-    })
 
 
 @app.route('/api/admin/active-carts/<int:user_id>/message', methods=['POST'])
