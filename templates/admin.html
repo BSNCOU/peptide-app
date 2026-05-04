@@ -1531,7 +1531,8 @@ BC10,8.00</pre>
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
                     <div class="modal-content">
-                        <h3>Update Status: ${o.order_number}</h3>
+                        <h3>Update Status — ${escapeHtml(o.order_number)}</h3>
+                        <p style="color:#718096;margin:0 0 16px 0;">${escapeHtml(o.full_name || '')} · ${escapeHtml(o.email || '')}</p>
                         <form onsubmit="updateOrderStatus(event, ${id})">
                             <div class="form-group">
                                 <label>Status</label>
@@ -1551,6 +1552,20 @@ BC10,8.00</pre>
                                 <label>Tracking Number (for shipped orders)</label>
                                 <input type="text" id="trackingNumber" value="${o.tracking_number || ''}" placeholder="Enter tracking number">
                             </div>
+                            <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:12px;margin-bottom:10px;">
+                                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;color:#276749;">
+                                    <input type="checkbox" id="sendTrackingEmail" ${o.tracking_number ? '' : ''} style="width:16px;height:16px;">
+                                    📧 Send notification email to customer
+                                </label>
+                                <p style="color:#276749;font-size:12px;margin:4px 0 0 24px;">Check to email the customer about this status change.</p>
+                            </div>
+                            <div style="background:#fffbeb;border:1px solid #f6e05e;border-radius:8px;padding:12px;margin-bottom:10px;">
+                                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                    <input type="checkbox" id="silentUpdate" style="width:16px;height:16px;">
+                                    <span><strong>Silent update</strong> — change status without emailing customer</span>
+                                </label>
+                                <p style="color:#744210;font-size:12px;margin:4px 0 0 24px;">Use when correcting a mistake like re-setting orders that were wrongly reset.</p>
+                            </div>
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn btn-success">Update Status</button>
@@ -1563,16 +1578,20 @@ BC10,8.00</pre>
 
         async function updateOrderStatus(e, id) {
             e.preventDefault();
+            const silent = document.getElementById('silentUpdate')?.checked || false;
+            const sendEmail = document.getElementById('sendTrackingEmail')?.checked || false;
             try {
                 await api(`/api/admin/orders/${id}/status`, {
                     method: 'PUT',
                     body: JSON.stringify({
                         status: document.getElementById('orderStatus').value,
-                        tracking_number: document.getElementById('trackingNumber').value || null
+                        tracking_number: document.getElementById('trackingNumber').value || null,
+                        send_tracking_email: sendEmail,
+                        silent: silent
                     })
                 });
                 closeModal();
-                showAlert('Order status updated', 'success');
+                showAlert(silent ? 'Status updated silently — no email sent.' : 'Order status updated' + (sendEmail ? ' and customer notified.' : '.'), 'success');
                 loadOrders();
                 loadStats();
             } catch (err) {
