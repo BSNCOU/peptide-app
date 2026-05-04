@@ -1421,12 +1421,29 @@ BC10,8.00</pre>
                                 <button class="btn btn-success" onclick="markZeroTotalPaid(${o.id})" style="background:#276749;">
                                     ✅ Mark as Paid ($0 — Credits Covered)
                                 </button>` : ''}
+                            ${o.status === 'cancelled' ? `
+                                <button class="btn btn-success" onclick="restoreToPaid(${o.id})" style="background:#276749;" title="Use when order was cancelled by mistake but customer actually paid in Stripe">
+                                    ↩️ Restore to Paid
+                                </button>` : ''}
                         </div>
                     </div>
                 </div>
             `;
         }
         
+        async function restoreToPaid(orderId) {
+            if (!confirm('Restore this cancelled order to PAID status?\n\nOnly use this if you have confirmed payment in Stripe. Inventory will be re-deducted.')) return;
+            try {
+                const result = await api(`/api/admin/orders/${orderId}/restore-to-paid`, { method: 'POST' });
+                showAlert(result.message + ' — order is now paid and ready to pick.', 'success');
+                closeModal();
+                state.orders = await api('/api/admin/orders');
+                renderOrders();
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
         async function markZeroTotalPaid(orderId) {
             if (!confirm('Mark this $0 order as paid? The customer will receive a payment confirmation email.')) return;
             try {

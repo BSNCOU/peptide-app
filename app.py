@@ -2228,10 +2228,11 @@ def cart_abandonment_worker():
                     print(f"[CART ABANDON] Error processing user {row['user_id']}: {e}")
 
             # ── Auto-cancel pending_payment orders older than 48 hours ──────────
+            # ONLY cancels if Stripe confirms NOT paid — never blindly cancel
             try:
                 cutoff_48h = datetime.now() - timedelta(hours=48)
                 stale_orders = conn.execute("""
-                    SELECT id, order_number, user_id FROM orders
+                    SELECT id, order_number, user_id, stripe_session_id, total FROM orders
                     WHERE status IN ('pending', 'pending_payment')
                       AND total > 0
                       AND is_promo = 0
@@ -2240,22 +2241,35 @@ def cart_abandonment_worker():
 
                 for order in stale_orders:
                     o = dict(order)
-                    # Restore inventory for each item
-                    conn.execute("""
-                        UPDATE products p SET stock = stock + (
-                            SELECT COALESCE(SUM(oi.quantity), 0)
-                            FROM order_items oi WHERE oi.order_id = ? AND oi.product_id = p.id
-                        ) WHERE id IN (SELECT product_id FROM order_items WHERE order_id = ?)
-                    """, (o['id'], o['id']))
-                    conn.execute(
-                        "UPDATE orders SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                        (o['id'],)
-                    )
-                    print(f"[PENDING CLEANUP] Auto-cancelled stale order {o['order_number']} (48h no payment)")
+                    should_cancel = True
+
+                    # Check Stripe before cancelling — if paid there, mark paid instead
+                    if stripe.api_key and o.get('stripe_session_id'):
+                        try:
+                            cs = stripe.checkout.Session.retrieve(o['stripe_session_id'])
+                            if cs.payment_status == 'paid':
+                                # Stripe has payment — mark paid, don't cancel
+                                conn.execute("""UPDATE orders SET status='paid',
+                                    stripe_payment_intent=?, paid_at=CURRENT_TIMESTAMP,
+                                    updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                                    (cs.payment_intent, o['id']))
+                                conn.commit()
+                                print(f"[PENDING CLEANUP] Order {o['order_number']} was paid in Stripe — marked paid instead of cancelled")
+                                should_cancel = False
+                        except Exception as stripe_err:
+                            print(f"[PENDING CLEANUP] Stripe check failed for {o['order_number']}: {stripe_err}")
+                            should_cancel = False  # When in doubt, don't cancel
+
+                    if should_cancel:
+                        # Restore inventory
+                        items = conn.execute('SELECT product_id, quantity FROM order_items WHERE order_id=?', (o['id'],)).fetchall()
+                        for item in items:
+                            conn.execute('UPDATE products SET stock=stock+? WHERE id=?', (item['quantity'], item['product_id']))
+                        conn.execute("UPDATE orders SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=?", (o['id'],))
+                        print(f"[PENDING CLEANUP] Auto-cancelled stale order {o['order_number']} (48h, confirmed not paid in Stripe)")
 
                 if stale_orders:
                     conn.commit()
-                    print(f"[PENDING CLEANUP] Auto-cancelled {len(stale_orders)} stale pending order(s)")
             except Exception as e:
                 print(f"[PENDING CLEANUP] Error: {e}")
 
@@ -4580,6 +4594,40 @@ def admin_sync_stripe_payments():
         'message': f"Sync complete: {len(fixed)} fixed, {len(skipped)} still pending, {len(errors)} errors",
         'fixed': fixed, 'skipped': skipped, 'errors': errors
     })
+
+
+@app.route('/api/admin/orders/<int:oid>/restore-to-paid', methods=['POST'])
+@admin_required
+def admin_restore_to_paid(oid):
+    """Restore a wrongly-cancelled order back to paid status."""
+    conn = get_db()
+    order = conn.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    order = dict(order)
+    if order['status'] != 'cancelled':
+        conn.close()
+        return jsonify({'error': f"Order is '{order['status']}', not cancelled"}), 400
+
+    # Mark as paid
+    conn.execute("""UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
+                    updated_at=CURRENT_TIMESTAMP WHERE id=?""", (oid,))
+
+    # Deduct inventory again (it was restored when cancelled)
+    items = conn.execute('SELECT product_id, quantity FROM order_items WHERE order_id=?', (oid,)).fetchall()
+    for item in items:
+        conn.execute('UPDATE products SET stock=stock-? WHERE id=?', (item['quantity'], item['product_id']))
+
+    conn.commit()
+    conn.close()
+
+    try:
+        send_status_update(oid, 'paid')
+    except Exception:
+        pass
+
+    return jsonify({'message': f"Order {order['order_number']} restored to paid"})
 
 
 @app.route('/api/admin/orders/<int:oid>/mark-paid-zero-total', methods=['POST'])
