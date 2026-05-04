@@ -2756,91 +2756,115 @@ def stripe_webhook():
             print(f"[STRIPE WEBHOOK] Error parsing event: {e}")
             return jsonify({'error': 'Invalid event'}), 400
     
+    # Parse raw JSON payload — avoids Stripe object type issues (AttributeError/KeyError)
+    try:
+        event_data = json.loads(payload)
+    except Exception:
+        event_data = {}
+
     # Handle the checkout.session.completed event
     if event['type'] == 'checkout.session.completed':
-        session_obj = event['data']['object']
-        
-        order_id = session_obj.get('metadata', {}).get('order_id')
-        payment_intent = session_obj.get('payment_intent')
-        
+        session_data = event_data.get('data', {}).get('object', {})
+        metadata = session_data.get('metadata') or {}
+        order_id = metadata.get('order_id')
+        payment_intent = session_data.get('payment_intent')
+
         if order_id:
-            conn = get_db()
-            c = conn.cursor()
-            
-            # Update order status to paid
-            c.execute('''UPDATE orders 
-                        SET status = 'paid', 
-                            stripe_payment_intent = ?,
-                            paid_at = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP 
-                        WHERE id = ?''', (payment_intent, order_id))
-            
-            conn.commit()
-            
-            # Get order for notification
-            order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
-            conn.close()
-            
-            if order:
-                print(f"[STRIPE] Order {order['order_number']} marked as PAID")
-                # Send payment confirmation to customer
-                send_status_update(int(order_id), 'paid')
-                # Now send admin "New Order Received!" — payment is confirmed
-                order_dict = dict(order)
-                conn2 = get_db()
-                items_for_admin = [dict(i) for i in conn2.execute(
-                    'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
-                    (order_id,)).fetchall()]
-                user_info = conn2.execute('SELECT full_name,email,phone FROM users WHERE id=?', (order_dict['user_id'],)).fetchone()
-                if user_info:
-                    order_dict['full_name'] = user_info['full_name']
-                    order_dict['email'] = user_info['email']
-                    order_dict['phone'] = user_info['phone']
+            try:
+                conn = get_db()
+                c = conn.cursor()
 
-                # ── Casual Referral: 20% credit to introducer on buyer's FIRST paid order ──
-                # Only fires if introducer does NOT already have their own referral code
-                # (those users earn commission through their code instead)
-                introducer_id = order_dict.get('introducer_user_id')
-                if introducer_id:
-                    # Check if introducer already has a referral code — if so, skip
-                    has_referral_code = conn2.execute(
-                        'SELECT id FROM discount_codes WHERE referrer_user_id=? AND active=1 LIMIT 1',
-                        (introducer_id,)
+                # Check current status — never downgrade an already-advanced order
+                existing = c.execute('SELECT status FROM orders WHERE id=?', (order_id,)).fetchone()
+                if existing:
+                    current_status = existing['status'] if hasattr(existing, 'keys') else existing[0]
+                    if current_status not in ('pending', 'pending_payment'):
+                        print(f"[STRIPE WEBHOOK] Order {order_id} already at '{current_status}' — skipping")
+                        conn.close()
+                        return jsonify({'status': 'success'})
+
+                # Mark paid FIRST before anything that could crash
+                c.execute("""UPDATE orders
+                            SET status = 'paid',
+                                stripe_payment_intent = ?,
+                                paid_at = CURRENT_TIMESTAMP,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?""", (payment_intent, order_id))
+                conn.commit()
+
+                order = c.execute('SELECT * FROM orders WHERE id = ?', (order_id,)).fetchone()
+                conn.close()
+
+                if order:
+                    print(f"[STRIPE] Order {order['order_number']} marked as PAID")
+                    order_dict = dict(order)
+
+                    conn2 = get_db()
+                    user_info = conn2.execute(
+                        'SELECT full_name,email,phone FROM users WHERE id=?', (order_dict['user_id'],)
                     ).fetchone()
+                    items_for_admin = [dict(i) for i in conn2.execute(
+                        'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
+                        (order_id,)).fetchall()]
+                    if user_info:
+                        order_dict['full_name'] = user_info['full_name']
+                        order_dict['email'] = user_info['email']
+                        order_dict['phone'] = user_info['phone']
 
-                    if has_referral_code:
-                        print(f"[REFERRAL] Skipping casual referral for user {introducer_id} — they already have a referral code")
-                    else:
-                        prior_paid_count = conn2.execute(
-                            """SELECT COUNT(*) as cnt FROM orders
-                               WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
-                               AND id != ?""",
-                            (order_dict['user_id'], int(order_id))
-                        ).fetchone()
-                        is_first_order = (prior_paid_count['cnt'] == 0) if prior_paid_count else True
-                        if is_first_order:
-                            commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
-                            if commission > 0:
-                                conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
-                                             (commission, introducer_id))
-                                conn2.execute(
-                                    """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
-                                       VALUES (?,?,?,?,?)""",
-                                    (introducer_id, int(order_id), 'earned',
-                                     commission,
-                                     f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
-                                )
-                                conn2.commit()
-                                print(f"[REFERRAL] ${commission:.2f} credit given to user {introducer_id} for introducing {order_dict['user_id']}")
+                    # Casual referral credit
+                    try:
+                        introducer_id = order_dict.get('introducer_user_id')
+                        if introducer_id:
+                            has_code = conn2.execute(
+                                'SELECT id FROM discount_codes WHERE referrer_user_id=? AND active=1 LIMIT 1',
+                                (introducer_id,)
+                            ).fetchone()
+                            if not has_code:
+                                prior = conn2.execute(
+                                    """SELECT COUNT(*) as cnt FROM orders
+                                       WHERE user_id=? AND status IN ('paid','processing','ready_to_ship','shipped','delivered','fulfilled')
+                                       AND id != ?""",
+                                    (order_dict['user_id'], int(order_id))
+                                ).fetchone()
+                                if prior and prior['cnt'] == 0:
+                                    commission = round(float(order_dict.get('subtotal', 0)) * 0.20, 2)
+                                    if commission > 0:
+                                        conn2.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id=?',
+                                                     (commission, introducer_id))
+                                        conn2.execute(
+                                            """INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
+                                               VALUES (?,?,?,?,?)""",
+                                            (introducer_id, int(order_id), 'earned', commission,
+                                             f'20% casual referral — {order_dict.get("order_number","")}, first order by {order_dict.get("full_name","customer")}')
+                                        )
+                                        conn2.commit()
+                    except Exception as ref_err:
+                        print(f"[STRIPE WEBHOOK] Referral error (non-fatal): {ref_err}")
 
-                conn2.commit()
-                conn2.close()
-                send_new_order_admin_notification(order_dict, items_for_admin)
-    
+                    conn2.commit()
+                    conn2.close()
+
+                    try:
+                        send_status_update(int(order_id), 'paid')
+                    except Exception as e:
+                        print(f"[STRIPE WEBHOOK] send_status_update failed (non-fatal): {e}")
+
+                    try:
+                        send_new_order_admin_notification(order_dict, items_for_admin)
+                    except Exception as e:
+                        print(f"[STRIPE WEBHOOK] admin notification failed (non-fatal): {e}")
+
+            except Exception as e:
+                import traceback
+                print(f"[STRIPE WEBHOOK] Processing error for order {order_id}: {e}")
+                traceback.print_exc()
+                # DO NOT return 500 — Stripe must always get 200
+
     elif event['type'] == 'payment_intent.payment_failed':
-        session_obj = event['data']['object']
-        print(f"[STRIPE] Payment failed: {session_obj.get('id')}")
-    
+        failed_data = event_data.get('data', {}).get('object', {})
+        print(f"[STRIPE] Payment failed: {failed_data.get('id')}")
+
+    # ALWAYS return 200 to Stripe
     return jsonify({'status': 'success'})
 
 
@@ -4465,14 +4489,97 @@ def admin_update_order_status(oid):
                  (status, data.get('admin_notes', current_dict.get('admin_notes', '')), tracking_number, oid))
     conn.commit()
     
-    # Send tracking email if requested and tracking number provided
-    if send_tracking_email and tracking_number:
-        send_tracking_notification(oid, tracking_number)
-    elif current_dict['status'] != status:
-        send_status_update(oid, status)
+    silent = data.get('silent', False)
+    if not silent:
+        if send_tracking_email and tracking_number:
+            send_tracking_notification(oid, tracking_number)
+        elif current_dict['status'] != status:
+            send_status_update(oid, status)
+    else:
+        print(f"[STATUS] Order {oid} silently updated to '{status}' — no customer email sent")
     
     conn.close()
     return jsonify({'message': 'Status updated'})
+
+
+@app.route('/api/admin/sync-stripe-payments', methods=['POST'])
+@admin_required
+def admin_sync_stripe_payments():
+    """Check all pending orders against Stripe and mark paid if confirmed."""
+    if not stripe.api_key:
+        return jsonify({'error': 'Stripe not configured'}), 400
+
+    conn = get_db()
+    stuck_orders = conn.execute("""
+        SELECT o.*, u.email, u.full_name, u.phone
+        FROM orders o JOIN users u ON o.user_id = u.id
+        WHERE o.status IN ('pending', 'pending_payment')
+          AND o.total > 0 AND o.is_promo = 0
+        ORDER BY o.created_at DESC
+    """).fetchall()
+    conn.close()
+
+    fixed, skipped, errors = [], [], []
+
+    def do_mark_paid(order, payment_intent_id):
+        # Never overwrite shipped/fulfilled orders
+        if order.get('status') not in ('pending', 'pending_payment'):
+            print(f"[SYNC] Skipping {order['order_number']} — already at '{order.get('status')}'")
+            return False
+        conn2 = get_db()
+        conn2.execute("""UPDATE orders SET status='paid', paid_at=CURRENT_TIMESTAMP,
+               stripe_payment_intent=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (payment_intent_id, order['id']))
+        conn2.commit()
+        user_info = conn2.execute('SELECT full_name,email,phone FROM users WHERE id=?', (order['user_id'],)).fetchone()
+        items_for_admin = [dict(i) for i in conn2.execute(
+            'SELECT oi.*,p.name,p.sku FROM order_items oi JOIN products p ON oi.product_id=p.id WHERE oi.order_id=?',
+            (order['id'],)).fetchall()]
+        conn2.close()
+        order_dict = dict(order)
+        order_dict['status'] = 'paid'
+        if user_info:
+            order_dict.update({'full_name': user_info['full_name'], 'email': user_info['email'], 'phone': user_info['phone']})
+        try:
+            send_status_update(order['id'], 'paid')
+            send_new_order_admin_notification(order_dict, items_for_admin)
+        except Exception as e:
+            print(f"[SYNC] Notification error: {e}")
+        fixed.append({'order_number': order['order_number'], 'total': order['total']})
+        return True
+
+    for order in stuck_orders:
+        order = dict(order)
+        try:
+            stripe_session_id = order.get('stripe_session_id')
+            if stripe_session_id:
+                cs = stripe.checkout.Session.retrieve(stripe_session_id)
+                if cs.payment_status == 'paid':
+                    do_mark_paid(order, cs.payment_intent)
+                else:
+                    skipped.append({'order_number': order['order_number'], 'stripe_status': cs.payment_status})
+            else:
+                email = order.get('email', '')
+                order_total_cents = int(float(order['total']) * 100)
+                found_payment = None
+                pis = stripe.PaymentIntent.list(limit=100)
+                for pi in pis.data:
+                    if pi.status == 'succeeded' and pi.amount == order_total_cents:
+                        receipt_email = pi.receipt_email or ''
+                        if receipt_email.lower() == email.lower():
+                            found_payment = pi
+                            break
+                if found_payment:
+                    do_mark_paid(order, found_payment.id)
+                else:
+                    skipped.append({'order_number': order['order_number'], 'stripe_status': 'no_match'})
+        except Exception as e:
+            errors.append({'order_number': order['order_number'], 'error': str(e)})
+
+    return jsonify({
+        'message': f"Sync complete: {len(fixed)} fixed, {len(skipped)} still pending, {len(errors)} errors",
+        'fixed': fixed, 'skipped': skipped, 'errors': errors
+    })
 
 
 @app.route('/api/admin/orders/<int:oid>/mark-paid-zero-total', methods=['POST'])
