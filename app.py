@@ -4576,13 +4576,25 @@ def admin_sync_stripe_payments():
                 email = order.get('email', '')
                 order_total_cents = int(float(order['total']) * 100)
                 found_payment = None
-                pis = stripe.PaymentIntent.list(limit=100)
-                for pi in pis.data:
-                    if pi.status == 'succeeded' and pi.amount == order_total_cents:
-                        receipt_email = pi.receipt_email or ''
-                        if receipt_email.lower() == email.lower():
-                            found_payment = pi
-                            break
+
+                # Paginate through ALL Stripe payment intents to find a match
+                has_more = True
+                starting_after = None
+                while has_more and not found_payment:
+                    kwargs = {'limit': 100}
+                    if starting_after:
+                        kwargs['starting_after'] = starting_after
+                    pis = stripe.PaymentIntent.list(**kwargs)
+                    for pi in pis.data:
+                        if pi.status == 'succeeded' and pi.amount == order_total_cents:
+                            receipt_email = (pi.receipt_email or '').lower()
+                            if receipt_email == email.lower():
+                                found_payment = pi
+                                break
+                    has_more = pis.has_more
+                    if has_more and pis.data:
+                        starting_after = pis.data[-1].id
+
                 if found_payment:
                     do_mark_paid(order, found_payment.id)
                 else:
@@ -4594,6 +4606,47 @@ def admin_sync_stripe_payments():
         'message': f"Sync complete: {len(fixed)} fixed, {len(skipped)} still pending, {len(errors)} errors",
         'fixed': fixed, 'skipped': skipped, 'errors': errors
     })
+
+
+@app.route('/api/admin/orders/<int:oid>/link-stripe-payment', methods=['POST'])
+@admin_required
+def admin_link_stripe_payment(oid):
+    """Manually link a Stripe payment intent ID to an order and mark it paid."""
+    data = request.json
+    pi_id = (data.get('payment_intent_id') or '').strip()
+    if not pi_id:
+        return jsonify({'error': 'payment_intent_id required'}), 400
+
+    conn = get_db()
+    order = conn.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    order = dict(order)
+    conn.close()
+
+    # Verify with Stripe
+    try:
+        pi = stripe.PaymentIntent.retrieve(pi_id)
+        if pi.status != 'succeeded':
+            return jsonify({'error': f'Stripe payment status is {pi.status}, not succeeded'}), 400
+    except stripe.error.StripeError as e:
+        return jsonify({'error': f'Stripe error: {str(e)}'}), 400
+
+    # Mark paid
+    conn2 = get_db()
+    conn2.execute("""UPDATE orders SET status='paid', stripe_payment_intent=?,
+                     paid_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                  (pi_id, oid))
+    conn2.commit()
+    conn2.close()
+
+    try:
+        send_status_update(oid, 'paid')
+    except Exception:
+        pass
+
+    return jsonify({'message': f"Order {order['order_number']} linked to {pi_id} and marked paid"})
 
 
 @app.route('/api/admin/orders/<int:oid>/restore-to-paid', methods=['POST'])

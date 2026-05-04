@@ -1425,12 +1425,58 @@ BC10,8.00</pre>
                                 <button class="btn btn-success" onclick="restoreToPaid(${o.id})" style="background:#276749;" title="Use when order was cancelled by mistake but customer actually paid in Stripe">
                                     ↩️ Restore to Paid
                                 </button>` : ''}
+                            ${['pending','pending_payment'].includes(o.status) ? `
+                                <button class="btn btn-small" style="background:#635bff;color:white;" onclick="showLinkStripeModal(${o.id}, '${escapeHtml(o.order_number)}')">
+                                    💳 Link Stripe Payment
+                                </button>` : ''}
                         </div>
                     </div>
                 </div>
             `;
         }
         
+        function showLinkStripeModal(orderId, orderNumber) {
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:480px;">
+                        <h3>💳 Link Stripe Payment</h3>
+                        <p style="color:#718096;">Paste the Stripe Payment Intent ID from your Stripe dashboard to manually link it to order <strong>${escapeHtml(orderNumber)}</strong>.</p>
+                        <div style="background:#f0f4ff;border-radius:8px;padding:12px;margin-bottom:14px;font-size:13px;color:#4a5568;">
+                            In Stripe → Payments → find the payment → copy the ID starting with <code>pi_</code>
+                        </div>
+                        <div class="form-group">
+                            <label>Stripe Payment Intent ID</label>
+                            <input type="text" id="stripePaymentIntentId" placeholder="pi_3TTLE5EI6LDNhm9z1j647EEB"
+                                style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;font-family:monospace;box-sizing:border-box;">
+                        </div>
+                        <div style="display:flex;gap:10px;margin-top:16px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button class="btn" style="background:#635bff;color:white;" onclick="linkStripePayment(${orderId})">Link & Mark Paid</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        async function linkStripePayment(orderId) {
+            const piId = document.getElementById('stripePaymentIntentId').value.trim();
+            if (!piId || !piId.startsWith('pi_')) {
+                showAlert('Please enter a valid Stripe payment intent ID starting with pi_');
+                return;
+            }
+            try {
+                const result = await api(`/api/admin/orders/${orderId}/link-stripe-payment`, {
+                    method: 'POST',
+                    body: JSON.stringify({ payment_intent_id: piId })
+                });
+                closeModal();
+                showAlert(result.message, 'success');
+                state.orders = await api('/api/admin/orders');
+                renderOrders();
+            } catch (err) {
+                showAlert('Failed: ' + err.message);
+            }
+        }
+
         async function restoreToPaid(orderId) {
             if (!confirm('Restore this cancelled order to PAID status?\n\nOnly use this if you have confirmed payment in Stripe. Inventory will be re-deducted.')) return;
             try {
