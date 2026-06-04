@@ -835,7 +835,15 @@ def init_db():
         conn.commit()
     except Exception as e:
         print(f"Note: PO tables: {e}")
-    
+
+    # Initialize vendor QA tables (Phase 1A)
+    try:
+        from qa import init_qa_tables
+        init_qa_tables(c, using_postgres, auto_id)
+        conn.commit()
+    except Exception as e:
+        print(f"Note: QA tables: {e}")
+
     # Create default admin if none exists
     if using_postgres:
         import psycopg2.extras
@@ -7343,6 +7351,17 @@ def delete_todo(todo_id):
     conn.close()
     
     return jsonify({'message': 'Todo deleted'})
+
+
+# ============================================
+# Register the Vendor QA blueprint (Phase 1A)
+# Honors QA_ENABLED=false env var to disable.
+# ============================================
+try:
+    from qa import register_qa_blueprint
+    register_qa_blueprint(app, get_db, admin_required, is_postgres, send_email_fn=send_email)
+except Exception as e:
+    print(f"[QA] Blueprint registration skipped: {e}")
 
 
 # ============================================

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sample #{{ sample.id }} — QA</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 15px; color: #555; margin-top: 1.75rem; }
+  table.kv td { padding: 4px 12px 4px 0; vertical-align: top; font-size: 14px; }
+  table.kv td.k { color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; width: 160px; }
+  .btn { padding: 8px 14px; border-radius: 6px; background: #185FA5; color: white; font-size: 14px; border: none; cursor: pointer; text-decoration: none; display: inline-block; }
+  .btn:hover { background: #0C447C; }
+  .btn-warning { background: #c94; }
+  a { color: #185FA5; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .panel { background: #f8f8f8; padding: 12px; border-radius: 8px; margin: 1rem 0; }
+  ul.tests { font-size: 14px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<h1>Sample #{{ sample.id }} — {{ sample.peptide_name }}</h1>
+<p><a href="/admin/qa/vendors/{{ vendor.id }}">← Back to {{ vendor.company_name }}</a></p>
+
+<table class="kv">
+  <tr><td class="k">Vendor</td><td><a href="/admin/qa/vendors/{{ vendor.id }}">{{ vendor.company_name }}</a></td></tr>
+  <tr><td class="k">Peptide</td><td>{{ sample.peptide_name }}</td></tr>
+  <tr><td class="k">SKU match</td><td>{% if sample.peptide_sku %}<span style="color:#383;">✓ {{ sample.peptide_sku }}</span>{% else %}<span style="color:#a33;">⚠ No SKU match in products catalog</span>{% endif %}</td></tr>
+  <tr><td class="k">Lot number</td><td>{{ sample.lot_number or '—' }}</td></tr>
+  <tr><td class="k">Received</td><td>{{ sample.received_date }}</td></tr>
+  <tr><td class="k">Storage</td><td>{{ sample.storage_location or '—' }}</td></tr>
+  <tr><td class="k">Status</td><td>{{ sample.status }}</td></tr>
+</table>
+
+{% if sample.notes %}
+<h2>Notes</h2>
+<div style="font-size:14px;white-space:pre-wrap;">{{ sample.notes }}</div>
+{% endif %}
+
+<h2>Purdue Work Orders</h2>
+
+{% if work_orders|length == 0 %}
+<div class="panel">
+  <p style="margin-top:0;font-size:14px;">No work order yet. Generate one to send to Purdue.</p>
+  <button class="btn" id="generateWO">📄 Generate Work Order + Email to ngou@purdue.edu</button>
+</div>
+{% else %}
+<table style="width:100%;font-size:14px;border-collapse:collapse;">
+  <thead>
+    <tr style="text-align:left;font-size:11px;color:#666;text-transform:uppercase;">
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">#</th>
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">Status</th>
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">Submitted</th>
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">PDF</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for wo in work_orders %}
+    <tr>
+      <td style="padding:6px;">{{ wo.id }}</td>
+      <td style="padding:6px;">{{ wo.status }}</td>
+      <td style="padding:6px;">{{ wo.submitted_at[:16] if wo.submitted_at else '—' }}</td>
+      <td style="padding:6px;"><a href="/admin/qa/work_orders/{{ wo.id }}/pdf" target="_blank">View PDF</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Required tests (per acceptance spec v1.0)</h2>
+<ul class="tests">
+  {% for t in required_tests %}<li>{{ t }}</li>{% endfor %}
+</ul>
+
+<script>
+const woBtn = document.getElementById('generateWO');
+if (woBtn) {
+  woBtn.addEventListener('click', async function() {
+    if (!confirm('Generate work order PDF + email ngou@purdue.edu? This kicks off Phase 3 testing.')) return;
+    woBtn.disabled = true; woBtn.textContent = 'Generating...';
+    try {
+      const r = await fetch('/admin/qa/samples/{{ sample.id }}/generate_work_order', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { alert(j.error || 'Failed'); woBtn.disabled = false; woBtn.textContent = '📄 Generate Work Order + Email'; return; }
+      if (j.email_sent_to) { alert('Work order #' + j.work_order_id + ' generated and emailed to ' + j.email_sent_to); }
+      else { alert('Work order #' + j.work_order_id + ' generated. Email send failed locally (no Mailgun) — open PDF and send manually.'); }
+      location.reload();
+    } catch (e) { alert(e.message); woBtn.disabled = false; woBtn.textContent = '📄 Generate Work Order + Email'; }
+  });
+}
+</script>
+</body>
+</html>
