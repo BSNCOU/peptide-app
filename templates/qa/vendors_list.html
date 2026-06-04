@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Vendors — QA</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 0.5px solid rgba(0,0,0,0.1); }
+  th { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.05em; }
+  .filter { margin: 1rem 0; }
+  .filter select { padding: 6px 10px; border-radius: 6px; border: 0.5px solid rgba(0,0,0,0.2); font-size: 14px; }
+  .empty { padding: 3rem; text-align: center; color: #888; border: 1px dashed rgba(0,0,0,0.15); border-radius: 8px; margin-top: 1rem; }
+  .badge { display: inline-block; font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #eef; color: #339; text-transform: uppercase; letter-spacing: 0.05em; }
+  .badge-do_not_use, .badge-rejected { background: #fee; color: #a33; }
+  .badge-active_approved_vendor { background: #efe; color: #383; }
+  .badge-conditional_review, .badge-pending_analytical_testing { background: #ffe6c0; color: #964; }
+  a { color: #185FA5; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .btn { display: inline-block; padding: 8px 14px; border-radius: 6px; background: #185FA5; color: white; font-size: 14px; margin-right: 8px; }
+  .btn:hover { background: #0C447C; text-decoration: none; }
+  .btn-secondary { background: #666; }
+</style>
+</head>
+<body>
+<h1>Vendors</h1>
+<p><a href="/admin/qa">← QA Home</a></p>
+
+<div>
+  <a class="btn" href="/admin/qa/vendors/new">+ Add Vendor</a>
+</div>
+
+<div class="filter">
+  <form method="get" action="/admin/qa/vendors">
+    Filter: <select name="status" onchange="this.form.submit()">
+      <option value="">All statuses</option>
+      {% for s in statuses %}
+      <option value="{{ s }}" {% if active_filter == s %}selected{% endif %}>{{ s.replace('_', ' ') }}</option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
+
+{% if vendors|length == 0 %}
+<div class="empty">No vendors yet. Add the first one with <a href="/admin/qa/vendors/new">+ Add Vendor</a>.</div>
+{% else %}
+<table>
+<thead>
+<tr><th>WhatsApp</th><th>Company</th><th>Country</th><th>Status</th><th>Score</th><th>Updated</th></tr>
+</thead>
+<tbody>
+{% for v in vendors %}
+<tr>
+  <td><a href="/admin/qa/vendors/{{ v.id }}" style="font-family:monospace;font-size:13px;">{{ v.whatsapp_number or '—' }}</a></td>
+  <td><a href="/admin/qa/vendors/{{ v.id }}">{{ v.company_name }}</a></td>
+  <td>{{ v.country or '—' }}</td>
+  <td><span class="badge badge-{{ v.status|lower }}">{{ v.status.replace('_', ' ') }}</span></td>
+  <td>{{ v.score if v.score is not none else '—' }}</td>
+  <td>{{ v.updated_at[:16] if v.updated_at else '—' }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+</body>
+</html>

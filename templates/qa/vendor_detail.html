@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ vendor.company_name }} — QA</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 15px; color: #555; margin-top: 1.75rem; }
+  table.kv { font-size: 14px; }
+  table.kv td { padding: 4px 12px 4px 0; vertical-align: top; }
+  table.kv td.k { color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; width: 140px; }
+  .badge { display: inline-block; font-size: 11px; padding: 3px 8px; border-radius: 4px; background: #eef; color: #339; text-transform: uppercase; letter-spacing: 0.05em; }
+  .badge-do_not_use, .badge-rejected { background: #fee; color: #a33; }
+  .badge-active_approved_vendor { background: #efe; color: #383; }
+  .badge-conditional_review, .badge-pending_analytical_testing { background: #ffe6c0; color: #964; }
+  .actions { margin: 1rem 0; padding: 12px; background: #f8f8f8; border-radius: 8px; }
+  .actions select, .actions input { padding: 7px 10px; border-radius: 6px; border: 0.5px solid rgba(0,0,0,0.2); font-size: 14px; margin-right: 6px; }
+  .btn { padding: 8px 14px; border-radius: 6px; background: #185FA5; color: white; font-size: 13px; border: none; cursor: pointer; }
+  .btn:hover { background: #0C447C; }
+  .history { font-size: 13px; }
+  .history li { margin-bottom: 6px; }
+  a { color: #185FA5; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>{{ vendor.company_name }}</h1>
+<p><a href="/admin/qa/vendors">← All vendors</a></p>
+
+<p>Status: <span class="badge badge-{{ vendor.status|lower }}">{{ vendor.status.replace('_', ' ') }}</span>
+  {% if vendor.score is not none %}· Score: {{ vendor.score }}/100{% endif %}</p>
+
+<div class="actions">
+  <strong>Change status:</strong>
+  <form id="statusForm" style="display:inline-block;">
+    <select name="status">
+      {% for s in statuses %}
+      <option value="{{ s }}" {% if s == vendor.status %}selected{% endif %}>{{ s.replace('_', ' ') }}</option>
+      {% endfor %}
+    </select>
+    <input name="reason" placeholder="reason (optional)">
+    <button class="btn" type="submit">Apply</button>
+  </form>
+</div>
+
+<h2>Contact + meta</h2>
+<table class="kv">
+  <tr><td class="k">Contact</td><td>{{ vendor.contact_name or '—' }}</td></tr>
+  <tr><td class="k">WhatsApp</td><td>{{ vendor.whatsapp_number or '—' }}</td></tr>
+  <tr><td class="k">Email</td><td>{{ vendor.email or '—' }}</td></tr>
+  <tr><td class="k">Website</td><td>{% if vendor.website %}<a href="{{ vendor.website }}" target="_blank">{{ vendor.website }}</a>{% else %}—{% endif %}</td></tr>
+  <tr><td class="k">Country</td><td>{{ vendor.country or '—' }}</td></tr>
+  <tr><td class="k">Type</td><td>{{ vendor.manufacturer_or_trading_company or '—' }}</td></tr>
+  <tr><td class="k">Lead source</td><td>{{ vendor.source_of_lead or '—' }}</td></tr>
+  <tr><td class="k">Created</td><td>{{ vendor.created_at[:16] }}</td></tr>
+  <tr><td class="k">Updated</td><td>{{ vendor.updated_at[:16] }}</td></tr>
+</table>
+
+{% if vendor.notes %}
+<h2>Notes</h2>
+<div style="white-space: pre-wrap; font-size: 14px;">{{ vendor.notes }}</div>
+{% endif %}
+
+<h2>Vendor Qualification Questionnaire (VQQ)</h2>
+{% if vendor.status == 'PROSPECT' %}
+<p style="font-size:13px;color:#666;">No VQQ sent yet.</p>
+<form id="sendVqq" style="margin: 0.5rem 0;">
+  <button class="btn" type="submit" {% if not vendor.email %}disabled title="Add an email first"{% endif %}>
+    📧 Send VQQ to {{ vendor.email or '(no email on file)' }}
+  </button>
+  <span style="font-size:12px;color:#888;margin-left:8px;">Status transitions to QUESTIONNAIRE_SENT</span>
+</form>
+{% elif vendor.status == 'QUESTIONNAIRE_SENT' %}
+<p style="font-size:13px;color:#666;">VQQ sent. Awaiting response.</p>
+<h3 style="font-size:14px;margin-top:1rem;">Got the vendor's reply? Paste it here.</h3>
+<form id="uploadResponse">
+  <textarea name="response_text" rows="10" style="width:100%;padding:10px;border-radius:6px;border:0.5px solid rgba(0,0,0,0.2);font-family:monospace;font-size:13px;" placeholder="Paste the full text of the vendor's questionnaire response here..."></textarea>
+  <div style="margin-top:6px;">
+    <button class="btn" type="submit">🧠 Score with AI</button>
+    <span style="font-size:12px;color:#888;margin-left:8px;">Claude Haiku scores 0-100 across 10 categories</span>
+  </div>
+</form>
+{% elif vendor.status == 'QUESTIONNAIRE_RETURNED' and latest_vqq %}
+<div style="padding:12px;background:#f8f8f8;border-radius:8px;">
+  <div style="font-size:18px;font-weight:600;">
+    Score: {{ latest_vqq.score }}/100
+    {% if latest_vqq.score >= 80 %}<span style="color:#383;">✓ APPROVED for sample testing</span>
+    {% elif latest_vqq.score >= 60 %}<span style="color:#964;">⚠ Conditional review</span>
+    {% else %}<span style="color:#a33;">✗ Rejected</span>
+    {% endif %}
+  </div>
+  <div style="margin-top:8px;color:#666;font-size:13px;">{{ latest_vqq.ai_reasoning }}</div>
+
+  {% if latest_vqq.breakdown %}
+  <h4 style="margin-top:1rem;font-size:13px;">Breakdown</h4>
+  <table style="font-size:12px;">
+    {% for cat, pts in latest_vqq.breakdown.items() %}
+    <tr><td style="padding:2px 12px 2px 0;color:#666;">{{ cat.replace('_', ' ') }}</td><td>{{ pts }}/10</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if latest_vqq.strengths and latest_vqq.strengths|length > 0 %}
+  <h4 style="margin-top:1rem;font-size:13px;color:#383;">Strengths</h4>
+  <ul style="font-size:13px;margin:4px 0 0 20px;">
+    {% for s in latest_vqq.strengths %}<li>{{ s }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if latest_vqq.deficiencies and latest_vqq.deficiencies|length > 0 %}
+  <h4 style="margin-top:1rem;font-size:13px;color:#a33;">Deficiencies</h4>
+  <ul style="font-size:13px;margin:4px 0 0 20px;">
+    {% for d in latest_vqq.deficiencies %}<li>{{ d }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  <div style="margin-top:1rem;font-size:13px;color:#666;">
+    AI recommends: <strong>{{ latest_vqq.recommended_status.replace('_', ' ') }}</strong>.
+    Use the status dropdown above to apply or override.
+  </div>
+</div>
+{% else %}
+<p style="font-size:13px;color:#666;">Status: {{ vendor.status }} — VQQ flow complete or not applicable.</p>
+{% endif %}
+
+{% if vendor.status in ('APPROVED_FOR_SAMPLE_TESTING', 'PENDING_ANALYTICAL_TESTING') %}
+<h2>Incoming Sample</h2>
+<form id="sampleForm" style="padding:12px;background:#f8f8f8;border-radius:8px;">
+  <label style="display:block;font-size:13px;color:#555;margin:8px 0 4px;">Peptide name *</label>
+  <input name="peptide_name" required style="width:100%;padding:7px 10px;border-radius:6px;border:0.5px solid rgba(0,0,0,0.2);font-size:14px;" placeholder="Will cross-check against your SKU catalog">
+
+  <label style="display:block;font-size:13px;color:#555;margin:8px 0 4px;">Lot number</label>
+  <input name="lot_number" style="width:100%;padding:7px 10px;border-radius:6px;border:0.5px solid rgba(0,0,0,0.2);font-size:14px;">
+
+  <label style="display:block;font-size:13px;color:#555;margin:8px 0 4px;">Received date</label>
+  <input name="received_date" type="date" style="width:200px;padding:7px 10px;border-radius:6px;border:0.5px solid rgba(0,0,0,0.2);font-size:14px;">
+
+  <label style="display:block;font-size:13px;color:#555;margin:8px 0 4px;">Storage location</label>
+  <input name="storage_location" style="width:100%;padding:7px 10px;border-radius:6px;border:0.5px solid rgba(0,0,0,0.2);font-size:14px;" placeholder="e.g., Lab Fridge B, shelf 2">
+
+  <label style="display:block;font-size:13px;color:#555;margin:8px 0 4px;">Notes (supplier COA quality, packaging, etc.)</label>
+  <textarea name="notes" rows="3" style="width:100%;padding:7px 10px;border-radius:6px;border:0.5px solid rgba(0,0,0,0.2);font-size:14px;font-family:inherit;"></textarea>
+
+  <div style="margin-top:10px;">
+    <button class="btn" type="submit">📦 Log incoming sample</button>
+    <span style="font-size:12px;color:#888;margin-left:8px;">Vendor moves to PENDING_ANALYTICAL_TESTING</span>
+  </div>
+</form>
+{% endif %}
+
+{% if samples and samples|length > 0 %}
+<h2>Samples</h2>
+<table style="width:100%;font-size:14px;border-collapse:collapse;">
+  <thead>
+    <tr style="text-align:left;font-size:11px;color:#666;text-transform:uppercase;">
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">#</th>
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">Peptide</th>
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">SKU match</th>
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">Lot</th>
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">Received</th>
+      <th style="padding:6px;border-bottom:0.5px solid rgba(0,0,0,0.1);">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in samples %}
+    <tr>
+      <td style="padding:6px;"><a href="/admin/qa/samples/{{ s.id }}">{{ s.id }}</a></td>
+      <td style="padding:6px;">{{ s.peptide_name }}</td>
+      <td style="padding:6px;">{% if s.peptide_sku %}<span style="color:#383;">✓ {{ s.peptide_sku }}</span>{% else %}<span style="color:#a33;">⚠</span>{% endif %}</td>
+      <td style="padding:6px;">{{ s.lot_number or '—' }}</td>
+      <td style="padding:6px;">{{ s.received_date }}</td>
+      <td style="padding:6px;">{{ s.status }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Status history</h2>
+{% if history|length == 0 %}
+<p style="color:#888;font-size:14px;">No history yet.</p>
+{% else %}
+<ul class="history">
+  {% for h in history %}
+  <li><strong>{{ h.changed_at[:16] }}</strong> — {{ h.from_status or 'NEW' }} → {{ h.to_status }}{% if h.reason %} ({{ h.reason }}){% endif %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<h2>Phase 1B preview (not yet built)</h2>
+<p style="color:#666;font-size:13px;">Questionnaire upload, AI scoring, sample tracking, and Purdue work orders ship in Phase 1B onward.</p>
+
+<script>
+const sendVqqForm = document.getElementById('sendVqq');
+if (sendVqqForm) {
+  sendVqqForm.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    if (!confirm('Send the VQQ email to {{ vendor.email or "(no email)" }}?')) return;
+    try {
+      const r = await fetch('/admin/qa/vendors/{{ vendor.id }}/send_vqq', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { alert(j.error || 'Send failed'); return; }
+      alert('VQQ sent to ' + j.sent_to);
+      location.reload();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+const uploadForm = document.getElementById('uploadResponse');
+if (uploadForm) {
+  uploadForm.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const data = {response_text: fd.get('response_text')};
+    if (!data.response_text || data.response_text.length < 100) {
+      alert('Paste the vendor\'s full response (at least 100 chars).');
+      return;
+    }
+    const btn = this.querySelector('button');
+    btn.disabled = true; btn.textContent = '🧠 Scoring with AI...';
+    try {
+      const r = await fetch('/admin/qa/vendors/{{ vendor.id }}/upload_response', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { alert(j.error || 'Upload failed'); btn.disabled = false; btn.textContent = '🧠 Score with AI'; return; }
+      alert('Scored: ' + j.score + '/100\n\nRecommended: ' + j.recommended_status);
+      location.reload();
+    } catch (e) { alert(e.message); btn.disabled = false; btn.textContent = '🧠 Score with AI'; }
+  });
+}
+
+const sampleForm = document.getElementById('sampleForm');
+if (sampleForm) {
+  sampleForm.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const data = {};
+    fd.forEach((v, k) => data[k] = v);
+    try {
+      const r = await fetch('/admin/qa/vendors/{{ vendor.id }}/samples/new', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { alert(j.error || 'Failed'); return; }
+      if (j.peptide_match_warning) { alert('⚠ ' + j.peptide_match_warning); }
+      location.reload();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+document.getElementById('statusForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const fd = new FormData(this);
+  const data = {};
+  fd.forEach((v, k) => data[k] = v);
+  try {
+    const r = await fetch('/admin/qa/vendors/{{ vendor.id }}/status', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) {
+      alert(j.error || 'Update failed');
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+</script>
+</body>
+</html>

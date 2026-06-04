@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Vendor QA — The Peptide Wizard</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 16px; color: #555; margin-top: 2rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.75rem; margin-top: 1rem; }
+  .card { border: 0.5px solid rgba(0,0,0,0.18); border-radius: 8px; padding: 12px; }
+  .status { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.05em; }
+  .count { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  a { color: #185FA5; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .actions { margin-top: 1.5rem; }
+  .btn { display: inline-block; padding: 8px 14px; border-radius: 6px; background: #185FA5; color: white; font-size: 14px; }
+  .btn:hover { background: #0C447C; text-decoration: none; }
+</style>
+</head>
+<body>
+<h1>🧪 Vendor Qualification & QC</h1>
+<p><a href="/admin">← Back to Admin</a></p>
+
+<div class="actions">
+  <a class="btn" href="/admin/qa/vendors/new">+ Add Vendor</a>
+  <a class="btn" href="/admin/qa/vendors" style="background:#666;margin-left:8px;">All Vendors</a>
+</div>
+
+<div style="margin-top:1rem;padding:12px;background:#f8f8f8;border-radius:8px;">
+  <strong>📱 Find by WhatsApp:</strong>
+  <form action="/admin/qa/vendors/by_phone" method="get" style="display:inline;margin-left:8px;">
+    <input name="n" placeholder="+86 138 1234 5678 (any format)" style="padding:6px 10px;border-radius:6px;border:0.5px solid rgba(0,0,0,0.2);width:280px;">
+    <button class="btn" type="submit" style="padding:6px 12px;font-size:13px;">Go</button>
+  </form>
+  <div style="font-size:12px;color:#888;margin-top:4px;">Phone is the primary vendor identifier — any format works (dashes, spaces, + or 00 prefix all OK).</div>
+</div>
+
+<h2>Pipeline status</h2>
+<div class="grid">
+  {% for s in statuses %}
+  <a class="card" href="/admin/qa/vendors?status={{ s }}">
+    <div class="status">{{ s.replace('_', ' ') }}</div>
+    <div class="count">{{ counts[s] }}</div>
+  </a>
+  {% endfor %}
+</div>
+
+<h2>Phase 1A status</h2>
+<p style="font-size:13px;color:#666;">Vendor CRUD + status history active. Questionnaire upload, AI scoring, sample tracking, and Purdue work orders ship in subsequent phases. See <code>C:\AI\projects\planning\peptide_vendor_qa\PROJECT_BRIEF.md</code> for the full plan.</p>
+</body>
+</html>

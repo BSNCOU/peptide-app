@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>New Vendor — QA</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  label { display: block; font-size: 13px; color: #555; margin: 12px 0 4px; }
+  input, select, textarea { width: 100%; padding: 8px 10px; border-radius: 6px; border: 0.5px solid rgba(0,0,0,0.2); font-size: 14px; font-family: inherit; }
+  textarea { min-height: 80px; }
+  .btn { display: inline-block; padding: 9px 16px; border-radius: 6px; background: #185FA5; color: white; font-size: 14px; border: none; cursor: pointer; }
+  .btn:hover { background: #0C447C; }
+  a { color: #185FA5; }
+  .actions { margin-top: 1.5rem; }
+  .err { background: #fee; color: #a33; padding: 10px; border-radius: 6px; margin: 10px 0; display: none; }
+</style>
+</head>
+<body>
+<h1>+ New Vendor</h1>
+<p><a href="/admin/qa/vendors">← All vendors</a></p>
+
+<div id="err" class="err"></div>
+
+<form id="form">
+  <label>Company name *</label>
+  <input name="company_name" required>
+
+  <label>Contact name</label>
+  <input name="contact_name">
+
+  <label>WhatsApp number</label>
+  <input name="whatsapp_number" placeholder="+86 123 4567 8901">
+
+  <label>Email</label>
+  <input name="email" type="email">
+
+  <label>Website</label>
+  <input name="website">
+
+  <label>Country</label>
+  <input name="country">
+
+  <label>Manufacturer or trading company?</label>
+  <select name="manufacturer_or_trading_company">
+    <option value="">— select —</option>
+    <option value="manufacturer">Manufacturer</option>
+    <option value="trading_company">Trading company</option>
+    <option value="unknown">Unknown</option>
+  </select>
+
+  <label>Source of lead</label>
+  <input name="source_of_lead" placeholder="Alibaba, trade show, referral, etc.">
+
+  <label>Notes</label>
+  <textarea name="notes"></textarea>
+
+  <div class="actions">
+    <button class="btn" type="submit">Create vendor (status = PROSPECT)</button>
+  </div>
+</form>
+
+<script>
+document.getElementById('form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const fd = new FormData(this);
+  const data = {};
+  fd.forEach((v, k) => data[k] = v);
+  const errEl = document.getElementById('err');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch('/admin/qa/vendors/new', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) {
+      errEl.textContent = j.error || 'Save failed';
+      errEl.style.display = 'block';
+      return;
+    }
+    window.location.href = j.redirect || '/admin/qa/vendors';
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual envs (local-only — never deploy to git)
+venv/
+.venv/
+env/
+
+# Local SQLite DB
+*.db
+*.sqlite3
+research_orders.db
+
+# Environment / secrets
+.env
+.env.local
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# OneDrive sync conflict junk
+*-DESKTOP-*.py
+*-DESKTOP-*.html
