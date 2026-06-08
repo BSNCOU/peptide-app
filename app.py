@@ -7625,56 +7625,119 @@ def admin_inventory_velocity_report():
     """Rank products by sales velocity over 30/60/90 day windows.
 
     Output supports the "what to hold vs. firesale" decision:
-      - velocity_30d/60d/90d = units sold in the window (rolls in pack_size)
+      - velocity_30d/60d/90d = units sold in the window
       - days_of_stock = current units on hand / avg daily velocity (90d)
+      - days_in_inventory = how long the product has existed (products.created_at)
       - tier = HOT / STEADY / SLOW / DEAD based on velocity buckets
-      - firesale_candidate = true when stock high + velocity zero/very low
+      - firesale_candidate = stock has been sitting unsold long enough to warrant
+        a deep-discount push (criteria below)
 
-    Pure read, safe to expose. Lives alongside the existing reorder report
-    (/api/admin/reports/inventory) but answers a different question."""
+    Firesale criteria (ALL must be true):
+      - days_in_inventory >= 60   (don't fire-sale brand-new products that
+                                   just haven't had a chance to sell)
+      - velocity_60d == 0          (no sales in the last 2 months)
+      - velocity_90d == 0          (also nothing in month 3 — rules out
+                                   products that just had a rare sale)
+      - inventory_value >= $50     (meaningful capital tied up)
+
+    Query parameters can override defaults:
+      ?stale_days=60  (time-in-inventory threshold)
+      ?min_value=50   (inventory dollar floor)
+    """
+    try:
+        stale_days = max(0, int(request.args.get('stale_days', 60)))
+    except Exception:
+        stale_days = 60
+    try:
+        min_inventory_value = max(0, float(request.args.get('min_value', 50)))
+    except Exception:
+        min_inventory_value = 50.0
+
+    pg = is_postgres()
     conn = get_db()
     try:
         products = conn.execute('''
-            SELECT id, sku, name, stock, cost, price_single, supplier_pack_size, active
+            SELECT id, sku, name, stock, cost, price_single, supplier_pack_size, active, created_at
             FROM products
             WHERE active = 1
             ORDER BY sku
         ''').fetchall()
 
-        # Sum units sold per product, per window. Uses order_items.quantity.
-        # We treat order_items.quantity as units sold (matches how it's
-        # used elsewhere in the codebase). Filter out cancelled orders.
+        # Sum units sold per product within a rolling window. Branch on DB
+        # flavor explicitly — using try/except left the Postgres connection
+        # in an aborted-transaction state when the SQLite syntax failed,
+        # which made EVERY subsequent query return empty and every product
+        # look DEAD. Fixed 2026-06-08.
         def units_sold_map(days):
-            try:
-                rows = conn.execute(f'''
+            if pg:
+                sql = f'''
+                    SELECT oi.product_id, SUM(oi.quantity) as units
+                    FROM order_items oi
+                    JOIN orders o ON oi.order_id = o.id
+                    WHERE o.created_at >= NOW() - INTERVAL '{int(days)} days'
+                      AND (o.status IS NULL OR o.status NOT IN ('cancelled', 'refunded', 'draft'))
+                    GROUP BY oi.product_id
+                '''
+            else:
+                sql = f'''
                     SELECT oi.product_id, SUM(oi.quantity) as units
                     FROM order_items oi
                     JOIN orders o ON oi.order_id = o.id
                     WHERE o.created_at >= datetime('now', '-{int(days)} days')
                       AND (o.status IS NULL OR o.status NOT IN ('cancelled', 'refunded', 'draft'))
                     GROUP BY oi.product_id
-                ''').fetchall()
-                return {dict(r)['product_id']: dict(r)['units'] or 0 for r in rows}
-            except Exception:
-                # Postgres uses different date function; fall back gracefully
+                '''
+            try:
+                rows = conn.execute(sql).fetchall()
+                return {dict(r)['product_id']: (dict(r)['units'] or 0) for r in rows}
+            except Exception as e:
+                print(f"Note: velocity {days}d query failed: {e}")
+                # Roll back the aborted transaction so subsequent queries
+                # in this connection still work.
                 try:
-                    rows = conn.execute(f'''
-                        SELECT oi.product_id, SUM(oi.quantity) as units
-                        FROM order_items oi
-                        JOIN orders o ON oi.order_id = o.id
-                        WHERE o.created_at >= NOW() - INTERVAL '{int(days)} days'
-                          AND (o.status IS NULL OR o.status NOT IN ('cancelled', 'refunded', 'draft'))
-                        GROUP BY oi.product_id
-                    ''').fetchall()
-                    return {dict(r)['product_id']: dict(r)['units'] or 0 for r in rows}
+                    conn.rollback()
                 except Exception:
-                    return {}
+                    pass
+                return {}
 
         sold_30 = units_sold_map(30)
         sold_60 = units_sold_map(60)
         sold_90 = units_sold_map(90)
     finally:
         conn.close()
+
+    # Compute days-in-inventory using Python so we don't have to wrestle
+    # with date math across SQLite/Postgres for one column. created_at can
+    # be a string or datetime depending on driver — handle both.
+    from datetime import datetime as _dt
+    now_naive = _dt.utcnow()
+
+    def days_in_inv(created_at_raw):
+        if not created_at_raw:
+            return None
+        if isinstance(created_at_raw, _dt):
+            ts = created_at_raw
+            # Strip tz if present so subtraction works against naive utcnow
+            if ts.tzinfo is not None:
+                ts = ts.replace(tzinfo=None)
+            return max(0, (now_naive - ts).days)
+        s = str(created_at_raw).strip()
+        # Try ISO formats most likely to appear from each driver
+        for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S',
+                    '%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d'):
+            try:
+                ts = _dt.strptime(s[:len(fmt) + 6], fmt)
+                return max(0, (now_naive - ts).days)
+            except ValueError:
+                continue
+        # Last resort: Python's fromisoformat is liberal in 3.11+
+        try:
+            ts = _dt.fromisoformat(s.replace('Z', ''))
+            if ts.tzinfo is not None:
+                ts = ts.replace(tzinfo=None)
+            return max(0, (now_naive - ts).days)
+        except Exception:
+            return None
 
     rows = []
     for p in products:
@@ -7688,9 +7751,9 @@ def admin_inventory_velocity_report():
 
         avg_daily = (v90 / 90.0) if v90 else 0
         days_of_stock = (stock / avg_daily) if avg_daily > 0 else None
+        d_inv = days_in_inv(pd.get('created_at'))
 
-        # Bucket tiers — tuned for a low-volume vertical (peptides). Adjust
-        # later via app_settings if needed.
+        # Velocity-based tier
         if v30 >= 20:
             tier = "HOT"
         elif v30 >= 5:
@@ -7700,9 +7763,16 @@ def admin_inventory_velocity_report():
         else:
             tier = "DEAD"
 
-        # Firesale candidate: meaningful inventory dollars + no movement.
         inventory_value = stock * cost
-        firesale = (v90 == 0) and (inventory_value >= 50)
+
+        # Firesale: meaningful inventory $ + no movement in 60 AND 90d +
+        # the product has existed long enough to actually have had a chance.
+        firesale = (
+            v60 == 0
+            and v90 == 0
+            and inventory_value >= min_inventory_value
+            and (d_inv is None or d_inv >= stale_days)
+        )
 
         rows.append({
             'product_id': pid,
@@ -7717,11 +7787,11 @@ def admin_inventory_velocity_report():
             'velocity_90d': v90,
             'avg_daily_90d': round(avg_daily, 3),
             'days_of_stock': round(days_of_stock, 1) if days_of_stock is not None else None,
+            'days_in_inventory': d_inv,
             'tier': tier,
             'firesale_candidate': firesale,
         })
 
-    # Sort by 30d velocity descending so the hot stuff is at the top.
     rows.sort(key=lambda r: (-(r['velocity_30d']), -(r['velocity_90d']), r['sku'] or ''))
 
     summary = {
@@ -7735,6 +7805,9 @@ def admin_inventory_velocity_report():
         'dead_inventory_value': round(
             sum(r['inventory_value'] for r in rows if r['tier'] == 'DEAD'), 2
         ),
+        'stale_days_threshold': stale_days,
+        'min_inventory_value': min_inventory_value,
+        'db_flavor': 'postgres' if pg else 'sqlite',
     }
 
     return jsonify({'summary': summary, 'rows': rows})

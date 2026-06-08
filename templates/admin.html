@@ -5357,8 +5357,18 @@ The Peptide Wizard Team"></textarea>
 
                     <div class="card" style="margin-bottom: 0; grid-column: 1 / -1;">
                         <h3 style="margin-bottom: 15px;">🔥 Inventory Velocity & Firesale</h3>
-                        <p style="color: #718096; margin-bottom: 15px;">Rank products by 30/60/90-day sales velocity. Identifies what to hold vs. what to firesale (high inventory dollars + zero recent sales).</p>
-                        <button class="btn" onclick="loadVelocityReport()">Run Velocity Report</button>
+                        <p style="color: #718096; margin-bottom: 8px;">Ranks products by 30/60/90-day sales velocity. Flags firesale candidates only when ALL of: zero sales in 60d, zero in 90d, in inventory ≥ N days, and inventory $ ≥ floor.</p>
+                        <div style="display:flex;gap:14px;align-items:end;margin-bottom:15px;flex-wrap:wrap;">
+                            <div>
+                                <label style="font-size:12px;color:#4a5568;font-weight:600;display:block;" title="Don't flag products that have been in inventory less than this many days">Stale threshold (days)</label>
+                                <input type="number" id="velStaleDays" value="60" min="0" max="730" style="width:120px;padding:7px;border:1px solid #ccc;border-radius:6px;">
+                            </div>
+                            <div>
+                                <label style="font-size:12px;color:#4a5568;font-weight:600;display:block;" title="Don't flag products with less than this much capital tied up">Min inventory $</label>
+                                <input type="number" id="velMinValue" value="50" min="0" step="10" style="width:120px;padding:7px;border:1px solid #ccc;border-radius:6px;">
+                            </div>
+                            <button class="btn" onclick="loadVelocityReport()">Run Velocity Report</button>
+                        </div>
                         <div id="velocityReportContent" style="margin-top: 20px;"></div>
                     </div>
 
@@ -5923,8 +5933,10 @@ The Peptide Wizard Team"></textarea>
         async function loadVelocityReport() {
             const container = document.getElementById('velocityReportContent');
             container.innerHTML = '<p style="color: #718096;">Crunching 30/60/90 day windows…</p>';
+            const staleDays = parseInt(document.getElementById('velStaleDays')?.value) || 60;
+            const minValue = parseFloat(document.getElementById('velMinValue')?.value) || 50;
             try {
-                const r = await api('/api/admin/reports/inventory-velocity');
+                const r = await api(`/api/admin/reports/inventory-velocity?stale_days=${staleDays}&min_value=${minValue}`);
                 const s = r.summary || {};
                 const tierColor = t => ({
                     HOT:    '#38a169',
@@ -5968,6 +5980,7 @@ The Peptide Wizard Team"></textarea>
                         <td style="text-align:right;">${row.velocity_60d}</td>
                         <td style="text-align:right;">${row.velocity_90d}</td>
                         <td style="text-align:right;">${row.days_of_stock !== null ? row.days_of_stock : '∞'}</td>
+                        <td style="text-align:right;">${row.days_in_inventory !== null ? row.days_in_inventory + 'd' : '—'}</td>
                         <td style="text-align:right;">$${(row.inventory_value || 0).toFixed(2)}</td>
                         <td><span style="background:${tierColor(row.tier)};color:white;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">${row.tier}</span></td>
                         <td>${row.firesale_candidate ? '🔥' : ''}</td>
@@ -6025,9 +6038,10 @@ The Peptide Wizard Team"></textarea>
                                     <th style="text-align:right;" title="Units sold last 60 days">60d</th>
                                     <th style="text-align:right;" title="Units sold last 90 days">90d</th>
                                     <th style="text-align:right;" title="Stock ÷ avg daily 90d velocity">DoS</th>
+                                    <th style="text-align:right;" title="Days since the product was created (proxy for time in inventory)">In Inv</th>
                                     <th style="text-align:right;">Inv $</th>
                                     <th>Tier</th>
-                                    <th title="High inventory dollars + zero 90d sales">🔥</th>
+                                    <th title="Zero 60d AND 90d sales + in inventory ≥ stale threshold + inv $ above floor">🔥</th>
                                 </tr>
                             </thead>
                             <tbody>${rowsHtml}</tbody>
