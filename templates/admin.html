@@ -4706,16 +4706,45 @@ The Peptide Wizard Team"></textarea>
             `;
         }
 
-        function showCreatePOModal() {
+        async function showCreatePOModal() {
+            // Pull QA-tracked vendors for the dropdown. Soft-fail to a
+            // text input if the endpoint is missing or returns nothing.
+            let vendors = [];
+            try {
+                vendors = await api('/api/admin/po/vendors');
+            } catch (e) {
+                vendors = [];
+            }
+            const hasVendors = Array.isArray(vendors) && vendors.length > 0;
+            const vendorOptions = hasVendors
+                ? vendors.map(v => `<option value="${v.id}">${escapeHtml(v.company_name)}${v.status ? ' — ' + escapeHtml(v.status) : ''}</option>`).join('')
+                : '';
+
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
-                    <div class="modal-content" style="max-width: 400px;">
+                    <div class="modal-content" style="max-width: 460px;">
                         <h3>📦 Create New Purchase Order</h3>
                         <form onsubmit="createPO(event)">
-                            <div class="form-group">
-                                <label>Supplier Name</label>
-                                <input type="text" id="poSupplier" value="Primary Supplier" placeholder="Supplier name">
-                            </div>
+                            ${hasVendors ? `
+                                <div class="form-group">
+                                    <label>Vendor</label>
+                                    <select id="poVendor" style="width: 100%; padding: 8px;">
+                                        <option value="">— pick a vendor —</option>
+                                        ${vendorOptions}
+                                    </select>
+                                    <div style="color:#718096;font-size:12px;margin-top:4px;">From QA-tracked vendors. <a href="/admin/qa/vendors/new" target="_blank">Add a new vendor</a> if missing.</div>
+                                </div>
+                                <div class="form-group">
+                                    <label>Or supplier name (used if no vendor picked)</label>
+                                    <input type="text" id="poSupplier" value="" placeholder="Free-text supplier name">
+                                </div>
+                            ` : `
+                                <div class="form-group">
+                                    <label>Supplier Name</label>
+                                    <input type="text" id="poSupplier" value="Primary Supplier" placeholder="Supplier name">
+                                </div>
+                                <div style="color:#a0aec0;font-size:12px;margin:-8px 0 12px;">No QA vendors yet. <a href="/admin/qa/vendors/new" target="_blank">Add one</a> to enable vendor selection + WhatsApp deep links.</div>
+                            `}
                             <div class="form-group">
                                 <label>Notes</label>
                                 <textarea id="poNotes" rows="2" placeholder="Optional notes"></textarea>
@@ -4733,17 +4762,23 @@ The Peptide Wizard Team"></textarea>
         async function createPO(e) {
             e.preventDefault();
             try {
+                const vendorEl = document.getElementById('poVendor');
+                const vendorId = vendorEl && vendorEl.value ? parseInt(vendorEl.value) : null;
+                const supplierName = (document.getElementById('poSupplier')?.value || '').trim();
+
+                const payload = {
+                    notes: document.getElementById('poNotes').value
+                };
+                if (vendorId) payload.vendor_id = vendorId;
+                if (supplierName) payload.supplier_name = supplierName;
+
                 const result = await api('/api/admin/po', {
                     method: 'POST',
-                    body: JSON.stringify({
-                        supplier_name: document.getElementById('poSupplier').value,
-                        notes: document.getElementById('poNotes').value
-                    })
+                    body: JSON.stringify(payload)
                 });
                 showAlert(`PO ${result.po_number} created!`, 'success');
                 closeModal();
                 loadPurchaseOrders();
-                // Open the new PO for editing
                 showPODetail(result.po_id);
             } catch (err) {
                 showAlert(err.message);
@@ -5042,18 +5077,30 @@ The Peptide Wizard Team"></textarea>
         async function showPOWhatsApp(poId) {
             try {
                 const result = await api(`/api/admin/po/${poId}/whatsapp`);
-                
+
+                // When the linked vendor has a normalized phone number, the
+                // backend returns a wa.me deep link. Otherwise we still get
+                // a generic share URL so the user can pick a chat.
+                const hasDirectVendor = !!result.vendor_phone;
+                const sendButton = hasDirectVendor
+                    ? `<a class="btn btn-success" href="${result.wa_me_url}" target="_blank" rel="noopener" style="text-decoration:none;">📱 Send to ${escapeHtml(result.vendor_label || 'Vendor')}</a>`
+                    : `<a class="btn" href="${result.wa_me_url}" target="_blank" rel="noopener" style="background:#25d366;color:white;text-decoration:none;">📱 Open in WhatsApp</a>`;
+
+                const phoneLine = hasDirectVendor
+                    ? `<div style="color:#38a169;font-size:13px;margin-bottom:10px;">✓ Will open chat with <strong>${escapeHtml(result.vendor_label || '')}</strong> (+${escapeHtml(result.vendor_phone)})</div>`
+                    : `<div style="color:#a0aec0;font-size:13px;margin-bottom:10px;">No WhatsApp number on file for this vendor. Pick a chat after WhatsApp opens, or add the number under <a href="/admin/qa/vendors" target="_blank">QA → Vendors</a>.</div>`;
+
                 document.getElementById('modalContainer').innerHTML = `
                     <div class="modal" onclick="if(event.target===this)closeModal()">
-                        <div class="modal-content" style="max-width: 500px;">
+                        <div class="modal-content" style="max-width: 540px;">
                             <h3>📱 WhatsApp Order Text</h3>
-                            <p style="color: #718096; margin-bottom: 15px;">Copy this text and paste into WhatsApp:</p>
-                            
-                            <textarea id="whatsappText" style="width: 100%; height: 300px; font-family: monospace; padding: 15px; border: 1px solid #e2e8f0; border-radius: 8px; resize: vertical;">${escapeHtml(result.text)}</textarea>
-                            
-                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                            ${phoneLine}
+                            <textarea id="whatsappText" style="width: 100%; height: 280px; font-family: monospace; padding: 15px; border: 1px solid #e2e8f0; border-radius: 8px; resize: vertical;">${escapeHtml(result.text)}</textarea>
+
+                            <div style="display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;">
                                 <button class="btn btn-secondary" onclick="showPODetail(${poId})">Back to PO</button>
-                                <button class="btn btn-success" onclick="copyWhatsAppText()">📋 Copy to Clipboard</button>
+                                <button class="btn" onclick="copyWhatsAppText()" style="background:#805ad5;color:white;">📋 Copy Text</button>
+                                ${sendButton}
                             </div>
                         </div>
                     </div>
@@ -5107,12 +5154,20 @@ The Peptide Wizard Team"></textarea>
                             <h3>📥 Receive Items - ${escapeHtml(po.po_number)}</h3>
                             <p style="color: #718096; margin-bottom: 15px;">Enter number of <strong>packs</strong> received (units will be calculated automatically):</p>
                             
-                            <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px;margin-bottom:16px;">
-                                <label style="font-weight:600;display:block;margin-bottom:6px;">🚚 Freight / Shipping Cost for this Shipment ($)</label>
-                                <input type="number" id="freightCostInput" min="0" step="0.01" value="0"
-                                       placeholder="0.00"
-                                       style="width:160px;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:15px;">
-                                <span style="color:#718096;font-size:13px;margin-left:10px;">Will be split across items by cost proportion</span>
+                            <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px;margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+                                <div>
+                                    <label style="font-weight:600;display:block;margin-bottom:6px;">🚚 Freight / Shipping ($)</label>
+                                    <input type="number" id="freightCostInput" min="0" step="0.01" value="0"
+                                           placeholder="0.00"
+                                           style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:15px;">
+                                </div>
+                                <div>
+                                    <label style="font-weight:600;display:block;margin-bottom:6px;">🧪 Testing / Lab Cost ($)</label>
+                                    <input type="number" id="testingCostInput" min="0" step="0.01" value="0"
+                                           placeholder="0.00"
+                                           style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:15px;">
+                                </div>
+                                <div style="grid-column:1/-1;color:#718096;font-size:13px;">Both costs split across items by cost proportion and roll into landed cost.</div>
                             </div>
 
                             <div style="max-height: 400px; overflow-y: auto;">
@@ -5125,6 +5180,7 @@ The Peptide Wizard Team"></textarea>
                                             <th>Packs Ordered</th>
                                             <th>Packs Rcvd</th>
                                             <th>Receiving (packs)</th>
+                                            <th>Lot # (optional)</th>
                                             <th>Units to Add</th>
                                         </tr>
                                     </thead>
@@ -5141,10 +5197,16 @@ The Peptide Wizard Team"></textarea>
                                                 <td>${i.quantity_received}</td>
                                                 <td>
                                                     <input type="number" class="receive-qty" data-id="${i.id}" data-pack-size="${packSize}"
-                                                           value="${remaining}" 
+                                                           value="${remaining}"
                                                            min="0" max="${remaining}"
                                                            style="width: 70px; padding: 8px;"
                                                            onchange="updateUnitsPreview(this)">
+                                                </td>
+                                                <td>
+                                                    <input type="text" class="receive-lot" data-id="${i.id}"
+                                                           value="${escapeHtml(i.lot_number || '')}"
+                                                           placeholder="auto: ${escapeHtml(po.po_number)}-L${i.id}"
+                                                           style="width: 160px; padding: 8px; font-family: monospace;">
                                                 </td>
                                                 <td class="units-preview" style="font-weight: 600; color: #38a169;">+${remaining * packSize} units</td>
                                             </tr>
@@ -5176,28 +5238,44 @@ The Peptide Wizard Team"></textarea>
         }
 
         async function receiveItems(poId) {
+            // Collect per-line lot numbers so the backend can stamp them
+            const lotMap = {};
+            document.querySelectorAll('.receive-lot').forEach(input => {
+                const id = parseInt(input.dataset.id);
+                const lot = (input.value || '').trim();
+                if (lot) lotMap[id] = lot;
+            });
+
             const items = [];
             document.querySelectorAll('.receive-qty').forEach(input => {
                 const qty = parseInt(input.value) || 0;
+                const id = parseInt(input.dataset.id);
                 if (qty > 0) {
-                    items.push({ id: parseInt(input.dataset.id), quantity_received: qty });
+                    items.push({ id, quantity_received: qty, lot_number: lotMap[id] || null });
                 }
             });
-            
+
             if (items.length === 0) {
                 showAlert('No items to receive');
                 return;
             }
 
             const freightCost = parseFloat(document.getElementById('freightCostInput')?.value) || 0;
-            
+            const testingCost = parseFloat(document.getElementById('testingCostInput')?.value) || 0;
+
             try {
                 const result = await api(`/api/admin/po/${poId}/receive`, {
                     method: 'POST',
-                    body: JSON.stringify({ items, freight_cost: freightCost })
+                    body: JSON.stringify({ items, freight_cost: freightCost, testing_cost: testingCost })
                 });
-                let msg = 'Items received and stock updated!';
-                if (freightCost > 0) msg += ` $${freightCost.toFixed(2)} freight allocated across ${result.lines?.length || items.length} line(s).`;
+                let msg = 'Items received, lots stamped, stock updated!';
+                const overhead = freightCost + testingCost;
+                if (overhead > 0) {
+                    const parts = [];
+                    if (freightCost > 0) parts.push(`$${freightCost.toFixed(2)} freight`);
+                    if (testingCost > 0) parts.push(`$${testingCost.toFixed(2)} testing`);
+                    msg += ` ${parts.join(' + ')} allocated across ${result.lines?.length || items.length} line(s).`;
+                }
                 showAlert(msg, 'success');
                 showPODetail(poId);
             } catch (err) {
@@ -5276,7 +5354,14 @@ The Peptide Wizard Team"></textarea>
                         <button class="btn" onclick="loadInventoryReport()">Check Inventory</button>
                         <div id="inventoryReportContent" style="margin-top: 20px;"></div>
                     </div>
-                    
+
+                    <div class="card" style="margin-bottom: 0; grid-column: 1 / -1;">
+                        <h3 style="margin-bottom: 15px;">🔥 Inventory Velocity & Firesale</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Rank products by 30/60/90-day sales velocity. Identifies what to hold vs. what to firesale (high inventory dollars + zero recent sales).</p>
+                        <button class="btn" onclick="loadVelocityReport()">Run Velocity Report</button>
+                        <div id="velocityReportContent" style="margin-top: 20px;"></div>
+                    </div>
+
                     <div class="card" style="margin-bottom: 0;">
                         <h3 style="margin-bottom: 15px;">📊 Discount Code Report</h3>
                         <p style="color: #718096; margin-bottom: 15px;">Sales breakdown by discount code</p>
@@ -5833,6 +5918,420 @@ The Peptide Wizard Team"></textarea>
             `);
             printWindow.document.close();
             printWindow.print();
+        }
+
+        async function loadVelocityReport() {
+            const container = document.getElementById('velocityReportContent');
+            container.innerHTML = '<p style="color: #718096;">Crunching 30/60/90 day windows…</p>';
+            try {
+                const r = await api('/api/admin/reports/inventory-velocity');
+                const s = r.summary || {};
+                const tierColor = t => ({
+                    HOT:    '#38a169',
+                    STEADY: '#3182ce',
+                    SLOW:   '#d69e2e',
+                    DEAD:   '#e53e3e',
+                }[t] || '#718096');
+
+                const summaryHtml = `
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;">
+                        <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:12px;">
+                            <div style="font-size:11px;color:#718096;">HOT (≥20/30d)</div>
+                            <div style="font-size:22px;font-weight:700;color:#38a169;">${s.hot || 0}</div>
+                        </div>
+                        <div style="background:#ebf8ff;border:1px solid #90cdf4;border-radius:8px;padding:12px;">
+                            <div style="font-size:11px;color:#718096;">STEADY (5–19/30d)</div>
+                            <div style="font-size:22px;font-weight:700;color:#3182ce;">${s.steady || 0}</div>
+                        </div>
+                        <div style="background:#fffaf0;border:1px solid #fbd38d;border-radius:8px;padding:12px;">
+                            <div style="font-size:11px;color:#718096;">SLOW</div>
+                            <div style="font-size:22px;font-weight:700;color:#d69e2e;">${s.slow || 0}</div>
+                        </div>
+                        <div style="background:#fff5f5;border:1px solid #fc8181;border-radius:8px;padding:12px;">
+                            <div style="font-size:11px;color:#718096;">DEAD</div>
+                            <div style="font-size:22px;font-weight:700;color:#e53e3e;">${s.dead || 0}</div>
+                        </div>
+                        <div style="background:#faf5ff;border:1px solid #d6bcfa;border-radius:8px;padding:12px;">
+                            <div style="font-size:11px;color:#718096;">Firesale candidates</div>
+                            <div style="font-size:22px;font-weight:700;color:#805ad5;">${s.firesale_candidates || 0}</div>
+                            <div style="font-size:11px;color:#a0aec0;margin-top:2px;">$${(s.dead_inventory_value || 0).toLocaleString()} dead $</div>
+                        </div>
+                    </div>
+                `;
+
+                const rowsHtml = (r.rows || []).map(row => `
+                    <tr>
+                        <td><strong>${escapeHtml(row.sku || '')}</strong></td>
+                        <td>${escapeHtml(row.name || '')}</td>
+                        <td style="text-align:right;">${row.stock}</td>
+                        <td style="text-align:right;">${row.velocity_30d}</td>
+                        <td style="text-align:right;">${row.velocity_60d}</td>
+                        <td style="text-align:right;">${row.velocity_90d}</td>
+                        <td style="text-align:right;">${row.days_of_stock !== null ? row.days_of_stock : '∞'}</td>
+                        <td style="text-align:right;">$${(row.inventory_value || 0).toFixed(2)}</td>
+                        <td><span style="background:${tierColor(row.tier)};color:white;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">${row.tier}</span></td>
+                        <td>${row.firesale_candidate ? '🔥' : ''}</td>
+                    </tr>
+                `).join('');
+
+                // Stash the rows on the window so the campaign modal can read
+                // the firesale candidates without a second API round trip.
+                window._lastVelocityRows = r.rows || [];
+
+                const firesaleCount = (r.rows || []).filter(row => row.firesale_candidate).length;
+                const campaignBtn = firesaleCount > 0
+                    ? `<button class="btn btn-success" onclick="showFiresaleCampaignModal()" style="background:#ff3366;border:0;">🎁 Generate Firesale Campaign (${firesaleCount} items)</button>`
+                    : `<div style="color:#a0aec0;font-style:italic;">No firesale candidates flagged.</div>`;
+
+                // Preview link for the most-recently-generated flyer (per-browser).
+                // Stored in localStorage when generateFiresaleCampaign() succeeds.
+                let lastFlyerLink = '';
+                try {
+                    const lastRaw = localStorage.getItem('pw_last_flyer');
+                    if (lastRaw) {
+                        const last = JSON.parse(lastRaw);
+                        const created = new Date(last.created_at);
+                        const ageHours = (Date.now() - created.getTime()) / 36e5;
+                        const ageLabel = ageHours < 1
+                            ? `${Math.round(ageHours * 60)}m ago`
+                            : ageHours < 24
+                                ? `${Math.round(ageHours)}h ago`
+                                : `${Math.round(ageHours / 24)}d ago`;
+                        const codeLabel = last.code ? ` · code ${escapeHtml(last.code)}` : '';
+                        const endLabel = last.sale_end ? ` · ends ${escapeHtml(last.sale_end.slice(0, 10))}` : '';
+                        lastFlyerLink = `
+                            <div style="margin-left: 14px; display: inline-flex; align-items: center; gap: 10px;">
+                                <a href="${last.url}" target="_blank" style="color:#805ad5;font-weight:600;text-decoration:none;">📄 Preview Last Flyer</a>
+                                <span style="color:#a0aec0;font-size:12px;">${last.count || '?'} items · ${ageLabel}${codeLabel}${endLabel}</span>
+                                <button class="btn btn-small" style="background:transparent;color:#a0aec0;padding:2px 8px;border:1px solid #cbd5e0;" onclick="localStorage.removeItem('pw_last_flyer');loadVelocityReport();" title="Clear last flyer link">×</button>
+                            </div>
+                        `;
+                    }
+                } catch (e) {}
+
+                container.innerHTML = `
+                    ${summaryHtml}
+                    <div style="margin-bottom: 14px; display: flex; align-items: center; flex-wrap: wrap;">
+                        ${campaignBtn}
+                        ${lastFlyerLink}
+                    </div>
+                    <div style="overflow-x:auto; max-width:100%;">
+                        <table style="font-size: 13px; width: 100%; min-width: 760px;">
+                            <thead>
+                                <tr>
+                                    <th>SKU</th><th>Product</th>
+                                    <th style="text-align:right;">Stock</th>
+                                    <th style="text-align:right;" title="Units sold last 30 days">30d</th>
+                                    <th style="text-align:right;" title="Units sold last 60 days">60d</th>
+                                    <th style="text-align:right;" title="Units sold last 90 days">90d</th>
+                                    <th style="text-align:right;" title="Stock ÷ avg daily 90d velocity">DoS</th>
+                                    <th style="text-align:right;">Inv $</th>
+                                    <th>Tier</th>
+                                    <th title="High inventory dollars + zero 90d sales">🔥</th>
+                                </tr>
+                            </thead>
+                            <tbody>${rowsHtml}</tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (err) {
+                container.innerHTML = `<p style="color:#e53e3e;">Error: ${escapeHtml(err.message || String(err))}</p>`;
+            }
+        }
+
+        function showFiresaleCampaignModal() {
+            const rows = (window._lastVelocityRows || []).filter(r => r.firesale_candidate);
+            if (rows.length === 0) {
+                showAlert('No firesale candidates — run the velocity report first.');
+                return;
+            }
+            // Sort by inventory $ desc so the heaviest carry items show first
+            rows.sort((a, b) => (b.inventory_value || 0) - (a.inventory_value || 0));
+
+            const itemRows = rows.map(r => `
+                <tr data-id="${r.product_id}">
+                    <td style="text-align:center;">
+                        <input type="checkbox" class="firesale-pick" data-id="${r.product_id}" checked onclick="updateFiresaleCount();previewFiresaleMargins();">
+                    </td>
+                    <td><strong>${escapeHtml(r.sku || '')}</strong></td>
+                    <td>${escapeHtml(r.name || '')}</td>
+                    <td style="text-align:right;">${r.stock}</td>
+                    <td style="text-align:right;">$${(r.price_single || 0).toFixed(2)}</td>
+                    <td style="text-align:right;">$${(r.inventory_value || 0).toFixed(2)}</td>
+                    <td class="fs-margin" style="text-align:right;color:#a0aec0;">—</td>
+                    <td class="fs-flag" style="text-align:center;"></td>
+                </tr>
+            `).join('');
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 880px;">
+                        <h3>🎁 Generate Firesale Campaign</h3>
+                        <p style="color:#718096;margin-bottom:16px;">
+                            Drops the sale price on selected dead-stock items and (optionally) creates a sitewide
+                            "spend $X get Y% off" code. The margin floor below enforces you never sell below your
+                            chosen profit threshold — items that would breach are flagged in red.
+                        </p>
+
+                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;">
+                            <div>
+                                <label style="font-size:12px;color:#4a5568;font-weight:600;">Discount on items (%)</label>
+                                <input type="number" id="fsDiscount" value="40" min="5" max="90" step="5"
+                                       style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;"
+                                       onchange="previewFiresaleMargins()">
+                            </div>
+                            <div>
+                                <label style="font-size:12px;color:#4a5568;font-weight:600;">Duration (days)</label>
+                                <input type="number" id="fsDuration" value="14" min="1" max="90"
+                                       style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;">
+                            </div>
+                            <div>
+                                <label style="font-size:12px;color:#4a5568;font-weight:600;" title="Don't let any item drop below this gross-margin %">Margin floor (%)</label>
+                                <input type="number" id="fsMarginFloor" value="50" min="0" max="95" step="5"
+                                       style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;"
+                                       onchange="previewFiresaleMargins()">
+                            </div>
+                            <div>
+                                <label style="font-size:12px;color:#4a5568;font-weight:600;">Items selected</label>
+                                <div id="fsCount" style="padding:8px;font-weight:700;font-size:18px;">${rows.length}</div>
+                            </div>
+                        </div>
+
+                        <div style="background:#fffaf0;border:1px solid #fbd38d;border-radius:8px;padding:14px;margin-bottom:18px;">
+                            <div style="font-weight:700;margin-bottom:10px;">Sitewide bonus code (optional)</div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                <div>
+                                    <label style="font-size:12px;color:#4a5568;">Spend threshold ($)</label>
+                                    <input type="number" id="fsBonusThreshold" value="500" min="0" step="50"
+                                           style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;"
+                                           onchange="previewFiresaleMargins()">
+                                </div>
+                                <div>
+                                    <label style="font-size:12px;color:#4a5568;">Bonus discount (%)</label>
+                                    <input type="number" id="fsBonusPct" value="15" min="0" max="50" step="5"
+                                           style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;"
+                                           onchange="previewFiresaleMargins()">
+                                </div>
+                            </div>
+                            <div style="font-size:12px;color:#718096;margin-top:8px;">
+                                Leave threshold or bonus at 0 to skip the sitewide code. Today, checkout takes one code per cart — so the worst-case margin treats the bonus as additive to the item sale price.
+                            </div>
+                        </div>
+
+                        <div id="fsMarginSummary" style="font-size:13px;color:#4a5568;margin-bottom:10px;">Margin preview loading…</div>
+
+                        <div style="max-height:280px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:8px;">
+                            <table style="font-size:13px;">
+                                <thead style="position:sticky;top:0;background:#f7fafc;">
+                                    <tr>
+                                        <th><input type="checkbox" id="fsPickAll" checked onclick="document.querySelectorAll('.firesale-pick').forEach(c=>c.checked=this.checked);updateFiresaleCount();previewFiresaleMargins();"></th>
+                                        <th>SKU</th><th>Product</th>
+                                        <th style="text-align:right;">Stock</th>
+                                        <th style="text-align:right;">Price</th>
+                                        <th style="text-align:right;">Inv $</th>
+                                        <th style="text-align:right;" title="Margin % at worst-case sell price (after sale + bonus stacked)">Worst Margin</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody onclick="updateFiresaleCount()">${itemRows}</tbody>
+                            </table>
+                        </div>
+
+                        <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end;flex-wrap:wrap;">
+                            <button class="btn" style="background:#a0aec0;color:white;" onclick="autoCapFiresaleDiscount()" title="Drop discount % to the deepest value that keeps every selected item above the floor">🛡 Auto-cap to safe discount</button>
+                            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button id="fsLaunchBtn" class="btn btn-success" style="background:#ff3366;" onclick="generateFiresaleCampaign()">🚀 Launch Campaign</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Initial preview run
+            previewFiresaleMargins();
+        }
+
+        // Throttle the preview a touch so rapid input changes don't spam API
+        let _fsPreviewTimer = null;
+        function previewFiresaleMargins() {
+            clearTimeout(_fsPreviewTimer);
+            _fsPreviewTimer = setTimeout(_runFiresalePreview, 150);
+        }
+        async function _runFiresalePreview() {
+            const ids = Array.from(document.querySelectorAll('.firesale-pick:checked'))
+                .map(c => parseInt(c.dataset.id));
+            const sumEl = document.getElementById('fsMarginSummary');
+            const launchBtn = document.getElementById('fsLaunchBtn');
+            // Reset row decorations
+            document.querySelectorAll('.fs-margin').forEach(el => { el.textContent = '—'; el.style.color = '#a0aec0'; });
+            document.querySelectorAll('.fs-flag').forEach(el => { el.innerHTML = ''; });
+            document.querySelectorAll('tr[data-id]').forEach(tr => tr.style.background = '');
+
+            if (ids.length === 0) {
+                if (sumEl) sumEl.innerHTML = '<span style="color:#a0aec0;">No items selected.</span>';
+                if (launchBtn) { launchBtn.disabled = true; launchBtn.style.opacity = '0.5'; }
+                return;
+            }
+            const discount_pct = parseFloat(document.getElementById('fsDiscount').value) || 0;
+            const bonus_threshold = parseFloat(document.getElementById('fsBonusThreshold').value) || 0;
+            const bonus_discount_pct = parseFloat(document.getElementById('fsBonusPct').value) || 0;
+            const margin_floor_pct = parseFloat(document.getElementById('fsMarginFloor').value) || 0;
+
+            try {
+                const r = await api('/api/admin/campaigns/firesale/preview', {
+                    method: 'POST',
+                    body: JSON.stringify({ product_ids: ids, discount_pct, bonus_threshold, bonus_discount_pct, margin_floor_pct })
+                });
+
+                // Decorate each row with its margin + breach flag
+                (r.items || []).forEach(item => {
+                    const tr = document.querySelector(`tr[data-id="${item.id}"]`);
+                    if (!tr) return;
+                    const marginCell = tr.querySelector('.fs-margin');
+                    const flagCell = tr.querySelector('.fs-flag');
+                    if (item.margin_worst_pct === null) {
+                        marginCell.textContent = 'no cost data';
+                        marginCell.style.color = '#a0aec0';
+                    } else {
+                        marginCell.textContent = item.margin_worst_pct.toFixed(1) + '%';
+                        marginCell.style.color = item.breached ? '#e53e3e' : '#38a169';
+                        marginCell.style.fontWeight = '700';
+                    }
+                    if (item.breached) {
+                        tr.style.background = 'rgba(254, 178, 178, 0.25)';
+                        flagCell.innerHTML = `<span style="background:#e53e3e;color:white;padding:1px 6px;border-radius:10px;font-size:11px;" title="Max safe discount: ${item.max_safe_discount_pct}%">⚠ floor</span>`;
+                    }
+                });
+
+                const s = r.summary || {};
+                if (s.breach_count > 0) {
+                    sumEl.innerHTML = `<span style="color:#e53e3e;font-weight:700;">⚠ ${s.breach_count} item(s) would breach your ${s.margin_floor_pct}% floor</span> · worst margin: ${s.min_margin_worst}% · avg: ${s.avg_margin_worst}%`;
+                    if (launchBtn) {
+                        launchBtn.disabled = true;
+                        launchBtn.style.opacity = '0.5';
+                        launchBtn.title = 'Floor breach — deselect breaching items, lower discount %, or hit Auto-cap';
+                    }
+                } else {
+                    sumEl.innerHTML = `<span style="color:#38a169;font-weight:700;">✓ all ${s.item_count} items above ${s.margin_floor_pct}% floor</span> · worst margin: ${s.min_margin_worst}% · avg: ${s.avg_margin_worst}%`;
+                    if (launchBtn) {
+                        launchBtn.disabled = false;
+                        launchBtn.style.opacity = '1';
+                        launchBtn.title = '';
+                    }
+                }
+            } catch (e) {
+                if (sumEl) sumEl.innerHTML = `<span style="color:#e53e3e;">Preview error: ${escapeHtml(e.message || String(e))}</span>`;
+            }
+        }
+
+        async function autoCapFiresaleDiscount() {
+            // Get the per-item max_safe_discount_pct values from a fresh preview
+            // and use the MIN — that's the deepest discount that keeps every
+            // selected item above the floor.
+            const ids = Array.from(document.querySelectorAll('.firesale-pick:checked'))
+                .map(c => parseInt(c.dataset.id));
+            if (ids.length === 0) { showAlert('Pick at least one item.'); return; }
+
+            const discount_pct = parseFloat(document.getElementById('fsDiscount').value) || 0;
+            const bonus_threshold = parseFloat(document.getElementById('fsBonusThreshold').value) || 0;
+            const bonus_discount_pct = parseFloat(document.getElementById('fsBonusPct').value) || 0;
+            const margin_floor_pct = parseFloat(document.getElementById('fsMarginFloor').value) || 0;
+
+            try {
+                const r = await api('/api/admin/campaigns/firesale/preview', {
+                    method: 'POST',
+                    body: JSON.stringify({ product_ids: ids, discount_pct, bonus_threshold, bonus_discount_pct, margin_floor_pct })
+                });
+                const safe = (r.items || [])
+                    .map(it => it.max_safe_discount_pct)
+                    .filter(v => v !== null && v !== undefined);
+                if (safe.length === 0) { showAlert('Nothing to cap — no cost data on selected items.'); return; }
+                const capped = Math.floor(Math.min(...safe));
+                document.getElementById('fsDiscount').value = capped;
+                showAlert(`Discount auto-capped to ${capped}% — every selected item now sits at or above the ${margin_floor_pct}% floor.`, 'success');
+                previewFiresaleMargins();
+            } catch (e) {
+                showAlert(e.message || String(e));
+            }
+        }
+
+        function updateFiresaleCount() {
+            const n = document.querySelectorAll('.firesale-pick:checked').length;
+            const el = document.getElementById('fsCount');
+            if (el) el.textContent = n;
+        }
+
+        async function generateFiresaleCampaign() {
+            const ids = Array.from(document.querySelectorAll('.firesale-pick:checked'))
+                .map(c => parseInt(c.dataset.id));
+            if (ids.length === 0) { showAlert('Pick at least one item to firesale.'); return; }
+
+            const discount_pct = parseFloat(document.getElementById('fsDiscount').value) || 40;
+            const duration_days = parseInt(document.getElementById('fsDuration').value) || 14;
+            const bonus_threshold = parseFloat(document.getElementById('fsBonusThreshold').value) || 0;
+            const bonus_discount_pct = parseFloat(document.getElementById('fsBonusPct').value) || 0;
+            const margin_floor_pct = parseFloat(document.getElementById('fsMarginFloor').value) || 0;
+
+            if (!confirm(`Launch campaign?\n\n• ${ids.length} items will go on ${discount_pct}% sale for ${duration_days} days\n• Margin floor enforced: ${margin_floor_pct}%\n• Storefront prices update LIVE immediately\n${bonus_threshold && bonus_discount_pct ? `• Sitewide code created: spend $${bonus_threshold}+ → ${bonus_discount_pct}% off\n` : ''}`)) return;
+
+            try {
+                const r = await api('/api/admin/campaigns/firesale/generate', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        product_ids: ids,
+                        discount_pct,
+                        duration_days,
+                        bonus_threshold,
+                        bonus_discount_pct,
+                        margin_floor_pct,
+                    })
+                });
+
+                // Remember the flyer URL so the velocity report can offer a
+                // "Preview Last Flyer" link on next render. Per-browser only.
+                try {
+                    localStorage.setItem('pw_last_flyer', JSON.stringify({
+                        url: r.flyer_url,
+                        code: r.bonus_code || '',
+                        sale_end: r.sale_end || '',
+                        count: r.updated_count || ids.length,
+                        created_at: new Date().toISOString(),
+                    }));
+                } catch (e) {}
+
+                const itemsList = (r.items || []).map(it => `
+                    <li>${escapeHtml(it.sku)} — ${escapeHtml(it.name)}: <s>$${it.base_price.toFixed(2)}</s> → <strong style="color:#38a169;">$${it.sale_price.toFixed(2)}</strong> <span style="color:#a0aec0;">(save $${it.savings.toFixed(2)})</span></li>
+                `).join('');
+
+                document.getElementById('modalContainer').innerHTML = `
+                    <div class="modal" onclick="if(event.target===this)closeModal()">
+                        <div class="modal-content" style="max-width: 640px;">
+                            <h3 style="color:#ff3366;">🎉 Campaign Live</h3>
+                            <p style="color:#38a169;font-weight:600;margin-bottom:14px;">${escapeHtml(r.message)}. Ends ${r.sale_end?.slice(0,10) || ''}.</p>
+
+                            ${r.bonus_code ? `
+                                <div style="background:linear-gradient(135deg,#ffcc33,#ff9933);color:#1a1a2e;padding:16px;border-radius:10px;text-align:center;margin-bottom:18px;">
+                                    <div style="font-size:13px;font-weight:700;">SITEWIDE BONUS CODE</div>
+                                    <div style="font-family:monospace;font-size:24px;font-weight:800;letter-spacing:3px;margin:6px 0;">${escapeHtml(r.bonus_code)}</div>
+                                    <div style="font-size:13px;">Spend $${r.bonus_threshold} → extra ${r.bonus_discount_pct}% off</div>
+                                </div>
+                            ` : ''}
+
+                            <div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:18px;max-height:240px;overflow-y:auto;">
+                                <strong>${r.updated_count} items now on sale:</strong>
+                                <ul style="margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.6;">${itemsList}</ul>
+                            </div>
+
+                            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                                <a class="btn btn-success" href="${r.flyer_url}" target="_blank" style="background:#805ad5;color:white;text-decoration:none;">📄 Open Flyer (printable)</a>
+                                ${r.bonus_code ? `<button class="btn" style="background:#3182ce;color:white;" onclick="navigator.clipboard.writeText('${r.bonus_code}').then(()=>showAlert('Code copied!', 'success'))">📋 Copy Code</button>` : ''}
+                                <button class="btn btn-secondary" onclick="closeModal();loadVelocityReport();">Close & Refresh Report</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                showAlert(err.message);
+            }
         }
 
         async function loadInventoryReport() {

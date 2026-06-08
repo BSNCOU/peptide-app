@@ -358,7 +358,31 @@ def init_po_tables(c, using_postgres, auto_id):
         status TEXT DEFAULT 'pending',
         notes TEXT
     )''')
-    
+
+    # ── 2026-06-08 purchasing upgrade migrations ─────────────────────────────
+    # Add: vendor_id FK to qa_vendors, testing_cost field, allocated testing
+    # cost per line, lot_number stamped at receive time, and po_item_id link
+    # on inventory_receipts so the existing lot-control table ties back to
+    # the PO line that produced it.
+    po_migrations = [
+        ("purchase_orders",       "vendor_id INTEGER"),
+        ("purchase_orders",       "testing_cost REAL DEFAULT 0"),
+        ("purchase_order_items",  "testing_allocated REAL DEFAULT 0"),
+        ("purchase_order_items",  "lot_number TEXT"),
+        ("inventory_receipts",    "po_item_id INTEGER"),
+    ]
+    for tbl, col_def in po_migrations:
+        if using_postgres:
+            try:
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col_def}")
+            except Exception as e:
+                print(f"Note: {tbl}.{col_def}: {e}")
+        else:
+            try:
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col_def}")
+            except Exception:
+                pass  # already exists
+
     c.execute(f'''CREATE TABLE IF NOT EXISTS admin_todos (
         id {auto_id},
         task TEXT NOT NULL,
@@ -6656,45 +6680,101 @@ def get_purchase_orders():
 @app.route('/api/admin/po', methods=['POST'])
 @admin_required
 def create_purchase_order():
-    """Create a new purchase order"""
+    """Create a new purchase order.
+
+    Accepts vendor_id (preferred) referencing qa_vendors, or legacy
+    supplier_name as a free-text fallback. When vendor_id is given we
+    also auto-copy the company name into supplier_name so legacy code
+    paths (CSV export, list views) keep showing a name without joining.
+    """
     data = request.json
-    
+
     conn = get_db()
     c = conn.cursor()
-    
+
     po_number = generate_po_number()
-    
-    c.execute('''INSERT INTO purchase_orders (po_number, supplier_name, status, notes) 
-                 VALUES (?, ?, 'draft', ?)''',
-              (po_number, data.get('supplier_name', 'Primary Supplier'), data.get('notes', '')))
+    vendor_id = data.get('vendor_id')
+    supplier_name = data.get('supplier_name', '').strip()
+
+    # If a QA vendor was picked, copy its company_name into supplier_name
+    # so legacy views render without an extra join.
+    if vendor_id:
+        try:
+            row = c.execute('SELECT company_name FROM qa_vendors WHERE id = ?', (vendor_id,)).fetchone()
+            if row:
+                supplier_name = dict(row).get('company_name') or supplier_name
+        except Exception:
+            pass
+
+    if not supplier_name:
+        supplier_name = 'Primary Supplier'
+
+    c.execute('''INSERT INTO purchase_orders (po_number, supplier_name, vendor_id, status, notes)
+                 VALUES (?, ?, ?, 'draft', ?)''',
+              (po_number, supplier_name, vendor_id, data.get('notes', '')))
     po_id = c.lastrowid
-    
+
     conn.commit()
     conn.close()
-    
+
     return jsonify({'message': 'PO created', 'po_id': po_id, 'po_number': po_number}), 201
+
+
+@app.route('/api/admin/po/vendors', methods=['GET'])
+@admin_required
+def list_po_vendors():
+    """List vendors selectable on a PO. Reuses qa_vendors so the QA
+    pipeline and purchasing share a single vendor identity."""
+    conn = get_db()
+    try:
+        rows = conn.execute('''
+            SELECT id, company_name, contact_name, whatsapp_number, email, status
+            FROM qa_vendors
+            ORDER BY company_name
+        ''').fetchall()
+        vendors = [dict(r) for r in rows]
+    except Exception:
+        vendors = []
+    finally:
+        conn.close()
+    return jsonify(vendors)
 
 
 @app.route('/api/admin/po/<int:po_id>', methods=['GET'])
 @admin_required
 def get_purchase_order(po_id):
-    """Get single purchase order with items"""
+    """Get single purchase order with items + vendor details (if linked)."""
     conn = get_db()
-    
+
     po = conn.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
     if not po:
         conn.close()
         return jsonify({'error': 'PO not found'}), 404
-    
+
     po_dict = dict(po)
+
+    # Optional vendor join — only if vendor_id set AND qa_vendors exists.
+    vendor = None
+    vid = po_dict.get('vendor_id')
+    if vid:
+        try:
+            v = conn.execute('''SELECT id, company_name, contact_name, whatsapp_number,
+                                       whatsapp_normalized, email, country, status
+                                FROM qa_vendors WHERE id = ?''', (vid,)).fetchone()
+            if v:
+                vendor = dict(v)
+        except Exception:
+            vendor = None
+    po_dict['vendor'] = vendor
+
     items = conn.execute('''
         SELECT poi.*, p.name, p.sku, p.stock as current_stock, p.supplier_pack_size
-        FROM purchase_order_items poi 
-        JOIN products p ON poi.product_id = p.id 
+        FROM purchase_order_items poi
+        JOIN products p ON poi.product_id = p.id
         WHERE poi.po_id = ?
     ''', (po_id,)).fetchall()
     po_dict['items'] = [dict(i) for i in items]
-    
+
     conn.close()
     return jsonify(po_dict)
 
@@ -6806,19 +6886,32 @@ def submit_purchase_order(po_id):
 @app.route('/api/admin/po/<int:po_id>/receive', methods=['POST'])
 @admin_required
 def receive_po_items(po_id):
-    """Receive items against PO - allocates freight cost and updates product landed cost."""
+    """Receive items against PO.
+
+    Accepts freight_cost AND testing_cost on the header, plus an optional
+    lot_number per line. Both freight and testing get allocated to lines
+    proportionally by line product cost and roll into landed_cost. When a
+    lot_number is supplied (or auto-generated from the PO number), a row
+    is also written to inventory_receipts so lot-control queries surface
+    the receipt without bouncing through the PO."""
     data = request.json
     items = data.get('items', [])
     freight_cost = float(data.get('freight_cost', 0) or 0)
+    testing_cost = float(data.get('testing_cost', 0) or 0)
 
     conn = get_db()
     c = conn.cursor()
 
-    # Save freight cost on PO header
-    c.execute('UPDATE purchase_orders SET freight_cost = ? WHERE id = ?', (freight_cost, po_id))
+    # Get PO number for default lot generation
+    po_row = c.execute('SELECT po_number FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    po_number = dict(po_row)['po_number'] if po_row else f'PO{po_id}'
 
-    # ── Step 1: Calculate total product cost across all received items ──────
-    # We need this first so we can allocate freight proportionally
+    # Save freight + testing cost on PO header
+    c.execute('UPDATE purchase_orders SET freight_cost = ?, testing_cost = ? WHERE id = ?',
+              (freight_cost, testing_cost, po_id))
+
+    # ── Step 1: Build line work-list + sum product cost ─────────────────────
+    # We need the cost total first so we can split freight+testing pro-rata.
     line_data = []
     total_product_cost = 0.0
 
@@ -6842,6 +6935,13 @@ def receive_po_items(po_id):
         units_received = qty_received * pack_size
         line_product_cost = (poi_dict['unit_cost'] or 0) * units_received
         total_product_cost += line_product_cost
+
+        # Lot number: caller-provided value wins; otherwise auto-stamp
+        # using PO number + line id so every receipt is uniquely identifiable
+        # even if the user didn't think to type one in.
+        provided_lot = (item.get('lot_number') or '').strip()
+        lot_number = provided_lot or f"{po_number}-L{item_id}"
+
         line_data.append({
             'item_id': item_id,
             'qty_received': qty_received,
@@ -6853,65 +6953,76 @@ def receive_po_items(po_id):
             'quantity_received_existing': poi_dict['quantity_received'],
             'current_cost': poi_dict.get('current_cost') or 0,
             'current_stock': poi_dict.get('current_stock') or 0,
+            'lot_number': lot_number,
         })
 
-    # ── Step 2: Allocate freight to each line proportionally by cost ─────────
+    # ── Step 2: Allocate freight + testing pro-rata by line cost ────────────
+    total_overhead = freight_cost + testing_cost
     for line in line_data:
         if total_product_cost > 0:
-            freight_share = freight_cost * (line['line_product_cost'] / total_product_cost)
+            share = (line['line_product_cost'] / total_product_cost)
         else:
-            # If all items are $0 cost, split freight evenly
-            freight_share = freight_cost / len(line_data) if line_data else 0
-
-        freight_per_unit = freight_share / line['units_received'] if line['units_received'] > 0 else 0
-        landed_per_unit = line['unit_cost'] + freight_per_unit
+            share = 1.0 / len(line_data) if line_data else 0
+        freight_share = freight_cost * share
+        testing_share = testing_cost * share
+        overhead_share = freight_share + testing_share
+        per_unit_overhead = overhead_share / line['units_received'] if line['units_received'] > 0 else 0
+        landed_per_unit = line['unit_cost'] + per_unit_overhead
 
         line['freight_allocated'] = round(freight_share, 4)
+        line['testing_allocated'] = round(testing_share, 4)
         line['landed_cost'] = round(landed_per_unit, 4)
 
     # ── Step 3: Apply to DB ──────────────────────────────────────────────────
-    all_complete = True
-
     for line in line_data:
         new_total_received = line['quantity_received_existing'] + line['qty_received']
 
-        # Store received qty, freight allocation, landed cost on PO line
         c.execute('''UPDATE purchase_order_items
                      SET quantity_received = ?,
                          freight_allocated = ?,
-                         landed_cost = ?
+                         testing_allocated = ?,
+                         landed_cost = ?,
+                         lot_number = ?
                      WHERE id = ?''',
-                  (new_total_received, line['freight_allocated'], line['landed_cost'], line['item_id']))
+                  (new_total_received, line['freight_allocated'], line['testing_allocated'],
+                   line['landed_cost'], line['lot_number'], line['item_id']))
 
-        # Update PO line status
+        # Line status
         if new_total_received >= line['quantity_ordered']:
             c.execute("UPDATE purchase_order_items SET status = 'received' WHERE id = ?", (line['item_id'],))
         elif new_total_received > 0:
             c.execute("UPDATE purchase_order_items SET status = 'partial' WHERE id = ?", (line['item_id'],))
-            all_complete = False
-        else:
-            all_complete = False
 
-        # Add stock units
+        # Bump product stock
         c.execute('UPDATE products SET stock = stock + ? WHERE id = ?',
                   (line['units_received'], line['product_id']))
 
-        # Update product.cost using weighted average:
-        # new_avg = (existing_stock * existing_cost + new_units * new_landed) / (existing_stock + new_units)
+        # Weighted-avg cost update
         existing_stock = line['current_stock']
         existing_cost = line['current_cost']
         new_units = line['units_received']
         new_landed = line['landed_cost']
-
         if (existing_stock + new_units) > 0:
             weighted_avg = ((existing_stock * existing_cost) + (new_units * new_landed)) / (existing_stock + new_units)
         else:
             weighted_avg = new_landed
-
         c.execute('UPDATE products SET cost = ? WHERE id = ?',
                   (round(weighted_avg, 4), line['product_id']))
 
-    # ── Step 4: Update PO status ─────────────────────────────────────────────
+        # Stamp the lot into inventory_receipts so lot-control queries
+        # (separate of the PO module) see this receipt natively. Best-effort:
+        # if the table layout drifts, swallow the error rather than fail
+        # the whole receive.
+        try:
+            c.execute('''INSERT INTO inventory_receipts
+                         (product_id, quantity, received_date, lot_number, notes, po_item_id)
+                         VALUES (?, ?, CURRENT_DATE, ?, ?, ?)''',
+                      (line['product_id'], line['units_received'], line['lot_number'],
+                       f"PO {po_number} receive", line['item_id']))
+        except Exception as e:
+            print(f"Note: inventory_receipts insert: {e}")
+
+    # ── Step 4: PO status ────────────────────────────────────────────────────
     remaining = c.execute('''SELECT COUNT(*) as cnt FROM purchase_order_items
                              WHERE po_id = ? AND quantity_received < quantity_ordered''', (po_id,)).fetchone()
     if dict(remaining)['cnt'] == 0:
@@ -6923,10 +7034,14 @@ def receive_po_items(po_id):
     conn.close()
 
     return jsonify({
-        'message': 'Items received, freight allocated, and costs updated',
+        'message': 'Items received, freight + testing allocated, lots stamped',
         'freight_cost': freight_cost,
-        'lines': [{'item_id': l['item_id'], 'freight_allocated': l['freight_allocated'],
-                   'landed_cost': l['landed_cost']} for l in line_data]
+        'testing_cost': testing_cost,
+        'lines': [{'item_id': l['item_id'],
+                   'freight_allocated': l['freight_allocated'],
+                   'testing_allocated': l['testing_allocated'],
+                   'landed_cost': l['landed_cost'],
+                   'lot_number': l['lot_number']} for l in line_data]
     })
 
 
@@ -6975,26 +7090,44 @@ def delete_purchase_order(po_id):
 @app.route('/api/admin/po/<int:po_id>/whatsapp', methods=['GET'])
 @admin_required
 def get_po_whatsapp_text(po_id):
-    """Generate WhatsApp-friendly text for PO"""
+    """Generate WhatsApp-friendly text for PO, plus a wa.me deep link when
+    the linked qa_vendor has a normalized phone number on file."""
+    import urllib.parse as _urlp
     conn = get_db()
-    
+
     po = conn.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
     if not po:
         conn.close()
         return jsonify({'error': 'PO not found'}), 404
-    
+
     po_dict = dict(po)
     items = conn.execute('''
-        SELECT poi.*, p.name, p.sku, p.supplier_pack_size 
-        FROM purchase_order_items poi 
-        JOIN products p ON poi.product_id = p.id 
+        SELECT poi.*, p.name, p.sku, p.supplier_pack_size
+        FROM purchase_order_items poi
+        JOIN products p ON poi.product_id = p.id
         WHERE poi.po_id = ?
         ORDER BY p.name
     ''', (po_id,)).fetchall()
-    
+
+    # Pull vendor WhatsApp number for deep link (best-effort)
+    vendor_phone = None
+    vendor_label = None
+    if po_dict.get('vendor_id'):
+        try:
+            v = conn.execute('''SELECT company_name, whatsapp_normalized, whatsapp_number
+                                FROM qa_vendors WHERE id = ?''', (po_dict['vendor_id'],)).fetchone()
+            if v:
+                vd = dict(v)
+                # wa.me wants digits only with optional country code, no '+'
+                normalized = (vd.get('whatsapp_normalized') or '').lstrip('+')
+                if normalized and normalized.replace(' ', '').isdigit():
+                    vendor_phone = normalized
+                vendor_label = vd.get('company_name')
+        except Exception:
+            pass
+
     conn.close()
-    
-    # Build WhatsApp-friendly text
+
     lines = [
         f"📦 *Purchase Order: {po_dict['po_number']}*",
         f"Date: {datetime.now().strftime('%Y-%m-%d')}",
@@ -7002,7 +7135,7 @@ def get_po_whatsapp_text(po_id):
         "*Items to Order:*",
         "─" * 20
     ]
-    
+
     total_cost = 0
     for item in items:
         i = dict(item)
@@ -7013,7 +7146,7 @@ def get_po_whatsapp_text(po_id):
         total_cost += line_cost
         lines.append(f"• {i['sku']} - {i['name']}")
         lines.append(f"  Qty: {qty} packs × {pack_size} = {total_units} units @ ${i['unit_cost']:.2f} = ${line_cost:.2f}")
-    
+
     lines.extend([
         "─" * 20,
         f"*Total: ${total_cost:.2f}*",
@@ -7021,8 +7154,25 @@ def get_po_whatsapp_text(po_id):
         "Please confirm availability and ETA.",
         "Thank you! 🙏"
     ])
-    
-    return jsonify({'text': '\n'.join(lines), 'po_number': po_dict['po_number']})
+
+    text = '\n'.join(lines)
+
+    # Build wa.me deep link. If we have a vendor phone, target them
+    # directly; otherwise return a generic share URL the user pastes into
+    # any chat. The text is URL-encoded for both.
+    encoded_text = _urlp.quote(text)
+    if vendor_phone:
+        wa_me_url = f"https://wa.me/{vendor_phone}?text={encoded_text}"
+    else:
+        wa_me_url = f"https://wa.me/?text={encoded_text}"
+
+    return jsonify({
+        'text': text,
+        'po_number': po_dict['po_number'],
+        'wa_me_url': wa_me_url,
+        'vendor_phone': vendor_phone,
+        'vendor_label': vendor_label,
+    })
 
 
 @app.route('/api/admin/po/<int:po_id>/export-costs', methods=['GET'])
@@ -7050,16 +7200,18 @@ def export_po_costs(po_id):
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Header
+    # Header (vendor + testing cost columns added 2026-06-08)
     writer.writerow([
-        'PO Number', 'Supplier', 'Received Date',
-        'SKU', 'Product Name',
+        'PO Number', 'Vendor', 'Received Date',
+        'SKU', 'Product Name', 'Lot Number',
         'Packs Ordered', 'Packs Received', 'Units Per Pack', 'Units Received',
         'Unit Cost (Product)', 'Line Product Cost',
-        'Freight Allocated', 'Landed Cost Per Unit', 'Total Landed Cost'
+        'Freight Allocated', 'Testing Allocated',
+        'Landed Cost Per Unit', 'Total Landed Cost'
     ])
 
     freight_total = po_dict.get('freight_cost') or 0
+    testing_total = po_dict.get('testing_cost') or 0
     received_date = po_dict.get('received_at') or po_dict.get('closed_at') or ''
     if received_date:
         received_date = str(received_date)[:10]
@@ -7071,6 +7223,7 @@ def export_po_costs(po_id):
         units_received = packs_received * pack_size
         unit_cost = i.get('unit_cost') or 0
         freight_alloc = i.get('freight_allocated') or 0
+        testing_alloc = i.get('testing_allocated') or 0
         landed = i.get('landed_cost') or 0
         line_product_cost = unit_cost * units_received
         total_landed = landed * units_received
@@ -7081,6 +7234,7 @@ def export_po_costs(po_id):
             received_date,
             i['sku'],
             i['name'],
+            i.get('lot_number', '') or '',
             i.get('quantity_ordered', 0),
             packs_received,
             pack_size,
@@ -7088,13 +7242,15 @@ def export_po_costs(po_id):
             f"{unit_cost:.4f}",
             f"{line_product_cost:.2f}",
             f"{freight_alloc:.4f}",
+            f"{testing_alloc:.4f}",
             f"{landed:.4f}",
             f"{total_landed:.2f}",
         ])
 
-    # Summary row
+    # Summary rows
     writer.writerow([])
-    writer.writerow(['', '', '', '', 'TOTAL FREIGHT', '', '', '', '', '', '', '', f"${freight_total:.2f}", '', ''])
+    writer.writerow(['', '', '', '', 'TOTAL FREIGHT', '', '', '', '', '', '', '', f"${freight_total:.2f}", '', '', ''])
+    writer.writerow(['', '', '', '', 'TOTAL TESTING', '', '', '', '', '', '', '', '', f"${testing_total:.2f}", '', ''])
 
     csv_data = output.getvalue()
     response = make_response(csv_data)
@@ -7106,17 +7262,18 @@ def export_po_costs(po_id):
 @app.route('/api/admin/po/export-all-costs', methods=['GET'])
 @admin_required
 def export_all_po_costs():
-    """Export landed costs across ALL received POs as one CSV."""
+    """Export landed costs across ALL received POs as one CSV (QuickBooks-friendly)."""
     import csv
     import io
     conn = get_db()
     items = conn.execute('''
         SELECT
-            po.po_number, po.supplier_name, po.freight_cost,
+            po.po_number, po.supplier_name, po.freight_cost, po.testing_cost,
             po.received_at, po.closed_at,
             p.sku, p.name,
             poi.quantity_ordered, poi.quantity_received, p.supplier_pack_size,
-            poi.unit_cost, poi.freight_allocated, poi.landed_cost
+            poi.unit_cost, poi.freight_allocated, poi.testing_allocated,
+            poi.landed_cost, poi.lot_number
         FROM purchase_order_items poi
         JOIN purchase_orders po ON poi.po_id = po.id
         JOIN products p ON poi.product_id = p.id
@@ -7128,11 +7285,12 @@ def export_all_po_costs():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        'PO Number', 'Supplier', 'PO Freight Cost', 'Received Date',
-        'SKU', 'Product Name',
+        'PO Number', 'Vendor', 'PO Freight Cost', 'PO Testing Cost', 'Received Date',
+        'SKU', 'Product Name', 'Lot Number',
         'Packs Ordered', 'Packs Received', 'Units Per Pack', 'Units Received',
         'Unit Cost (Product)', 'Line Product Cost',
-        'Freight Allocated', 'Landed Cost Per Unit', 'Total Landed Cost'
+        'Freight Allocated', 'Testing Allocated',
+        'Landed Cost Per Unit', 'Total Landed Cost'
     ])
 
     for item in items:
@@ -7142,6 +7300,7 @@ def export_all_po_costs():
         units_received = packs_received * pack_size
         unit_cost = i.get('unit_cost') or 0
         freight_alloc = i.get('freight_allocated') or 0
+        testing_alloc = i.get('testing_allocated') or 0
         landed = i.get('landed_cost') or 0
         line_product_cost = unit_cost * units_received
         total_landed = landed * units_received
@@ -7150,11 +7309,13 @@ def export_all_po_costs():
         writer.writerow([
             i['po_number'], i.get('supplier_name', ''),
             f"{(i.get('freight_cost') or 0):.2f}",
+            f"{(i.get('testing_cost') or 0):.2f}",
             received_date,
-            i['sku'], i['name'],
+            i['sku'], i['name'], i.get('lot_number', '') or '',
             i.get('quantity_ordered', 0), packs_received, pack_size, units_received,
             f"{unit_cost:.4f}", f"{line_product_cost:.2f}",
-            f"{freight_alloc:.4f}", f"{landed:.4f}", f"{total_landed:.2f}",
+            f"{freight_alloc:.4f}", f"{testing_alloc:.4f}",
+            f"{landed:.4f}", f"{total_landed:.2f}",
         ])
 
     csv_data = output.getvalue()
@@ -7162,6 +7323,421 @@ def export_all_po_costs():
     response.headers['Content-Type'] = 'text/csv'
     response.headers['Content-Disposition'] = 'attachment; filename=all_po_landed_costs.csv'
     return response
+
+
+@app.route('/api/admin/campaigns/firesale/preview', methods=['POST'])
+@admin_required
+def preview_firesale_campaign():
+    """Run the same math as the launch endpoint but DO NOT touch the DB.
+
+    Returns per-item: landed cost, current sale price, proposed sale price,
+    worst-case price (if bonus code also applied), and the resulting margin
+    at each step. Flags any item that would breach `margin_floor_pct`.
+
+    This is the safety net so Ben sees the floor breaches BEFORE clicking
+    Launch — and can either deselect those items or change the discount %.
+    """
+    data = request.json or {}
+    product_ids = data.get('product_ids') or []
+    discount_pct = float(data.get('discount_pct', 40) or 40)
+    bonus_threshold = float(data.get('bonus_threshold', 0) or 0)
+    bonus_discount_pct = float(data.get('bonus_discount_pct', 0) or 0)
+    margin_floor_pct = float(data.get('margin_floor_pct', 50) or 50)
+
+    if not product_ids:
+        return jsonify({'error': 'product_ids is required'}), 400
+
+    conn = get_db()
+    placeholders = ','.join(['?'] * len(product_ids))
+    rows = conn.execute(
+        f'SELECT id, sku, name, price_single, cost FROM products WHERE id IN ({placeholders})',
+        product_ids
+    ).fetchall()
+    conn.close()
+
+    items = []
+    for r in rows:
+        p = dict(r)
+        base = float(p.get('price_single') or 0)
+        cost = float(p.get('cost') or 0)
+        sale_price = round(base * (1 - discount_pct / 100.0), 2)
+        # Worst case: bonus code stacks. (Today the cart only takes one
+        # code, but if Ben ever changes that we're already correct.)
+        worst_price = round(sale_price * (1 - bonus_discount_pct / 100.0), 2) \
+            if bonus_discount_pct > 0 else sale_price
+
+        def margin(price):
+            if price <= 0 or cost <= 0:
+                return None
+            return round((price - cost) / price * 100.0, 1)
+
+        m_base = margin(base)
+        m_sale = margin(sale_price)
+        m_worst = margin(worst_price)
+
+        breached = (m_worst is not None and m_worst < margin_floor_pct)
+        # Compute the deepest discount that keeps us at or above the floor
+        # given the SAME bonus stacking assumption.
+        # final_price = base * (1 - d/100) * (1 - bonus/100) >= cost / (1 - floor/100)
+        # → d_max = 1 - (cost / (1 - floor/100)) / (base * (1 - bonus/100))
+        max_discount_pct = None
+        if cost > 0 and base > 0:
+            denom_floor = max(1 - margin_floor_pct / 100.0, 0.0001)
+            stacking = (1 - bonus_discount_pct / 100.0) if bonus_discount_pct > 0 else 1
+            target_pre_stack = (cost / denom_floor) / stacking if stacking > 0 else None
+            if target_pre_stack is not None:
+                ratio = target_pre_stack / base
+                if ratio < 1:
+                    max_discount_pct = round((1 - ratio) * 100.0, 1)
+                else:
+                    max_discount_pct = 0.0  # can't discount at all
+
+        items.append({
+            'id': p['id'],
+            'sku': p['sku'],
+            'name': p['name'],
+            'cost': round(cost, 2),
+            'base_price': round(base, 2),
+            'sale_price': sale_price,
+            'worst_price': worst_price,
+            'margin_base_pct': m_base,
+            'margin_sale_pct': m_sale,
+            'margin_worst_pct': m_worst,
+            'breached': breached,
+            'max_safe_discount_pct': max_discount_pct,
+        })
+
+    summary = {
+        'item_count': len(items),
+        'breach_count': sum(1 for it in items if it['breached']),
+        'avg_margin_worst': round(
+            sum(it['margin_worst_pct'] for it in items if it['margin_worst_pct'] is not None) /
+            max(sum(1 for it in items if it['margin_worst_pct'] is not None), 1),
+            1
+        ),
+        'min_margin_worst': min(
+            (it['margin_worst_pct'] for it in items if it['margin_worst_pct'] is not None),
+            default=None
+        ),
+        'margin_floor_pct': margin_floor_pct,
+    }
+    return jsonify({'summary': summary, 'items': items})
+
+
+@app.route('/api/admin/campaigns/firesale/generate', methods=['POST'])
+@admin_required
+def generate_firesale_campaign():
+    """Turn a list of dead/slow products into a real campaign:
+
+    - Updates products.sale_price / sale_start / sale_end so the storefront
+      shows the discounted price live for `duration_days` days
+    - Optionally creates a sitewide discount code with `min_order_amount`
+      (e.g., "spend $500, get 15% off") to push cart size up
+    - Returns a printable flyer URL the admin can open / share / print
+
+    The flyer endpoint reads its inputs from query params (stateless), so
+    nothing extra needs to be persisted beyond the price changes + code.
+    """
+    data = request.json or {}
+    product_ids = data.get('product_ids') or []
+    discount_pct = float(data.get('discount_pct', 40) or 40)
+    duration_days = int(data.get('duration_days', 14) or 14)
+    bonus_threshold = float(data.get('bonus_threshold', 0) or 0)
+    bonus_discount_pct = float(data.get('bonus_discount_pct', 0) or 0)
+    margin_floor_pct = float(data.get('margin_floor_pct', 50) or 50)
+    allow_floor_breach = bool(data.get('allow_floor_breach', False))
+
+    if not product_ids or not isinstance(product_ids, list):
+        return jsonify({'error': 'product_ids is required (non-empty list)'}), 400
+    if discount_pct <= 0 or discount_pct >= 100:
+        return jsonify({'error': 'discount_pct must be between 1 and 99'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Server-side margin-floor enforcement. The UI also previews this, but
+    # we re-check here so the floor can't be bypassed by a direct API call.
+    if margin_floor_pct > 0 and not allow_floor_breach:
+        placeholders = ','.join(['?'] * len(product_ids))
+        rows = c.execute(
+            f'SELECT id, sku, name, price_single, cost FROM products WHERE id IN ({placeholders})',
+            product_ids
+        ).fetchall()
+        breaches = []
+        for r in rows:
+            p = dict(r)
+            base = float(p.get('price_single') or 0)
+            cost = float(p.get('cost') or 0)
+            if cost <= 0 or base <= 0:
+                continue
+            sale = base * (1 - discount_pct / 100.0)
+            worst = sale * (1 - bonus_discount_pct / 100.0) if bonus_discount_pct > 0 else sale
+            if worst <= 0:
+                continue
+            margin = (worst - cost) / worst * 100.0
+            if margin < margin_floor_pct:
+                breaches.append({
+                    'sku': p['sku'],
+                    'margin_at_launch': round(margin, 1),
+                })
+        if breaches:
+            conn.close()
+            return jsonify({
+                'error': 'margin floor would be breached',
+                'margin_floor_pct': margin_floor_pct,
+                'breaches': breaches,
+                'hint': 'Drop discount_pct, deselect the breaching items, or pass allow_floor_breach=true to override.',
+            }), 400
+
+    # Compute sale_start / sale_end as ISO timestamps that work in both
+    # SQLite and Postgres (TIMESTAMP column).
+    from datetime import datetime as _dt, timedelta as _td
+    now = _dt.utcnow()
+    sale_start = now.strftime('%Y-%m-%d %H:%M:%S')
+    sale_end = (now + _td(days=duration_days)).strftime('%Y-%m-%d %H:%M:%S')
+
+    updated = []
+    for pid in product_ids:
+        try:
+            pid = int(pid)
+        except Exception:
+            continue
+        row = c.execute('SELECT id, sku, name, price_single FROM products WHERE id = ? AND active = 1',
+                        (pid,)).fetchone()
+        if not row:
+            continue
+        prod = dict(row)
+        base_price = float(prod.get('price_single') or 0)
+        if base_price <= 0:
+            continue
+        sale_price = round(base_price * (1 - discount_pct / 100.0), 2)
+        c.execute('''UPDATE products
+                     SET sale_price = ?, sale_start = ?, sale_end = ?
+                     WHERE id = ?''',
+                  (sale_price, sale_start, sale_end, pid))
+        updated.append({
+            'id': pid,
+            'sku': prod['sku'],
+            'name': prod['name'],
+            'base_price': base_price,
+            'sale_price': sale_price,
+            'savings': round(base_price - sale_price, 2),
+        })
+
+    # Optional bonus code for sitewide spend threshold
+    bonus_code = None
+    if bonus_threshold > 0 and bonus_discount_pct > 0:
+        # Generate a memorable random code with a FIRESALE prefix
+        import secrets
+        suffix = secrets.token_hex(3).upper()
+        bonus_code = f"FIRESALE{suffix}"
+        expires_at = sale_end
+        try:
+            c.execute('''INSERT INTO discount_codes
+                         (code, description, discount_percent, min_order_amount,
+                          usage_limit, active, expires_at)
+                         VALUES (?, ?, ?, ?, ?, 1, ?)''',
+                      (bonus_code,
+                       f"Firesale campaign — {discount_pct:.0f}% off select items + {bonus_discount_pct:.0f}% off orders over ${bonus_threshold:.0f}",
+                       bonus_discount_pct,
+                       bonus_threshold,
+                       None,  # unlimited uses
+                       expires_at))
+        except Exception as e:
+            print(f"Note: bonus discount_codes insert: {e}")
+            bonus_code = None
+
+    conn.commit()
+    conn.close()
+
+    # Build flyer URL — stateless, so reload-safe.
+    ids_param = ','.join(str(p['id']) for p in updated)
+    flyer_params = [f"ids={ids_param}", f"end={sale_end[:10]}"]
+    if bonus_code:
+        flyer_params.append(f"code={bonus_code}")
+        flyer_params.append(f"min={int(bonus_threshold)}")
+        flyer_params.append(f"bonus={int(bonus_discount_pct)}")
+    flyer_url = f"/admin/campaigns/firesale/flyer?{'&'.join(flyer_params)}"
+
+    return jsonify({
+        'message': 'Firesale campaign live',
+        'updated_count': len(updated),
+        'items': updated,
+        'bonus_code': bonus_code,
+        'bonus_threshold': bonus_threshold,
+        'bonus_discount_pct': bonus_discount_pct,
+        'sale_start': sale_start,
+        'sale_end': sale_end,
+        'flyer_url': flyer_url,
+    })
+
+
+@app.route('/admin/campaigns/firesale/flyer', methods=['GET'])
+@admin_required
+def firesale_flyer():
+    """Render a printable HTML flyer for a firesale campaign.
+
+    Stateless — all inputs come from query string so the URL can be
+    bookmarked, shared, printed to PDF, or screenshotted. Reads the
+    current sale_price / price_single off products by id."""
+    ids_raw = request.args.get('ids', '').strip()
+    code = request.args.get('code', '').strip()
+    try:
+        min_order = float(request.args.get('min', 0) or 0)
+    except Exception:
+        min_order = 0
+    try:
+        bonus_pct = float(request.args.get('bonus', 0) or 0)
+    except Exception:
+        bonus_pct = 0
+    end_date = request.args.get('end', '').strip()
+
+    if not ids_raw:
+        return "No product ids supplied", 400
+    try:
+        ids = [int(x) for x in ids_raw.split(',') if x.strip()]
+    except Exception:
+        return "Invalid product ids", 400
+
+    conn = get_db()
+    placeholders = ','.join(['?'] * len(ids))
+    rows = conn.execute(
+        f'SELECT id, sku, name, description, price_single, sale_price FROM products WHERE id IN ({placeholders})',
+        ids
+    ).fetchall()
+    conn.close()
+    products = [dict(r) for r in rows]
+    # Sort to match incoming order so flyer layout is predictable
+    order = {pid: i for i, pid in enumerate(ids)}
+    products.sort(key=lambda p: order.get(p['id'], 999))
+
+    return render_template('firesale_flyer.html',
+                           products=products,
+                           code=code,
+                           min_order=min_order,
+                           bonus_pct=bonus_pct,
+                           end_date=end_date)
+
+
+@app.route('/api/admin/reports/inventory-velocity', methods=['GET'])
+@admin_required
+def admin_inventory_velocity_report():
+    """Rank products by sales velocity over 30/60/90 day windows.
+
+    Output supports the "what to hold vs. firesale" decision:
+      - velocity_30d/60d/90d = units sold in the window (rolls in pack_size)
+      - days_of_stock = current units on hand / avg daily velocity (90d)
+      - tier = HOT / STEADY / SLOW / DEAD based on velocity buckets
+      - firesale_candidate = true when stock high + velocity zero/very low
+
+    Pure read, safe to expose. Lives alongside the existing reorder report
+    (/api/admin/reports/inventory) but answers a different question."""
+    conn = get_db()
+    try:
+        products = conn.execute('''
+            SELECT id, sku, name, stock, cost, price_single, supplier_pack_size, active
+            FROM products
+            WHERE active = 1
+            ORDER BY sku
+        ''').fetchall()
+
+        # Sum units sold per product, per window. Uses order_items.quantity.
+        # We treat order_items.quantity as units sold (matches how it's
+        # used elsewhere in the codebase). Filter out cancelled orders.
+        def units_sold_map(days):
+            try:
+                rows = conn.execute(f'''
+                    SELECT oi.product_id, SUM(oi.quantity) as units
+                    FROM order_items oi
+                    JOIN orders o ON oi.order_id = o.id
+                    WHERE o.created_at >= datetime('now', '-{int(days)} days')
+                      AND (o.status IS NULL OR o.status NOT IN ('cancelled', 'refunded', 'draft'))
+                    GROUP BY oi.product_id
+                ''').fetchall()
+                return {dict(r)['product_id']: dict(r)['units'] or 0 for r in rows}
+            except Exception:
+                # Postgres uses different date function; fall back gracefully
+                try:
+                    rows = conn.execute(f'''
+                        SELECT oi.product_id, SUM(oi.quantity) as units
+                        FROM order_items oi
+                        JOIN orders o ON oi.order_id = o.id
+                        WHERE o.created_at >= NOW() - INTERVAL '{int(days)} days'
+                          AND (o.status IS NULL OR o.status NOT IN ('cancelled', 'refunded', 'draft'))
+                        GROUP BY oi.product_id
+                    ''').fetchall()
+                    return {dict(r)['product_id']: dict(r)['units'] or 0 for r in rows}
+                except Exception:
+                    return {}
+
+        sold_30 = units_sold_map(30)
+        sold_60 = units_sold_map(60)
+        sold_90 = units_sold_map(90)
+    finally:
+        conn.close()
+
+    rows = []
+    for p in products:
+        pd = dict(p)
+        pid = pd['id']
+        stock = pd.get('stock') or 0
+        cost = float(pd.get('cost') or 0)
+        v30 = sold_30.get(pid, 0) or 0
+        v60 = sold_60.get(pid, 0) or 0
+        v90 = sold_90.get(pid, 0) or 0
+
+        avg_daily = (v90 / 90.0) if v90 else 0
+        days_of_stock = (stock / avg_daily) if avg_daily > 0 else None
+
+        # Bucket tiers — tuned for a low-volume vertical (peptides). Adjust
+        # later via app_settings if needed.
+        if v30 >= 20:
+            tier = "HOT"
+        elif v30 >= 5:
+            tier = "STEADY"
+        elif v90 >= 3:
+            tier = "SLOW"
+        else:
+            tier = "DEAD"
+
+        # Firesale candidate: meaningful inventory dollars + no movement.
+        inventory_value = stock * cost
+        firesale = (v90 == 0) and (inventory_value >= 50)
+
+        rows.append({
+            'product_id': pid,
+            'sku': pd.get('sku'),
+            'name': pd.get('name'),
+            'stock': stock,
+            'cost': round(cost, 2),
+            'price_single': round(float(pd.get('price_single') or 0), 2),
+            'inventory_value': round(inventory_value, 2),
+            'velocity_30d': v30,
+            'velocity_60d': v60,
+            'velocity_90d': v90,
+            'avg_daily_90d': round(avg_daily, 3),
+            'days_of_stock': round(days_of_stock, 1) if days_of_stock is not None else None,
+            'tier': tier,
+            'firesale_candidate': firesale,
+        })
+
+    # Sort by 30d velocity descending so the hot stuff is at the top.
+    rows.sort(key=lambda r: (-(r['velocity_30d']), -(r['velocity_90d']), r['sku'] or ''))
+
+    summary = {
+        'total_products': len(rows),
+        'hot': sum(1 for r in rows if r['tier'] == 'HOT'),
+        'steady': sum(1 for r in rows if r['tier'] == 'STEADY'),
+        'slow': sum(1 for r in rows if r['tier'] == 'SLOW'),
+        'dead': sum(1 for r in rows if r['tier'] == 'DEAD'),
+        'firesale_candidates': sum(1 for r in rows if r['firesale_candidate']),
+        'total_inventory_value': round(sum(r['inventory_value'] for r in rows), 2),
+        'dead_inventory_value': round(
+            sum(r['inventory_value'] for r in rows if r['tier'] == 'DEAD'), 2
+        ),
+    }
+
+    return jsonify({'summary': summary, 'rows': rows})
 
 
 
