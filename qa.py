@@ -300,50 +300,11 @@ def init_qa_tables(c, using_postgres, auto_id):
         created_by_user_id INTEGER
     )''')
 
-    # Phase 3 (2026-06-09): vendor price lists — one upload per row, items per
-    # extracted line. Drives PO autofill and cross-vendor price ranking.
-    c.execute(f'''CREATE TABLE IF NOT EXISTS qa_vendor_price_lists (
-        id {auto_id},
-        vendor_id INTEGER NOT NULL,
-        effective_date TEXT,                            -- ISO date when this list goes into effect
-        source_type TEXT,                               -- 'photo' | 'pdf' | 'text' | 'csv' | 'manual'
-        source_filename TEXT,
-        source_storage_path TEXT,                       -- relative path under uploads/price_lists/
-        notes TEXT,
-        raw_extracted_json TEXT,                        -- LLM's raw output, for re-parse if mapping breaks
-        status TEXT NOT NULL DEFAULT 'pending',         -- pending | confirmed | rejected | superseded
-        created_at TEXT NOT NULL,
-        created_by_user_id INTEGER,
-        confirmed_at TEXT,
-        confirmed_by_user_id INTEGER
-    )''')
-
-    c.execute(f'''CREATE TABLE IF NOT EXISTS qa_vendor_price_items (
-        id {auto_id},
-        price_list_id INTEGER NOT NULL,
-        vendor_id INTEGER NOT NULL,                     -- denormalized for fast cross-vendor queries
-        raw_name TEXT NOT NULL,                         -- what the vendor called it ("BPC-157 10mg")
-        raw_pack_size TEXT,                             -- as parsed text
-        pack_size INTEGER,                              -- normalized integer (vials per pack)
-        product_id INTEGER,                             -- nullable FK; set when matched
-        match_status TEXT NOT NULL DEFAULT 'unmatched', -- unmatched | auto | admin_confirmed | admin_override | new_product
-        match_confidence REAL DEFAULT 0,                -- 0..1 from LLM
-        unit_cost REAL,                                 -- price per single vial
-        pack_cost REAL,                                 -- vendor's quoted price per pack
-        currency TEXT DEFAULT 'USD',
-        moq INTEGER,                                    -- minimum order quantity if vendor specified
-        notes TEXT,
-        created_at TEXT NOT NULL
-    )''')
-
     c.execute("CREATE INDEX IF NOT EXISTS idx_qa_vendors_status ON qa_vendors(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_qa_vqq_vendor ON qa_vqq_responses(vendor_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_qa_status_history_vendor ON qa_vendor_status_history(vendor_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_qa_samples_vendor ON qa_sample_submissions(vendor_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_qa_work_orders_vendor ON qa_purdue_work_orders(vendor_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_qa_price_lists_vendor ON qa_vendor_price_lists(vendor_id, status)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_qa_price_items_list ON qa_vendor_price_items(price_list_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_qa_price_items_lookup ON qa_vendor_price_items(vendor_id, product_id)")
     # Unique index on normalized phone (partial — allows NULL/blank for email-only vendors)
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_vendors_whatsapp_unique "
               "ON qa_vendors(whatsapp_normalized) WHERE whatsapp_normalized IS NOT NULL AND whatsapp_normalized != ''")
