@@ -4657,6 +4657,7 @@ The Peptide Wizard Team"></textarea>
                         </select>
                         <button class="btn" onclick="showCreatePOModal()">+ New PO</button>
                         <button class="btn btn-secondary" onclick="showQuickPOFromLowStock()">⚡ Quick PO from Low Stock</button>
+                        <button class="btn" style="background:#ed8936;color:white;" onclick="showVendorPriceLists()">📋 Vendor Price Lists</button>
                         <a class="btn" style="background:#805ad5;color:white;text-decoration:none;" href="/api/admin/po/export-all-costs" download>📊 Export All Landed Costs</a>
                     </div>
                 </div>
@@ -4976,6 +4977,7 @@ The Peptide Wizard Team"></textarea>
                                 ${po.status !== 'closed' && po.status !== 'draft' ? `<button class="btn btn-warning" onclick="closePO(${po.id})">Close PO</button>` : ''}
                                 ${po.status === 'closed' ? `<button class="btn" onclick="reopenPO(${po.id})">Reopen PO</button>` : ''}
                                 ${(po.status === 'received' || po.status === 'closed' || po.status === 'partial') ? `<a class="btn" style="background:#805ad5;color:white;text-decoration:none;" href="/api/admin/po/${po.id}/export-costs" download>📊 Export Landed Costs CSV</a>` : ''}
+                                ${(po.status === 'received' || po.status === 'closed' || po.status === 'partial') ? `<button class="btn" style="background:#319795;color:white;" onclick="showQaPickModal(${po.id})">🧪 Pick samples for QA</button>` : ''}
                                 <button class="btn btn-danger" onclick="deletePO(${po.id})">🗑️ Delete PO</button>
                             </div>
                         </div>
@@ -5072,6 +5074,366 @@ The Peptide Wizard Team"></textarea>
             } catch (err) {
                 showAlert(err.message);
             }
+        }
+
+        // ── QA sample pick (Slice C) ─────────────────────────────────────
+        async function showQaPickModal(poId) {
+            let preview;
+            try {
+                preview = await api(`/api/admin/po/${poId}/qa-pick-preview`);
+            } catch (e) {
+                showAlert(e.message);
+                return;
+            }
+            if (!preview.items || preview.items.length === 0) {
+                showAlert('Nothing received on this PO yet.');
+                return;
+            }
+
+            const rows = preview.items.map(it => `
+                <tr data-poi-id="${it.po_item_id}">
+                    <td><strong>${escapeHtml(it.sku)}</strong></td>
+                    <td>${escapeHtml(it.name)}</td>
+                    <td style="font-family:monospace;">${escapeHtml(it.lot_number || '—')}</td>
+                    <td style="text-align:right;">${it.units_received}</td>
+                    <td style="text-align:right;color:${it.existing_samples ? '#e53e3e' : '#a0aec0'};">${it.existing_samples}</td>
+                    <td>
+                        <input type="number" class="qa-samples" min="0" max="${it.available_for_sampling}" value="0" style="width:64px;padding:4px;">
+                    </td>
+                    <td>
+                        <input type="text" class="qa-storage" placeholder="e.g. fridge-A" maxlength="120" style="width:140px;padding:4px;">
+                    </td>
+                </tr>
+            `).join('');
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 900px;">
+                        <h3>🧪 Pick samples for QA — PO ${escapeHtml(preview.po_number)}</h3>
+                        <p style="color:#718096;margin-bottom:14px;">For each received line, enter how many bottles you're pulling for QA. Each non-zero line creates a qa_sample_submission row with the PO's vendor + the line's lot number. View those at <a href="/admin/qa/vendors" target="_blank" style="color:#3182ce;">/admin/qa</a>.</p>
+                        <div style="max-height:440px;overflow-y:auto;">
+                            <table style="font-size:13px;">
+                                <thead>
+                                    <tr>
+                                        <th>SKU</th><th>Product</th>
+                                        <th>Lot #</th>
+                                        <th style="text-align:right;">Units received</th>
+                                        <th style="text-align:right;" title="Existing samples from this lot">Already QA'd</th>
+                                        <th>Pick (bottles)</th>
+                                        <th>Storage location</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        </div>
+                        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px;">
+                            <button class="btn btn-secondary" onclick="showPODetail(${poId})">Cancel</button>
+                            <button class="btn btn-success" style="background:#319795;" onclick="submitQaPicks(${poId})">✓ Create QA Samples</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitQaPicks(poId) {
+            const picks = [];
+            document.querySelectorAll('tr[data-poi-id]').forEach(tr => {
+                const samples = parseInt(tr.querySelector('.qa-samples').value) || 0;
+                if (samples <= 0) return;
+                picks.push({
+                    po_item_id: parseInt(tr.dataset.poiId),
+                    samples,
+                    storage_location: (tr.querySelector('.qa-storage').value || '').trim() || null,
+                });
+            });
+            if (picks.length === 0) {
+                showAlert('Enter sample counts for at least one line.');
+                return;
+            }
+            try {
+                const r = await api(`/api/admin/po/${poId}/pick-qa-samples`, {
+                    method: 'POST',
+                    body: JSON.stringify({ picks })
+                });
+                showAlert(`${r.samples.length} sample batch(es) created. View in QA dashboard.`, 'success');
+                showPODetail(poId);
+            } catch (e) { showAlert(e.message); }
+        }
+
+
+        // ── Vendor price lists (Slice A) ─────────────────────────────────
+        async function showVendorPriceLists() {
+            let vendors = [];
+            try {
+                vendors = await api('/api/admin/po/vendors');
+            } catch (e) {
+                showAlert('Could not load vendors.');
+                return;
+            }
+            if (!Array.isArray(vendors) || vendors.length === 0) {
+                showAlert('No QA vendors yet. Add one under /admin/qa/vendors first.');
+                return;
+            }
+
+            // Pull recent price lists for each vendor in parallel
+            const enriched = await Promise.all(vendors.map(async v => {
+                try {
+                    const lists = await api(`/api/admin/vendors/${v.id}/price-lists`);
+                    return { ...v, lists };
+                } catch (e) {
+                    return { ...v, lists: [] };
+                }
+            }));
+
+            const rows = enriched.map(v => {
+                const latest = v.lists?.[0];
+                const latestLabel = latest
+                    ? `${latest.status} · ${latest.item_count} items · ${(latest.created_at || '').slice(0,10)}${latest.unmatched_count ? ` · ${latest.unmatched_count} unmatched` : ''}`
+                    : '<span style="color:#a0aec0;">none uploaded</span>';
+                const reviewBtn = latest
+                    ? `<button class="btn btn-small" onclick="openPriceListReview(${latest.id})">Review latest</button>`
+                    : '';
+                return `
+                    <tr>
+                        <td><strong>${escapeHtml(v.company_name)}</strong>${v.status ? ` <span style="color:#a0aec0;font-size:11px;">[${escapeHtml(v.status)}]</span>` : ''}</td>
+                        <td>${v.lists?.length || 0}</td>
+                        <td>${latestLabel}</td>
+                        <td>
+                            <button class="btn btn-small" style="background:#3182ce;color:white;" onclick="openPriceListUpload(${v.id}, '${escapeHtml(v.company_name).replace(/'/g,"\\\\'")}')">+ Upload</button>
+                            ${reviewBtn}
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 920px;">
+                        <h3>📋 Vendor Price Lists</h3>
+                        <p style="color:#718096;margin-bottom:14px;">Upload a vendor's latest price list. Claude extracts the items, you confirm the product matches, and from then on it autofills POs + cross-vendor comparison.</p>
+                        <div style="max-height:520px;overflow-y:auto;">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Vendor</th>
+                                        <th>Lists on file</th>
+                                        <th>Latest</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        </div>
+                        <div style="text-align:right;margin-top:18px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function openPriceListUpload(vendorId, vendorName) {
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 580px;">
+                        <h3>Upload price list — ${escapeHtml(vendorName)}</h3>
+                        <p style="color:#718096;margin-bottom:14px;">Drop a photo of the WhatsApp price list, a PDF, or paste the text below. Claude extracts the items.</p>
+
+                        <div style="margin-bottom:14px;">
+                            <label style="font-size:12px;color:#4a5568;font-weight:600;">Upload a file (photo / PDF / CSV)</label>
+                            <input type="file" id="plFile" accept="image/*,.pdf,.csv,.txt" style="width:100%;padding:6px;">
+                        </div>
+
+                        <div style="text-align:center;color:#a0aec0;font-size:12px;margin:8px 0;">— OR —</div>
+
+                        <div style="margin-bottom:14px;">
+                            <label style="font-size:12px;color:#4a5568;font-weight:600;">Paste price-list text</label>
+                            <textarea id="plText" rows="8" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:13px;" placeholder="BPC-157 10mg/vial  $41/box of 10\\nTB-500 5mg/vial  $54/box of 10\\n..."></textarea>
+                        </div>
+
+                        <div style="margin-bottom:14px;">
+                            <label style="font-size:12px;color:#4a5568;font-weight:600;">Notes (optional)</label>
+                            <input type="text" id="plNotes" maxlength="500" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" placeholder="e.g. June 2026 list from WhatsApp">
+                        </div>
+
+                        <div style="display:flex;gap:10px;justify-content:flex-end;">
+                            <button class="btn btn-secondary" onclick="showVendorPriceLists()">Back</button>
+                            <button class="btn btn-success" id="plUploadBtn" onclick="submitPriceListUpload(${vendorId})">⏳ Extract via Claude</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitPriceListUpload(vendorId) {
+            const btn = document.getElementById('plUploadBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Extracting…';
+
+            const fileInput = document.getElementById('plFile');
+            const text = (document.getElementById('plText').value || '').trim();
+            const notes = (document.getElementById('plNotes').value || '').trim();
+
+            try {
+                let result;
+                if (fileInput.files && fileInput.files[0]) {
+                    const fd = new FormData();
+                    fd.append('file', fileInput.files[0]);
+                    if (notes) fd.append('notes', notes);
+                    const r = await fetch(`/api/admin/vendors/${vendorId}/price-lists`, { method: 'POST', body: fd });
+                    result = await r.json();
+                    if (!r.ok) throw new Error(result.error || 'upload failed');
+                } else if (text) {
+                    result = await api(`/api/admin/vendors/${vendorId}/price-lists`, {
+                        method: 'POST',
+                        body: JSON.stringify({ text, notes })
+                    });
+                } else {
+                    btn.disabled = false; btn.textContent = '⏳ Extract via Claude';
+                    showAlert('Provide a file or paste text first.'); return;
+                }
+
+                const msg = result.extractor_error
+                    ? `Extraction had trouble (${result.extractor_error}); ${result.items_extracted} items captured anyway. Opening review.`
+                    : `Extracted ${result.items_extracted} items. Review the product matches below.`;
+                showAlert(msg, result.extractor_error ? 'warning' : 'success');
+                openPriceListReview(result.price_list_id);
+            } catch (err) {
+                btn.disabled = false; btn.textContent = '⏳ Extract via Claude';
+                showAlert(err.message || String(err));
+            }
+        }
+
+        async function openPriceListReview(listId) {
+            let pl;
+            try {
+                pl = await api(`/api/admin/vendor-price-lists/${listId}`);
+            } catch (e) { showAlert(e.message); return; }
+
+            const products = pl.products || [];
+            const productOptions = (selectedId) => products.map(p =>
+                `<option value="${p.id}" ${p.id == selectedId ? 'selected' : ''}>${escapeHtml(p.sku)} — ${escapeHtml(p.name)}</option>`
+            ).join('');
+
+            const rowsHtml = (pl.items || []).map(it => {
+                const conf = (it.match_confidence || 0);
+                const confColor = conf >= 0.85 ? '#38a169' : conf >= 0.5 ? '#d69e2e' : '#a0aec0';
+                const statusBadge = {
+                    unmatched: '<span style="background:#fed7d7;color:#742a2a;padding:1px 6px;border-radius:8px;font-size:10px;">unmatched</span>',
+                    auto: '<span style="background:#bee3f8;color:#2c5282;padding:1px 6px;border-radius:8px;font-size:10px;">auto</span>',
+                    admin_confirmed: '<span style="background:#c6f6d5;color:#22543d;padding:1px 6px;border-radius:8px;font-size:10px;">confirmed</span>',
+                    admin_override: '<span style="background:#feebc8;color:#7b341e;padding:1px 6px;border-radius:8px;font-size:10px;">override</span>',
+                    new_product: '<span style="background:#e9d8fd;color:#553c9a;padding:1px 6px;border-radius:8px;font-size:10px;">new product</span>',
+                }[it.match_status] || it.match_status;
+
+                return `
+                <tr data-item-id="${it.id}">
+                    <td style="font-family:monospace;font-size:12px;">${escapeHtml(it.raw_name)}</td>
+                    <td style="font-size:12px;color:#718096;">${escapeHtml(it.raw_pack_size || '')}</td>
+                    <td><input type="number" class="pl-pack-size" value="${it.pack_size || ''}" min="1" style="width:60px;padding:4px;"></td>
+                    <td><input type="number" class="pl-pack-cost" value="${it.pack_cost ?? ''}" step="0.01" min="0" style="width:80px;padding:4px;"></td>
+                    <td><input type="number" class="pl-unit-cost" value="${it.unit_cost ?? ''}" step="0.0001" min="0" style="width:80px;padding:4px;"></td>
+                    <td>
+                        <select class="pl-product" style="width:100%;padding:4px;">
+                            <option value="">— unmatched —</option>
+                            ${productOptions(it.product_id)}
+                        </select>
+                    </td>
+                    <td style="font-size:11px;color:${confColor};font-weight:700;">${Math.round(conf * 100)}%</td>
+                    <td>${statusBadge}</td>
+                    <td><button class="btn btn-small" onclick="savePriceItem(${it.id})">Save</button></td>
+                </tr>
+                `;
+            }).join('');
+
+            const statusBanner = pl.status === 'confirmed'
+                ? '<div style="background:#c6f6d5;border:1px solid #38a169;border-radius:6px;padding:10px;margin-bottom:14px;color:#22543d;">✓ This list is the active price source for ' + escapeHtml(pl.vendor?.company_name || '') + '. Any newer confirmed list will supersede it.</div>'
+                : pl.status === 'superseded'
+                ? '<div style="background:#e2e8f0;border:1px solid #a0aec0;border-radius:6px;padding:10px;margin-bottom:14px;color:#4a5568;">This list has been superseded by a newer confirmed list.</div>'
+                : '<div style="background:#fed7d7;border:1px solid #e53e3e;border-radius:6px;padding:10px;margin-bottom:14px;color:#742a2a;">⏳ Pending review. Map any unmatched items, then click Confirm.</div>';
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 1100px;">
+                        <h3>Review price list — ${escapeHtml(pl.vendor?.company_name || '')}</h3>
+                        <div style="color:#718096;font-size:13px;margin-bottom:14px;">
+                            Uploaded ${(pl.created_at || '').slice(0,16)} · ${pl.items?.length || 0} items
+                            ${pl.source_filename ? ' · ' + escapeHtml(pl.source_filename) : ''}
+                            ${pl.notes ? ' · ' + escapeHtml(pl.notes) : ''}
+                        </div>
+                        ${statusBanner}
+                        <div style="max-height:480px;overflow:auto;border:1px solid #e2e8f0;border-radius:6px;">
+                            <table style="font-size:13px;">
+                                <thead style="position:sticky;top:0;background:#f7fafc;">
+                                    <tr>
+                                        <th>Vendor's name</th>
+                                        <th>Pack (raw)</th>
+                                        <th>Pack #</th>
+                                        <th>Pack $</th>
+                                        <th>Unit $</th>
+                                        <th>Match to product</th>
+                                        <th>Conf</th>
+                                        <th>Status</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rowsHtml}</tbody>
+                            </table>
+                        </div>
+                        <div style="display:flex;gap:10px;justify-content:space-between;margin-top:20px;flex-wrap:wrap;">
+                            <button class="btn" style="background:#e53e3e;color:white;" onclick="deletePriceList(${listId})">🗑 Discard List</button>
+                            <div style="display:flex;gap:10px;">
+                                <button class="btn btn-secondary" onclick="showVendorPriceLists()">Back</button>
+                                ${pl.status !== 'confirmed' ? `<button class="btn btn-success" style="background:#38a169;" onclick="confirmPriceList(${listId})">✓ Confirm List</button>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function savePriceItem(itemId) {
+            const row = document.querySelector(`tr[data-item-id="${itemId}"]`);
+            if (!row) return;
+            const product_id = parseInt(row.querySelector('.pl-product').value) || null;
+            const pack_size = parseInt(row.querySelector('.pl-pack-size').value) || null;
+            const pack_cost = parseFloat(row.querySelector('.pl-pack-cost').value);
+            const unit_cost = parseFloat(row.querySelector('.pl-unit-cost').value);
+
+            const payload = { product_id };
+            if (!isNaN(pack_size)) payload.pack_size = pack_size;
+            if (!isNaN(pack_cost)) payload.pack_cost = pack_cost;
+            if (!isNaN(unit_cost)) payload.unit_cost = unit_cost;
+            // If admin picked a product, mark as admin_override (or admin_confirmed if they just accept the auto match)
+            payload.match_status = product_id ? 'admin_override' : 'unmatched';
+
+            try {
+                await api(`/api/admin/vendor-price-items/${itemId}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify(payload)
+                });
+                showAlert('Saved.', 'success');
+            } catch (e) {
+                showAlert(e.message);
+            }
+        }
+
+        async function confirmPriceList(listId) {
+            if (!confirm('Confirm this list as the vendor\\'s active price source? This supersedes any previous confirmed list.')) return;
+            try {
+                await api(`/api/admin/vendor-price-lists/${listId}/confirm`, { method: 'POST' });
+                showAlert('Confirmed. PO autofill + cross-vendor ranking will read from this list.', 'success');
+                openPriceListReview(listId);
+            } catch (e) { showAlert(e.message); }
+        }
+
+        async function deletePriceList(listId) {
+            if (!confirm('Permanently delete this price list and its items? Use Discard only on obviously bad extractions.')) return;
+            try {
+                await api(`/api/admin/vendor-price-lists/${listId}`, { method: 'DELETE' });
+                showAlert('Deleted.', 'success');
+                showVendorPriceLists();
+            } catch (e) { showAlert(e.message); }
         }
 
         async function showPOWhatsApp(poId) {
@@ -5353,6 +5715,13 @@ The Peptide Wizard Team"></textarea>
                         </div>
                         <button class="btn" onclick="loadInventoryReport()">Check Inventory</button>
                         <div id="inventoryReportContent" style="margin-top: 20px;"></div>
+                    </div>
+
+                    <div class="card" style="margin-bottom: 0; grid-column: 1 / -1;">
+                        <h3 style="margin-bottom: 15px;">💰 Vendor Price Comparison</h3>
+                        <p style="color: #718096; margin-bottom: 15px;">Cross-vendor view of confirmed prices per product. Cheapest highlighted; premium % vs best shown for others. Upload more vendor price lists from the Purchase Orders tab → 📋 Vendor Price Lists.</p>
+                        <button class="btn" onclick="loadVendorPriceComparison()">Run Comparison</button>
+                        <div id="vendorPriceComparisonContent" style="margin-top: 20px;"></div>
                     </div>
 
                     <div class="card" style="margin-bottom: 0; grid-column: 1 / -1;">
@@ -5928,6 +6297,75 @@ The Peptide Wizard Team"></textarea>
             `);
             printWindow.document.close();
             printWindow.print();
+        }
+
+        async function loadVendorPriceComparison() {
+            const container = document.getElementById('vendorPriceComparisonContent');
+            container.innerHTML = '<p style="color:#718096;">Loading…</p>';
+            try {
+                const r = await api('/api/admin/reports/vendor-prices');
+                const s = r.summary || {};
+                if (!r.products || r.products.length === 0) {
+                    container.innerHTML = `<p style="color:#a0aec0;">No confirmed vendor prices yet. Upload a price list from the Purchase Orders tab → 📋 Vendor Price Lists.</p>`;
+                    return;
+                }
+                const summary = `
+                    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;">
+                        <div style="background:#ebf8ff;border:1px solid #90cdf4;border-radius:8px;padding:10px 14px;font-size:13px;">
+                            <div style="font-weight:700;font-size:20px;color:#2c5282;">${s.products_with_offers || 0}</div>
+                            products with offers
+                        </div>
+                        <div style="background:#e6fffa;border:1px solid #4fd1c5;border-radius:8px;padding:10px 14px;font-size:13px;">
+                            <div style="font-weight:700;font-size:20px;color:#234e52;">${s.multi_vendor_products || 0}</div>
+                            with 2+ vendors
+                        </div>
+                        <div style="background:#fffaf0;border:1px solid #fbd38d;border-radius:8px;padding:10px 14px;font-size:13px;">
+                            <div style="font-weight:700;font-size:20px;color:#7b341e;">${s.total_offers || 0}</div>
+                            total offers
+                        </div>
+                    </div>
+                `;
+
+                const cards = (r.products || []).map(p => {
+                    const offerRows = p.offers.map(o => {
+                        const tag = o.best ? '<span style="background:#38a169;color:white;padding:1px 6px;border-radius:8px;font-size:10px;margin-left:6px;">BEST</span>' :
+                                    (o.premium_vs_best_pct ? `<span style="color:#e53e3e;font-size:11px;margin-left:6px;">+${o.premium_vs_best_pct}%</span>` : '');
+                        const unit = o.unit_cost !== null ? `$${o.unit_cost.toFixed(4)}` : '—';
+                        const pack = o.pack_cost !== null ? `($${o.pack_cost.toFixed(2)}/pack${o.pack_size ? ' × ' + o.pack_size : ''})` : '';
+                        return `
+                            <tr>
+                                <td>${escapeHtml(o.vendor_name)}${tag}</td>
+                                <td style="font-family:monospace;font-size:12px;color:#718096;">${escapeHtml(o.raw_name || '')}</td>
+                                <td style="text-align:right;font-weight:600;">${unit}</td>
+                                <td style="text-align:right;color:#a0aec0;font-size:12px;">${pack}</td>
+                                <td style="text-align:right;font-size:12px;color:#718096;">${(o.effective_date || '').slice(0,10)}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                    return `
+                        <details style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:10px;" ${p.offer_count >= 2 ? 'open' : ''}>
+                            <summary style="cursor:pointer;padding:10px 14px;font-weight:600;display:flex;justify-content:space-between;">
+                                <span><span style="font-family:monospace;">${escapeHtml(p.sku)}</span> — ${escapeHtml(p.name)}</span>
+                                <span style="font-size:13px;color:#4a5568;font-weight:400;">
+                                    ${p.offer_count} ${p.offer_count === 1 ? 'offer' : 'offers'} · best $${(p.best_unit_cost || 0).toFixed(4)}/unit${p.retail_price ? ' · retail $' + p.retail_price.toFixed(2) : ''}
+                                </span>
+                            </summary>
+                            <div style="padding:0 14px 12px;">
+                                <table style="font-size:13px;">
+                                    <thead>
+                                        <tr><th>Vendor</th><th>Vendor's name</th><th style="text-align:right;">Unit $</th><th style="text-align:right;">Pack</th><th style="text-align:right;">As of</th></tr>
+                                    </thead>
+                                    <tbody>${offerRows}</tbody>
+                                </table>
+                            </div>
+                        </details>
+                    `;
+                }).join('');
+
+                container.innerHTML = summary + cards;
+            } catch (e) {
+                container.innerHTML = `<p style="color:#e53e3e;">Error: ${escapeHtml(e.message || String(e))}</p>`;
+            }
         }
 
         async function loadVelocityReport() {
