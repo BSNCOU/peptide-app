@@ -1044,6 +1044,7 @@
                             </div>
                             <div class="form-group" id="shippingAddressSection">
                                 <label><strong>Shipping Address *</strong></label>
+                                <div id="shippingPrefillBanner" style="display:none; background:#ebf8ff; border:1px solid #63b3ed; border-radius:6px; padding:8px 10px; margin-bottom:10px; font-size:13px; color:#2c5282;"></div>
                                 <input type="text" id="addressAutocomplete" placeholder="Start typing your address..." autocomplete="off" style="margin-bottom: 10px;">
                                 <div id="addressFields" style="display: grid; gap: 10px;">
                                     <input type="text" id="addrStreet1" placeholder="Street Address" required>
@@ -1149,13 +1150,50 @@
             // Initialize Google Places autocomplete if available
             initAddressAutocomplete();
 
+            // Pre-fill shipping fields from the user's last order (if any).
+            // Silently no-ops when user has no shipping orders or isn't logged in.
+            prefillShippingFromLastOrder();
+
             // If a pickup-eligible discount is already applied, show the pickup block
             if (state.discount?.allows_pickup) {
                 const pickupBlock = document.getElementById('pickupOptionBlock');
                 if (pickupBlock) pickupBlock.style.display = 'block';
             }
         }
-        
+
+        async function prefillShippingFromLastOrder() {
+            // Returning-customer convenience: pull shipping from the most recent
+            // order so users don't retype their address every time. Added 2026-06-12
+            // because the users table doesn't store a saved address yet.
+            try {
+                const r = await fetch('/api/me/last-shipping-address', { credentials: 'same-origin' });
+                if (r.status !== 200) return;  // 204 = no prior order, 401 = not logged in, etc.
+                const a = await r.json();
+                const setVal = (id, v) => {
+                    const el = document.getElementById(id);
+                    if (el && v && !el.value) el.value = v;  // don't clobber if user already started typing
+                };
+                setVal('addrStreet1', a.street1);
+                setVal('addrStreet2', a.street2);
+                setVal('addrCity',    a.city);
+                setVal('addrState',   (a.state || '').toUpperCase());
+                setVal('addrZip',     a.zip);
+
+                const banner = document.getElementById('shippingPrefillBanner');
+                if (banner && a.source_order_number) {
+                    banner.innerHTML =
+                        '✓ Pre-filled from order <strong>' +
+                        a.source_order_number.replace(/[<>&"']/g, '') +
+                        '</strong>' +
+                        (a.source_ordered_at ? ' (' + a.source_ordered_at + ')' : '') +
+                        ' — edit any field if it changed.';
+                    banner.style.display = 'block';
+                }
+            } catch (e) {
+                // Silent failure — checkout still works, user just types the address.
+            }
+        }
+
         function initAddressAutocomplete() {
             const input = document.getElementById('addressAutocomplete');
             if (!input) return;

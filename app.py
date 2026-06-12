@@ -1800,6 +1800,49 @@ def get_me():
         return jsonify({'error': 'User not found'}), 404
     return jsonify(dict(user))
 
+@app.route('/api/me/last-shipping-address', methods=['GET'])
+@login_required
+def get_my_last_shipping_address():
+    """Return the user's most recent shipping address (parsed into structured
+    fields) so the checkout form can pre-fill it. Added 2026-06-12 because
+    returning customers had to retype their full shipping address on every
+    order — there's no saved address on the users row.
+
+    Returns 204 when the user has no shipping orders yet; the JS treats that
+    as "no prefill available" and leaves the form empty.
+    """
+    conn = get_db()
+    row = conn.execute(
+        """
+        SELECT id, order_number, shipping_address, created_at
+        FROM orders
+        WHERE user_id = ?
+          AND delivery_method = 'ship'
+          AND shipping_address IS NOT NULL
+          AND shipping_address != ''
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (session['user_id'],),
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        return ('', 204)
+
+    od = dict(row)
+    parsed = parse_shipping_address(od.get('shipping_address') or '')
+    return jsonify({
+        'street1':       parsed.get('street1', ''),
+        'street2':       parsed.get('street2', ''),
+        'city':          parsed.get('city', ''),
+        'state':         parsed.get('state', ''),
+        'zip':           parsed.get('zip', ''),
+        'source_order_number': od.get('order_number'),
+        'source_ordered_at':   str(od.get('created_at') or '')[:10],
+    })
+
+
 @app.route('/api/my-referrals', methods=['GET'])
 @login_required
 def get_my_referrals():
