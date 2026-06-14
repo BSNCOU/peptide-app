@@ -1482,6 +1482,15 @@ def verified_required(f):
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Service-to-service auth: master_agent (and other internal AI OS
+        # clients) can call admin endpoints with X-API-Key header when the
+        # PW_INTERNAL_API_KEY env var is set. Used by /price_list Telegram
+        # uploads and similar service paths.
+        provided_key = request.headers.get('X-API-Key') or request.headers.get('x-api-key')
+        expected_key = os.environ.get('PW_INTERNAL_API_KEY', '')
+        if provided_key and expected_key and provided_key == expected_key:
+            return f(*args, **kwargs)
+
         if 'user_id' not in session:
             return jsonify({'error': 'Authentication required'}), 401
         conn = get_db()
@@ -6783,6 +6792,313 @@ def list_po_vendors():
     return jsonify(vendors)
 
 
+# ── Vendor price lists (Slice A, 2026-06-09) ───────────────────────────────
+# Workflow:
+#   1. Admin (or Telegram via master_agent) uploads a price list for a vendor
+#   2. We persist the file + invoke pw_extract.extract_price_list against
+#      Claude to pull structured items out
+#   3. Items land in qa_vendor_price_items with match_status='unmatched' or
+#      'auto' depending on LLM confidence
+#   4. Admin reviews via the admin UI — confirms/edits each row mapping
+#   5. POST /confirm flips the list to 'confirmed' — that's the price list
+#      the PO autofill + cross-vendor ranking reads from going forward
+
+_PRICE_UPLOAD_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'uploads', 'price_lists')
+
+
+def _ensure_upload_dir(vendor_id: int) -> str:
+    d = os.path.join(_PRICE_UPLOAD_ROOT, str(vendor_id))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _active_product_catalog(conn) -> list[dict]:
+    rows = conn.execute(
+        'SELECT id, sku, name FROM products WHERE active = 1 ORDER BY sku'
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.route('/api/admin/vendors/<int:vendor_id>/price-lists', methods=['POST'])
+@admin_required
+def upload_vendor_price_list(vendor_id):
+    """Accept a price list upload.
+
+    Body shapes accepted:
+      - multipart/form-data with 'file' field      (photo / pdf)
+      - application/json with 'text' field         (typed or pasted text/csv)
+      - application/json with 'csv' field          (alias of 'text')
+
+    Optional fields:
+      - notes (str)
+      - effective_date (ISO date, defaults to now)
+      - source_type override
+    """
+    import time
+    import datetime as _dt
+    from pw_extract import extract_price_list
+
+    conn = get_db()
+    vendor_row = conn.execute(
+        'SELECT id, company_name FROM qa_vendors WHERE id = ?', (vendor_id,)
+    ).fetchone()
+    if not vendor_row:
+        conn.close()
+        return jsonify({'error': 'vendor not found'}), 404
+    vendor = dict(vendor_row)
+
+    source_type = 'text'
+    source_filename = None
+    storage_path = None
+    file_bytes = None
+    raw_text = None
+    notes = None
+    effective_date = _dt.datetime.utcnow().strftime('%Y-%m-%d')
+
+    # Detect upload shape
+    if request.files and 'file' in request.files:
+        f = request.files['file']
+        source_filename = f.filename or 'upload'
+        raw_bytes = f.read()
+        # Quick mime sniff
+        if source_filename.lower().endswith('.pdf') or raw_bytes[:4] == b'%PDF':
+            source_type = 'pdf'
+        elif source_filename.lower().endswith(('.txt', '.csv')):
+            source_type = 'csv' if source_filename.lower().endswith('.csv') else 'text'
+            raw_text = raw_bytes.decode('utf-8', errors='replace')
+        else:
+            source_type = 'photo'
+        if source_type in ('photo', 'pdf'):
+            file_bytes = raw_bytes
+
+        # Persist the file locally for audit
+        try:
+            d = _ensure_upload_dir(vendor_id)
+            stamp = time.strftime('%Y%m%d_%H%M%S')
+            safe = ''.join(c if c.isalnum() or c in '._-' else '_' for c in source_filename)[:80]
+            disk_name = f"{stamp}_{safe}"
+            with open(os.path.join(d, disk_name), 'wb') as out:
+                out.write(raw_bytes)
+            storage_path = f"uploads/price_lists/{vendor_id}/{disk_name}"
+        except Exception as e:
+            print(f"Note: price list save failed: {e}")
+
+        notes = (request.form.get('notes') or '').strip()[:500]
+        if request.form.get('effective_date'):
+            effective_date = request.form['effective_date'][:10]
+    else:
+        data = request.json or {}
+        raw_text = (data.get('text') or data.get('csv') or '').strip()
+        if not raw_text:
+            conn.close()
+            return jsonify({'error': 'No file or text supplied'}), 400
+        source_type = 'csv' if 'csv' in data else 'text'
+        notes = (data.get('notes') or '').strip()[:500]
+        if data.get('effective_date'):
+            effective_date = data['effective_date'][:10]
+
+    catalog = _active_product_catalog(conn)
+    extracted = extract_price_list(
+        file_bytes=file_bytes,
+        source_type=source_type,
+        raw_text=raw_text,
+        vendor_name=vendor['company_name'],
+        product_catalog=catalog,
+    )
+
+    c = conn.cursor()
+    now_iso = _dt.datetime.utcnow().isoformat(timespec='seconds')
+    c.execute('''INSERT INTO qa_vendor_price_lists
+                 (vendor_id, effective_date, source_type, source_filename,
+                  source_storage_path, notes, raw_extracted_json, status,
+                  created_at, created_by_user_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)''',
+              (vendor_id, effective_date, source_type, source_filename,
+               storage_path, notes, json.dumps(extracted)[:50000], now_iso,
+               session.get('user_id')))
+    list_id = c.lastrowid
+
+    for item in extracted.get('items', []):
+        sp_id = item.get('suggested_product_id')
+        # Re-verify the suggested_product_id actually exists in our catalog —
+        # the LLM can hallucinate ids.
+        if sp_id is not None:
+            if not any(p['id'] == sp_id for p in catalog):
+                sp_id = None
+
+        confidence = float(item.get('match_confidence') or 0)
+        if sp_id is None:
+            match_status = 'unmatched'
+        elif confidence >= 0.85:
+            match_status = 'auto'
+        else:
+            match_status = 'unmatched'  # treat low-confidence as unmatched so admin reviews
+
+        c.execute('''INSERT INTO qa_vendor_price_items
+                     (price_list_id, vendor_id, raw_name, raw_pack_size, pack_size,
+                      product_id, match_status, match_confidence, unit_cost, pack_cost,
+                      currency, moq, notes, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (list_id, vendor_id,
+                   item.get('raw_name') or '',
+                   item.get('raw_pack_size'),
+                   item.get('pack_size'),
+                   sp_id, match_status, confidence,
+                   item.get('unit_cost'), item.get('pack_cost'),
+                   item.get('currency') or 'USD',
+                   item.get('moq'),
+                   (item.get('match_reasoning') or '')[:300],
+                   now_iso))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'ok': bool(extracted.get('ok')),
+        'price_list_id': list_id,
+        'vendor_id': vendor_id,
+        'vendor_name': vendor['company_name'],
+        'items_extracted': len(extracted.get('items', [])),
+        'extractor_error': extracted.get('error'),
+        'extractor_model': extracted.get('model'),
+        'review_url': f"/admin#price_list/{list_id}",
+    }), 201
+
+
+@app.route('/api/admin/vendors/<int:vendor_id>/price-lists', methods=['GET'])
+@admin_required
+def list_vendor_price_lists(vendor_id):
+    """List all price lists ever uploaded for one vendor."""
+    conn = get_db()
+    rows = conn.execute('''
+        SELECT pl.*, COUNT(pi.id) as item_count,
+               SUM(CASE WHEN pi.match_status = 'unmatched' THEN 1 ELSE 0 END) as unmatched_count
+        FROM qa_vendor_price_lists pl
+        LEFT JOIN qa_vendor_price_items pi ON pi.price_list_id = pl.id
+        WHERE pl.vendor_id = ?
+        GROUP BY pl.id
+        ORDER BY pl.created_at DESC
+    ''', (vendor_id,)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/admin/vendor-price-lists/<int:list_id>', methods=['GET'])
+@admin_required
+def get_vendor_price_list(list_id):
+    """Get one price list with its items + product match candidates."""
+    conn = get_db()
+    pl = conn.execute('SELECT * FROM qa_vendor_price_lists WHERE id = ?', (list_id,)).fetchone()
+    if not pl:
+        conn.close()
+        return jsonify({'error': 'not found'}), 404
+    pl_d = dict(pl)
+    vendor = conn.execute('SELECT id, company_name FROM qa_vendors WHERE id = ?',
+                          (pl_d['vendor_id'],)).fetchone()
+    pl_d['vendor'] = dict(vendor) if vendor else None
+
+    items = conn.execute('''
+        SELECT pi.*, p.sku as matched_sku, p.name as matched_name
+        FROM qa_vendor_price_items pi
+        LEFT JOIN products p ON pi.product_id = p.id
+        WHERE pi.price_list_id = ?
+        ORDER BY pi.id
+    ''', (list_id,)).fetchall()
+    pl_d['items'] = [dict(i) for i in items]
+    pl_d['products'] = _active_product_catalog(conn)
+    conn.close()
+    return jsonify(pl_d)
+
+
+@app.route('/api/admin/vendor-price-items/<int:item_id>', methods=['PATCH'])
+@admin_required
+def update_vendor_price_item(item_id):
+    """Admin override on a single price item's mapping or values."""
+    data = request.json or {}
+    conn = get_db()
+    c = conn.cursor()
+    existing = c.execute('SELECT id FROM qa_vendor_price_items WHERE id = ?', (item_id,)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({'error': 'not found'}), 404
+
+    fields = []
+    params = []
+    for col in ('product_id', 'pack_size', 'pack_cost', 'unit_cost', 'currency', 'moq', 'raw_name'):
+        if col in data:
+            fields.append(f'{col} = ?')
+            params.append(data[col])
+    if 'match_status' in data:
+        if data['match_status'] not in ('unmatched', 'auto', 'admin_confirmed',
+                                         'admin_override', 'new_product'):
+            conn.close()
+            return jsonify({'error': 'invalid match_status'}), 400
+        fields.append('match_status = ?')
+        params.append(data['match_status'])
+
+    if not fields:
+        conn.close()
+        return jsonify({'error': 'no fields to update'}), 400
+
+    params.append(item_id)
+    c.execute(f'UPDATE qa_vendor_price_items SET {", ".join(fields)} WHERE id = ?', params)
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'item_id': item_id})
+
+
+@app.route('/api/admin/vendor-price-lists/<int:list_id>/confirm', methods=['POST'])
+@admin_required
+def confirm_vendor_price_list(list_id):
+    """Mark a price list confirmed. From now on the PO autofill + cross-vendor
+    ranking reads from THIS list's items for that vendor (until superseded by
+    a newer confirmed list)."""
+    import datetime as _dt
+    conn = get_db()
+    c = conn.cursor()
+    existing = c.execute('SELECT vendor_id FROM qa_vendor_price_lists WHERE id = ?',
+                         (list_id,)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({'error': 'not found'}), 404
+    vendor_id = dict(existing)['vendor_id']
+
+    # Mark older confirmed lists for this vendor as superseded
+    c.execute('''UPDATE qa_vendor_price_lists
+                 SET status = 'superseded'
+                 WHERE vendor_id = ? AND status = 'confirmed' AND id != ?''',
+              (vendor_id, list_id))
+    now_iso = _dt.datetime.utcnow().isoformat(timespec='seconds')
+    c.execute('''UPDATE qa_vendor_price_lists
+                 SET status = 'confirmed', confirmed_at = ?, confirmed_by_user_id = ?
+                 WHERE id = ?''',
+              (now_iso, session.get('user_id'), list_id))
+
+    # Promote any auto matches that are still 'auto' to 'admin_confirmed'
+    c.execute('''UPDATE qa_vendor_price_items
+                 SET match_status = 'admin_confirmed'
+                 WHERE price_list_id = ? AND match_status = 'auto' AND product_id IS NOT NULL''',
+              (list_id,))
+
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'list_id': list_id, 'confirmed_at': now_iso})
+
+
+@app.route('/api/admin/vendor-price-lists/<int:list_id>', methods=['DELETE'])
+@admin_required
+def delete_vendor_price_list(list_id):
+    """Hard-delete a price list + its items. Use sparingly; prefer 'rejected' status."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('DELETE FROM qa_vendor_price_items WHERE price_list_id = ?', (list_id,))
+    c.execute('DELETE FROM qa_vendor_price_lists WHERE id = ?', (list_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/admin/po/<int:po_id>', methods=['GET'])
 @admin_required
 def get_purchase_order(po_id):
@@ -6840,10 +7156,41 @@ def add_po_item(po_id):
         conn.close()
         return jsonify({'error': 'Cannot modify a submitted PO - close it first to edit'}), 400
     
-    # Get product default cost (use provided unit_cost if given, otherwise product.cost)
+    # Get product default cost. Resolution order:
+    #   1. caller-supplied unit_cost wins (admin override)
+    #   2. confirmed vendor price for this PO's vendor (Slice B autofill)
+    #   3. product.cost (weighted-avg landed cost)
     product = c.execute('SELECT cost FROM products WHERE id = ?', (data['product_id'],)).fetchone()
     default_cost = dict(product)['cost'] if product else 0
-    unit_cost = data.get('unit_cost', default_cost) if data.get('unit_cost') is not None else default_cost
+    po_dict = dict(po)
+    po_vendor_id = po_dict.get('vendor_id')
+    autofill_cost = None
+    autofill_source = None
+    if po_vendor_id:
+        row = c.execute('''
+            SELECT pi.unit_cost, pi.pack_cost, pi.pack_size, pl.id as price_list_id,
+                   pl.effective_date, pl.confirmed_at
+            FROM qa_vendor_price_items pi
+            JOIN qa_vendor_price_lists pl ON pi.price_list_id = pl.id
+            WHERE pi.vendor_id = ?
+              AND pi.product_id = ?
+              AND pl.status = 'confirmed'
+              AND pi.match_status IN ('auto', 'admin_confirmed', 'admin_override')
+            ORDER BY pl.confirmed_at DESC, pl.id DESC
+            LIMIT 1
+        ''', (po_vendor_id, data['product_id'])).fetchone()
+        if row:
+            r = dict(row)
+            autofill_cost = r.get('unit_cost') or (
+                (r.get('pack_cost') / r.get('pack_size')) if (r.get('pack_cost') and r.get('pack_size')) else None
+            )
+            autofill_source = f"vendor_price_list#{r.get('price_list_id')}"
+    if data.get('unit_cost') is not None:
+        unit_cost = data['unit_cost']
+    elif autofill_cost is not None:
+        unit_cost = autofill_cost
+    else:
+        unit_cost = default_cost
     
     # Check if item already exists in PO
     existing = c.execute('SELECT id, quantity_ordered FROM purchase_order_items WHERE po_id = ? AND product_id = ?', 
@@ -6861,8 +7208,12 @@ def add_po_item(po_id):
     
     conn.commit()
     conn.close()
-    
-    return jsonify({'message': 'Item added to PO'})
+
+    return jsonify({
+        'message': 'Item added to PO',
+        'unit_cost_used': unit_cost,
+        'unit_cost_source': autofill_source or ('admin_override' if data.get('unit_cost') is not None else 'product_cost'),
+    })
 
 
 @app.route('/api/admin/po/<int:po_id>/items/<int:item_id>', methods=['PUT'])
@@ -7085,6 +7436,157 @@ def receive_po_items(po_id):
                    'testing_allocated': l['testing_allocated'],
                    'landed_cost': l['landed_cost'],
                    'lot_number': l['lot_number']} for l in line_data]
+    })
+
+
+@app.route('/api/admin/po/<int:po_id>/qa-pick-preview', methods=['GET'])
+@admin_required
+def po_qa_pick_preview(po_id):
+    """Preview which lines from this received PO are eligible for QA sampling.
+
+    Returns received items with their lot_number + already-sampled count
+    so the picker UI can show 'X bottles available' per row.
+    """
+    conn = get_db()
+    po = conn.execute('SELECT id, po_number, vendor_id FROM purchase_orders WHERE id = ?',
+                      (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    po_d = dict(po)
+
+    items = conn.execute('''
+        SELECT poi.id as po_item_id, poi.product_id, poi.quantity_received,
+               poi.lot_number, poi.landed_cost,
+               p.sku, p.name, p.supplier_pack_size
+        FROM purchase_order_items poi
+        JOIN products p ON poi.product_id = p.id
+        WHERE poi.po_id = ? AND poi.quantity_received > 0
+        ORDER BY p.sku
+    ''', (po_id,)).fetchall()
+
+    out = []
+    for it in items:
+        d = dict(it)
+        # Existing samples for this lot (avoid double-sampling the same bottles)
+        existing = 0
+        try:
+            row = conn.execute(
+                'SELECT COUNT(*) as cnt FROM qa_sample_submissions WHERE lot_number = ? AND vendor_id = ?',
+                (d.get('lot_number') or '', po_d['vendor_id'])
+            ).fetchone()
+            existing = dict(row)['cnt'] if row else 0
+        except Exception:
+            existing = 0
+        d['existing_samples'] = existing
+        units_received = (d.get('quantity_received') or 0) * (d.get('supplier_pack_size') or 1)
+        d['units_received'] = units_received
+        d['available_for_sampling'] = max(0, units_received - existing)
+        out.append(d)
+
+    conn.close()
+    return jsonify({
+        'po_number': po_d['po_number'],
+        'po_id': po_id,
+        'vendor_id': po_d['vendor_id'],
+        'items': out,
+    })
+
+
+@app.route('/api/admin/po/<int:po_id>/pick-qa-samples', methods=['POST'])
+@admin_required
+def po_pick_qa_samples(po_id):
+    """Pick N bottles from each lot for QA testing.
+
+    Body shape:
+      {
+        "picks": [
+          {"po_item_id": 12, "samples": 2, "storage_location": "fridge-A",
+           "notes": "optional"},
+          ...
+        ],
+        "received_date": "2026-06-09"   (optional, defaults to today)
+      }
+
+    Creates one qa_sample_submission row per pick (with the lot_number from
+    the PO line). The 'samples' count is stored as bottle count; the existing
+    qa_sample_submissions table represents one row per pick batch, not per
+    individual bottle, so 'samples' lives in notes for now.
+    """
+    import datetime as _dt
+    data = request.json or {}
+    picks = data.get('picks') or []
+    received_date = (data.get('received_date') or
+                     _dt.date.today().strftime('%Y-%m-%d'))[:10]
+
+    if not picks:
+        return jsonify({'error': 'No picks supplied'}), 400
+
+    conn = get_db()
+    po = conn.execute('SELECT id, po_number, vendor_id FROM purchase_orders WHERE id = ?',
+                      (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    po_d = dict(po)
+    vendor_id = po_d['vendor_id']
+    if not vendor_id:
+        conn.close()
+        return jsonify({'error': 'PO has no linked vendor (legacy free-text supplier). '
+                                  'Link a QA vendor before sampling.'}), 400
+
+    c = conn.cursor()
+    now_iso = _dt.datetime.utcnow().isoformat(timespec='seconds')
+    created = []
+    for pick in picks:
+        try:
+            po_item_id = int(pick['po_item_id'])
+            samples = int(pick.get('samples') or 0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if samples <= 0:
+            continue
+
+        poi = c.execute('''
+            SELECT poi.lot_number, poi.product_id,
+                   p.sku, p.name
+            FROM purchase_order_items poi
+            JOIN products p ON poi.product_id = p.id
+            WHERE poi.id = ? AND poi.po_id = ?
+        ''', (po_item_id, po_id)).fetchone()
+        if not poi:
+            continue
+        pd = dict(poi)
+        storage = (pick.get('storage_location') or '')[:120]
+        free_notes = (pick.get('notes') or '')[:500]
+        notes = f"PO {po_d['po_number']} · {samples} bottle(s) pulled for QA"
+        if free_notes:
+            notes += f" · {free_notes}"
+
+        c.execute('''INSERT INTO qa_sample_submissions
+                     (vendor_id, peptide_name, peptide_sku, lot_number,
+                      received_date, storage_location, notes, status,
+                      created_at, created_by_user_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?)''',
+                  (vendor_id, pd.get('name') or '', pd.get('sku'),
+                   pd.get('lot_number'), received_date, storage, notes,
+                   now_iso, session.get('user_id')))
+        sample_id = c.lastrowid
+        created.append({
+            'sample_id': sample_id,
+            'po_item_id': po_item_id,
+            'sku': pd.get('sku'),
+            'lot_number': pd.get('lot_number'),
+            'samples': samples,
+        })
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'message': f'{len(created)} sample batch(es) created for QA',
+        'samples': created,
+        'qa_url': '/admin/qa/vendors',
     })
 
 
@@ -7660,6 +8162,114 @@ def firesale_flyer():
                            min_order=min_order,
                            bonus_pct=bonus_pct,
                            end_date=end_date)
+
+
+@app.route('/api/admin/reports/vendor-prices', methods=['GET'])
+@admin_required
+def admin_vendor_prices_report():
+    """Cross-vendor price comparison.
+
+    For each active product, list every confirmed vendor price (matched
+    items only), sort cheapest first per row, flag the leader. Reads only
+    from confirmed (non-superseded) price lists.
+
+    Query params:
+      ?product_id=N  — narrow to one product
+      ?vendor_id=N   — narrow to one vendor (rare; useful for sanity check)
+    """
+    product_id_arg = request.args.get('product_id', type=int)
+    vendor_id_arg = request.args.get('vendor_id', type=int)
+
+    conn = get_db()
+    try:
+        # Pull every confirmed item across all confirmed-and-not-superseded lists
+        sql = '''
+            SELECT pi.product_id, pi.vendor_id, pi.unit_cost, pi.pack_cost,
+                   pi.pack_size, pi.currency, pi.moq, pi.raw_name,
+                   pl.effective_date, pl.confirmed_at,
+                   p.sku, p.name as product_name, p.price_single,
+                   v.company_name as vendor_name
+            FROM qa_vendor_price_items pi
+            JOIN qa_vendor_price_lists pl ON pi.price_list_id = pl.id
+            JOIN products p ON pi.product_id = p.id
+            JOIN qa_vendors v ON pi.vendor_id = v.id
+            WHERE pl.status = 'confirmed'
+              AND pi.match_status IN ('auto', 'admin_confirmed', 'admin_override')
+              AND p.active = 1
+        '''
+        params = []
+        if product_id_arg:
+            sql += ' AND pi.product_id = ?'
+            params.append(product_id_arg)
+        if vendor_id_arg:
+            sql += ' AND pi.vendor_id = ?'
+            params.append(vendor_id_arg)
+        sql += ' ORDER BY p.sku, pi.unit_cost ASC NULLS LAST, pi.pack_cost ASC'
+        # SQLite doesn't support NULLS LAST consistently; we sort post-query
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            # Postgres path: same with NULLS LAST already valid; fallback strips it
+            sql2 = sql.replace('NULLS LAST', '')
+            rows = conn.execute(sql2, params).fetchall()
+    finally:
+        conn.close()
+
+    # Group by product, rank within each
+    by_product: dict[int, dict] = {}
+    for r in rows:
+        d = dict(r)
+        pid = d['product_id']
+        if pid not in by_product:
+            by_product[pid] = {
+                'product_id': pid,
+                'sku': d['sku'],
+                'name': d['product_name'],
+                'retail_price': float(d.get('price_single') or 0),
+                'offers': [],
+            }
+        by_product[pid]['offers'].append({
+            'vendor_id': d['vendor_id'],
+            'vendor_name': d['vendor_name'],
+            'raw_name': d['raw_name'],
+            'unit_cost': float(d['unit_cost']) if d.get('unit_cost') is not None else None,
+            'pack_cost': float(d['pack_cost']) if d.get('pack_cost') is not None else None,
+            'pack_size': d.get('pack_size'),
+            'currency': d.get('currency') or 'USD',
+            'moq': d.get('moq'),
+            'effective_date': d.get('effective_date'),
+            'confirmed_at': d.get('confirmed_at'),
+        })
+
+    # Per-product: sort offers by unit_cost asc (None → end), mark best
+    products = []
+    for pid, row in by_product.items():
+        offers = row['offers']
+        offers.sort(key=lambda o: (o['unit_cost'] is None, o['unit_cost'] or 0))
+        if offers and offers[0]['unit_cost'] is not None:
+            offers[0]['best'] = True
+            best_cost = offers[0]['unit_cost']
+            for o in offers[1:]:
+                if o['unit_cost'] is not None and best_cost > 0:
+                    o['premium_vs_best_pct'] = round(
+                        (o['unit_cost'] - best_cost) / best_cost * 100, 1
+                    )
+        row['offer_count'] = len(offers)
+        row['best_unit_cost'] = offers[0]['unit_cost'] if offers else None
+        row['worst_unit_cost'] = next(
+            (o['unit_cost'] for o in reversed(offers) if o['unit_cost'] is not None),
+            None
+        )
+        products.append(row)
+
+    products.sort(key=lambda r: (r['sku'] or ''))
+
+    summary = {
+        'products_with_offers': len(products),
+        'total_offers': sum(p['offer_count'] for p in products),
+        'multi_vendor_products': sum(1 for p in products if p['offer_count'] >= 2),
+    }
+    return jsonify({'summary': summary, 'products': products})
 
 
 @app.route('/api/admin/reports/inventory-velocity', methods=['GET'])
