@@ -5419,7 +5419,7 @@ The Peptide Wizard Team"></textarea>
         }
 
         async function confirmPriceList(listId) {
-            if (!confirm('Confirm this list as the vendor\\'s active price source? This supersedes any previous confirmed list.')) return;
+            if (!confirm("Confirm this list as the vendor's active price source? This supersedes any previous confirmed list.")) return;
             try {
                 await api(`/api/admin/vendor-price-lists/${listId}/confirm`, { method: 'POST' });
                 showAlert('Confirmed. PO autofill + cross-vendor ranking will read from this list.', 'success');
