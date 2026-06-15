@@ -6824,6 +6824,62 @@ def _active_product_catalog(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _extract_price_list_async(list_id, vendor_id, vendor_name, file_bytes, source_type, raw_text):
+    """Run the (slow) Claude extraction OFF the web request, in a background
+    thread. Uploads return instantly with status='processing'; this populates
+    the items and flips status to 'pending' (ready for review) or 'error'.
+    Keeps any proxy/gunicorn request timeout from ever killing extraction."""
+    import datetime as _dt, json as _json
+    from pw_extract import extract_price_list
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        catalog = _active_product_catalog(conn)
+        extracted = extract_price_list(
+            file_bytes=file_bytes, source_type=source_type, raw_text=raw_text,
+            vendor_name=vendor_name, product_catalog=catalog,
+        )
+        now_iso = _dt.datetime.utcnow().isoformat(timespec='seconds')
+        items = extracted.get('items', []) or []
+        for item in items:
+            sp_id = item.get('suggested_product_id')
+            if sp_id is not None and not any(p['id'] == sp_id for p in catalog):
+                sp_id = None  # LLM can hallucinate ids
+            confidence = float(item.get('match_confidence') or 0)
+            if sp_id is None or confidence < 0.85:
+                match_status = 'unmatched'  # low-confidence => admin reviews
+            else:
+                match_status = 'auto'
+            c.execute('''INSERT INTO qa_vendor_price_items
+                         (price_list_id, vendor_id, raw_name, raw_pack_size, pack_size,
+                          product_id, match_status, match_confidence, unit_cost, pack_cost,
+                          currency, moq, notes, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (list_id, vendor_id, item.get('raw_name') or '',
+                       item.get('raw_pack_size'), item.get('pack_size'),
+                       sp_id, match_status, confidence,
+                       item.get('unit_cost'), item.get('pack_cost'),
+                       item.get('currency') or 'USD', item.get('moq'),
+                       (item.get('match_reasoning') or '')[:300], now_iso))
+        # If extraction produced nothing AND reported an error, surface it.
+        final_status = 'error' if (not items and extracted.get('error')) else 'pending'
+        c.execute('UPDATE qa_vendor_price_lists SET raw_extracted_json=?, status=? WHERE id=?',
+                  (_json.dumps(extracted)[:50000], final_status, list_id))
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+            cur = conn.cursor()
+            cur.execute("UPDATE qa_vendor_price_lists SET status='error', raw_extracted_json=? WHERE id=?",
+                        (_json.dumps({'error': str(e)[:2000]}), list_id))
+            conn.commit()
+        except Exception:
+            pass
+        print(f"[price-list async] extraction failed for list {list_id}: {e}")
+    finally:
+        conn.close()
+
+
 @app.route('/api/admin/vendors/<int:vendor_id>/price-lists', methods=['POST'])
 @admin_required
 def upload_vendor_price_list(vendor_id):
@@ -6902,72 +6958,37 @@ def upload_vendor_price_list(vendor_id):
         if data.get('effective_date'):
             effective_date = data['effective_date'][:10]
 
-    catalog = _active_product_catalog(conn)
-    extracted = extract_price_list(
-        file_bytes=file_bytes,
-        source_type=source_type,
-        raw_text=raw_text,
-        vendor_name=vendor['company_name'],
-        product_catalog=catalog,
-    )
-
+    # Insert the list row immediately as 'processing', then run the slow Claude
+    # extraction in a background thread (_extract_price_list_async). The UI polls
+    # GET .../vendor-price-lists/<id> until status flips to 'pending'/'error'.
+    # This keeps any proxy/gunicorn request timeout from killing a long vision
+    # extraction (Railway's edge cut requests ~50s; vision can take longer).
+    import threading
     c = conn.cursor()
     now_iso = _dt.datetime.utcnow().isoformat(timespec='seconds')
     c.execute('''INSERT INTO qa_vendor_price_lists
                  (vendor_id, effective_date, source_type, source_filename,
                   source_storage_path, notes, raw_extracted_json, status,
                   created_at, created_by_user_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)''',
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?)''',
               (vendor_id, effective_date, source_type, source_filename,
-               storage_path, notes, json.dumps(extracted)[:50000], now_iso,
-               session.get('user_id')))
+               storage_path, notes, None, now_iso, session.get('user_id')))
     list_id = c.lastrowid
-
-    for item in extracted.get('items', []):
-        sp_id = item.get('suggested_product_id')
-        # Re-verify the suggested_product_id actually exists in our catalog —
-        # the LLM can hallucinate ids.
-        if sp_id is not None:
-            if not any(p['id'] == sp_id for p in catalog):
-                sp_id = None
-
-        confidence = float(item.get('match_confidence') or 0)
-        if sp_id is None:
-            match_status = 'unmatched'
-        elif confidence >= 0.85:
-            match_status = 'auto'
-        else:
-            match_status = 'unmatched'  # treat low-confidence as unmatched so admin reviews
-
-        c.execute('''INSERT INTO qa_vendor_price_items
-                     (price_list_id, vendor_id, raw_name, raw_pack_size, pack_size,
-                      product_id, match_status, match_confidence, unit_cost, pack_cost,
-                      currency, moq, notes, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                  (list_id, vendor_id,
-                   item.get('raw_name') or '',
-                   item.get('raw_pack_size'),
-                   item.get('pack_size'),
-                   sp_id, match_status, confidence,
-                   item.get('unit_cost'), item.get('pack_cost'),
-                   item.get('currency') or 'USD',
-                   item.get('moq'),
-                   (item.get('match_reasoning') or '')[:300],
-                   now_iso))
-
     conn.commit()
     conn.close()
 
+    threading.Thread(
+        target=_extract_price_list_async,
+        args=(list_id, vendor_id, vendor['company_name'], file_bytes, source_type, raw_text),
+        daemon=True,
+    ).start()
+
     return jsonify({
-        'ok': bool(extracted.get('ok')),
         'price_list_id': list_id,
         'vendor_id': vendor_id,
         'vendor_name': vendor['company_name'],
-        'items_extracted': len(extracted.get('items', [])),
-        'extractor_error': extracted.get('error'),
-        'extractor_model': extracted.get('model'),
-        'review_url': f"/admin#price_list/{list_id}",
-    }), 201
+        'status': 'processing',
+    }), 202
 
 
 @app.route('/api/admin/vendors/<int:vendor_id>/price-lists', methods=['GET'])

@@ -6,3 +6,4 @@ reportlab
 requests
 easypost
 anthropic
+pypdf

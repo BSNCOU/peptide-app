@@ -5272,7 +5272,7 @@ The Peptide Wizard Team"></textarea>
         async function submitPriceListUpload(vendorId) {
             const btn = document.getElementById('plUploadBtn');
             btn.disabled = true;
-            btn.textContent = '⏳ Extracting…';
+            btn.textContent = '⏳ Uploading…';
 
             const fileInput = document.getElementById('plFile');
             const text = (document.getElementById('plText').value || '').trim();
@@ -5297,15 +5297,43 @@ The Peptide Wizard Team"></textarea>
                     showAlert('Provide a file or paste text first.'); return;
                 }
 
-                const msg = result.extractor_error
-                    ? `Extraction had trouble (${result.extractor_error}); ${result.items_extracted} items captured anyway. Opening review.`
-                    : `Extracted ${result.items_extracted} items. Review the product matches below.`;
-                showAlert(msg, result.extractor_error ? 'warning' : 'success');
-                openPriceListReview(result.price_list_id);
+                // Extraction runs in the background now (big/multi-page lists take
+                // a minute+). Poll the list until it finishes, then open review.
+                btn.textContent = '🧠 Claude is reading your list…';
+                await pollPriceListReady(result.price_list_id, btn);
             } catch (err) {
                 btn.disabled = false; btn.textContent = '⏳ Extract via Claude';
                 showAlert(err.message || String(err));
             }
+        }
+
+        async function pollPriceListReady(listId, btn) {
+            const started = Date.now();
+            const TIMEOUT_MS = 5 * 60 * 1000;  // give a big list up to 5 min
+            while (Date.now() - started < TIMEOUT_MS) {
+                await new Promise(res => setTimeout(res, 3000));
+                let pl;
+                try { pl = await api(`/api/admin/vendor-price-lists/${listId}`); }
+                catch (e) { continue; }  // transient — keep polling
+                const status = pl.status;
+                if (status === 'processing') {
+                    const secs = Math.round((Date.now() - started) / 1000);
+                    if (btn) btn.textContent = `🧠 Reading your list… ${secs}s`;
+                    continue;
+                }
+                if (status === 'error') {
+                    showAlert('Extraction failed — check ANTHROPIC_API_KEY on the server, '
+                        + 'or try a clearer file. The empty list was kept; you can discard it.');
+                    openPriceListReview(listId);
+                    return;
+                }
+                const n = (pl.items || []).length;
+                showAlert(`Extracted ${n} items. Review the product matches below.`, 'success');
+                openPriceListReview(listId);
+                return;
+            }
+            showAlert('Still processing after 5 min — reopen Vendor Price Lists → Review latest shortly.');
+            showVendorPriceLists();
         }
 
         async function openPriceListReview(listId) {
