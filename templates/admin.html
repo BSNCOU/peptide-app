@@ -4790,17 +4790,25 @@ The Peptide Wizard Team"></textarea>
         async function showQuickPOFromLowStock() {
             try {
                 const lowStock = await api('/api/admin/po/low-stock-items');
-                
+                const vendors = await api('/api/admin/po/vendors').catch(() => []);
+
                 if (lowStock.length === 0) {
                     showAlert('No low stock items found!', 'success');
                     return;
                 }
-                
+
                 document.getElementById('modalContainer').innerHTML = `
                     <div class="modal" onclick="if(event.target===this)closeModal()">
                         <div class="modal-content" style="max-width: 700px;">
                             <h3>⚡ Quick PO from Low Stock Items</h3>
                             <p style="color: #718096; margin-bottom: 15px;">Select items to include in the new PO:</p>
+                            <div style="margin-bottom: 15px;">
+                                <label style="font-size: 13px; color: #4a5568; font-weight: 600;">Vendor</label>
+                                <select id="quickPoVendor" style="width: 100%; padding: 8px;">
+                                    <option value="">— pick a vendor (optional) —</option>
+                                    ${vendors.map(v => `<option value="${v.id}">${escapeHtml(v.company_name)}</option>`).join('')}
+                                </select>
+                            </div>
                             
                             <div style="max-height: 400px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px;">
                                 <table>
@@ -4847,10 +4855,14 @@ The Peptide Wizard Team"></textarea>
 
         async function createPOFromLowStock() {
             try {
-                // First create the PO
+                // First create the PO (with the chosen vendor, if any)
+                const quickVendorId = document.getElementById('quickPoVendor')?.value;
                 const result = await api('/api/admin/po', {
                     method: 'POST',
-                    body: JSON.stringify({ supplier_name: 'Primary Supplier', notes: 'Auto-generated from low stock' })
+                    body: JSON.stringify({
+                        vendor_id: quickVendorId ? parseInt(quickVendorId) : null,
+                        notes: 'Auto-generated from low stock'
+                    })
                 });
                 
                 // Then add selected items
@@ -4881,6 +4893,7 @@ The Peptide Wizard Team"></textarea>
         async function showPODetail(poId) {
             try {
                 const po = await api(`/api/admin/po/${poId}`);
+                const poVendors = await api('/api/admin/po/vendors').catch(() => []);
                 state.currentPO = po;
                 
                 // Allow editing for draft, open, and closed POs
@@ -4894,7 +4907,13 @@ The Peptide Wizard Team"></textarea>
                             <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
                                 <div>
                                     <h3 style="margin: 0;">📦 ${escapeHtml(po.po_number)}</h3>
-                                    <p style="color: #718096; margin: 5px 0;">Supplier: ${escapeHtml(po.supplier_name || 'Primary Supplier')}</p>
+                                    <div style="color: #718096; margin: 6px 0; font-size: 14px;">
+                                        Vendor:
+                                        <select onchange="setPOVendor(${po.id}, this.value)" style="padding: 4px 6px; border-radius: 4px; border: 1px solid #e2e8f0;">
+                                            <option value="">— none —</option>
+                                            ${poVendors.map(v => `<option value="${v.id}" ${po.vendor_id == v.id ? 'selected' : ''}>${escapeHtml(v.company_name)}</option>`).join('')}
+                                        </select>
+                                    </div>
                                 </div>
                                 <span style="background: ${getStatusColor(po.status)}; color: white; padding: 5px 15px; border-radius: 15px;">${po.status.toUpperCase()}</span>
                             </div>
@@ -4992,6 +5011,17 @@ The Peptide Wizard Team"></textarea>
         function getStatusColor(status) {
             const colors = { draft: '#718096', submitted: '#3182ce', partial: '#d69e2e', received: '#38a169', closed: '#a0aec0', open: '#805ad5' };
             return colors[status] || '#718096';
+        }
+
+        async function setPOVendor(poId, vendorId) {
+            try {
+                await api(`/api/admin/po/${poId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ vendor_id: vendorId ? parseInt(vendorId) : null })
+                });
+                showAlert('Vendor updated', 'success');
+                showPODetail(poId);
+            } catch (e) { showAlert(e.message); }
         }
 
         function updatePoDefaultCost() {

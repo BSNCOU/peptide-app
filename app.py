@@ -7163,6 +7163,44 @@ def get_purchase_order(po_id):
     return jsonify(po_dict)
 
 
+@app.route('/api/admin/po/<int:po_id>', methods=['PUT'])
+@admin_required
+def update_purchase_order(po_id):
+    """Update a PO's vendor / supplier name / notes. Lets a vendor be assigned
+    to any PO — including Quick-PO-from-low-stock, which creates without one."""
+    data = request.json or {}
+    conn = get_db()
+    c = conn.cursor()
+    po = conn.execute('SELECT id FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    sets, vals = [], []
+    if 'vendor_id' in data:
+        vid = data.get('vendor_id')
+        if vid:
+            vid = int(vid)
+            sets.append('vendor_id = ?'); vals.append(vid)
+            v = conn.execute('SELECT company_name FROM qa_vendors WHERE id = ?', (vid,)).fetchone()
+            if v:
+                sets.append('supplier_name = ?'); vals.append(dict(v)['company_name'])
+        else:
+            sets.append('vendor_id = ?'); vals.append(None)
+    if 'supplier_name' in data and 'vendor_id' not in data:
+        sets.append('supplier_name = ?')
+        vals.append((data.get('supplier_name') or '').strip() or 'Primary Supplier')
+    if 'notes' in data:
+        sets.append('notes = ?'); vals.append((data.get('notes') or '').strip())
+    if not sets:
+        conn.close()
+        return jsonify({'error': 'nothing to update'}), 400
+    vals.append(po_id)
+    c.execute(f"UPDATE purchase_orders SET {', '.join(sets)} WHERE id = ?", vals)
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'PO updated'})
+
+
 @app.route('/api/admin/po/<int:po_id>/items', methods=['POST'])
 @admin_required
 def add_po_item(po_id):
