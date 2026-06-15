@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>New Vendor — QA</title>
+<title>Edit {{ vendor.company_name }} — QA</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
   h1 { font-size: 22px; }
@@ -17,58 +17,58 @@
 </style>
 </head>
 <body>
-<h1>+ New Vendor</h1>
-<p><a href="/admin/qa/vendors">← All vendors</a></p>
+<h1>Edit vendor</h1>
+<p><a href="/admin/qa/vendors/{{ vendor.id }}">← Back to vendor</a></p>
 
 <div id="err" class="err"></div>
 
 <form id="form">
   <label>Vendor type *</label>
   <select name="vendor_type">
-    <option value="supplier">Supplier (appears in PO dropdown)</option>
-    <option value="testing_lab">Testing lab (for sending samples out)</option>
+    <option value="supplier" {% if (vendor.vendor_type or 'supplier') == 'supplier' %}selected{% endif %}>Supplier (appears in PO dropdown)</option>
+    <option value="testing_lab" {% if vendor.vendor_type == 'testing_lab' %}selected{% endif %}>Testing lab (for sending samples out)</option>
   </select>
 
   <label>Company name *</label>
-  <input name="company_name" required>
+  <input name="company_name" required value="{{ vendor.company_name or '' }}">
 
   <label>Contact name</label>
-  <input name="contact_name">
+  <input name="contact_name" value="{{ vendor.contact_name or '' }}">
 
   <label>WhatsApp number</label>
-  <input name="whatsapp_number" placeholder="+86 123 4567 8901">
+  <input name="whatsapp_number" value="{{ vendor.whatsapp_number or '' }}" placeholder="+86 123 4567 8901">
 
   <label>Phone</label>
-  <input name="phone" placeholder="(optional) plain contact number">
+  <input name="phone" value="{{ vendor.phone or '' }}" placeholder="(optional) plain contact number">
 
   <label>Email</label>
-  <input name="email" type="email">
+  <input name="email" type="email" value="{{ vendor.email or '' }}">
 
   <label>Website</label>
-  <input name="website">
+  <input name="website" value="{{ vendor.website or '' }}">
 
   <label>Country</label>
-  <input name="country">
+  <input name="country" value="{{ vendor.country or '' }}">
 
   <label>Address</label>
-  <textarea name="address" placeholder="Shipping address (needed for testing labs)"></textarea>
+  <textarea name="address" placeholder="Shipping address (needed for testing labs)">{{ vendor.address or '' }}</textarea>
 
   <label>Manufacturer or trading company?</label>
   <select name="manufacturer_or_trading_company">
     <option value="">— select —</option>
-    <option value="manufacturer">Manufacturer</option>
-    <option value="trading_company">Trading company</option>
-    <option value="unknown">Unknown</option>
+    <option value="manufacturer" {% if vendor.manufacturer_or_trading_company == 'manufacturer' %}selected{% endif %}>Manufacturer</option>
+    <option value="trading_company" {% if vendor.manufacturer_or_trading_company == 'trading_company' %}selected{% endif %}>Trading company</option>
+    <option value="unknown" {% if vendor.manufacturer_or_trading_company == 'unknown' %}selected{% endif %}>Unknown</option>
   </select>
 
   <label>Source of lead</label>
-  <input name="source_of_lead" placeholder="Alibaba, trade show, referral, etc.">
+  <input name="source_of_lead" value="{{ vendor.source_of_lead or '' }}" placeholder="Alibaba, trade show, referral, etc.">
 
   <label>Notes</label>
-  <textarea name="notes"></textarea>
+  <textarea name="notes">{{ vendor.notes or '' }}</textarea>
 
   <div class="actions">
-    <button class="btn" type="submit">Create vendor (status = PROSPECT)</button>
+    <button class="btn" type="submit">Save changes</button>
   </div>
 </form>
 
@@ -81,7 +81,7 @@ document.getElementById('form').addEventListener('submit', async function(e) {
   const errEl = document.getElementById('err');
   errEl.style.display = 'none';
   try {
-    const r = await fetch('/admin/qa/vendors/new', {
+    const r = await fetch('/admin/qa/vendors/{{ vendor.id }}/edit', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(data)
@@ -92,7 +92,7 @@ document.getElementById('form').addEventListener('submit', async function(e) {
       errEl.style.display = 'block';
       return;
     }
-    window.location.href = j.redirect || '/admin/qa/vendors';
+    window.location.href = j.redirect || '/admin/qa/vendors/{{ vendor.id }}';
   } catch (e) {
     errEl.textContent = e.message;
     errEl.style.display = 'block';

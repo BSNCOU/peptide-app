@@ -28,6 +28,12 @@
 <h1>{{ vendor.company_name }}</h1>
 <p><a href="/admin/qa/vendors">← All vendors</a></p>
 
+<p>
+  <a class="btn" href="/admin/qa/vendors/{{ vendor.id }}/edit" style="text-decoration:none;">✏️ Edit</a>
+  <button class="btn" id="deleteVendorBtn" style="background:#a33;margin-left:6px;">🗑 Delete</button>
+  <span class="badge" style="margin-left:10px;">{{ (vendor.vendor_type or 'supplier').replace('_', ' ') }}</span>
+</p>
+
 <p>Status: <span class="badge badge-{{ vendor.status|lower }}">{{ vendor.status.replace('_', ' ') }}</span>
   {% if vendor.score is not none %}· Score: {{ vendor.score }}/100{% endif %}</p>
 
@@ -46,9 +52,12 @@
 
 <h2>Contact + meta</h2>
 <table class="kv">
+  <tr><td class="k">Vendor type</td><td>{{ (vendor.vendor_type or 'supplier').replace('_', ' ') }}</td></tr>
   <tr><td class="k">Contact</td><td>{{ vendor.contact_name or '—' }}</td></tr>
   <tr><td class="k">WhatsApp</td><td>{{ vendor.whatsapp_number or '—' }}</td></tr>
+  <tr><td class="k">Phone</td><td>{{ vendor.phone or '—' }}</td></tr>
   <tr><td class="k">Email</td><td>{{ vendor.email or '—' }}</td></tr>
+  <tr><td class="k">Address</td><td>{% if vendor.address %}<span style="white-space:pre-wrap;">{{ vendor.address }}</span>{% else %}—{% endif %}</td></tr>
   <tr><td class="k">Website</td><td>{% if vendor.website %}<a href="{{ vendor.website }}" target="_blank">{{ vendor.website }}</a>{% else %}—{% endif %}</td></tr>
   <tr><td class="k">Country</td><td>{{ vendor.country or '—' }}</td></tr>
   <tr><td class="k">Type</td><td>{{ vendor.manufacturer_or_trading_company or '—' }}</td></tr>
@@ -62,6 +71,7 @@
 <div style="white-space: pre-wrap; font-size: 14px;">{{ vendor.notes }}</div>
 {% endif %}
 
+{% if (vendor.vendor_type or 'supplier') != 'testing_lab' %}
 <h2>Vendor Qualification Questionnaire (VQQ)</h2>
 {% if vendor.status == 'PROSPECT' %}
 <p style="font-size:13px;color:#666;">No VQQ sent yet.</p>
@@ -147,6 +157,7 @@
     <span style="font-size:12px;color:#888;margin-left:8px;">Vendor moves to PENDING_ANALYTICAL_TESTING</span>
   </div>
 </form>
+{% endif %}
 {% endif %}
 
 {% if samples and samples|length > 0 %}
@@ -273,6 +284,23 @@ document.getElementById('statusForm').addEventListener('submit', async function(
     alert(e.message);
   }
 });
+
+const deleteVendorBtn = document.getElementById('deleteVendorBtn');
+if (deleteVendorBtn) {
+  deleteVendorBtn.addEventListener('click', async function(e) {
+    e.preventDefault();
+    // tojson safely encodes the name as a JS string literal (handles quotes/apostrophes)
+    if (!confirm('Delete vendor ' + {{ vendor.company_name|tojson }} + '? This cannot be undone.')) return;
+    try {
+      const r = await fetch('/admin/qa/vendors/{{ vendor.id }}/delete', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { alert(j.error || 'Delete failed'); return; }
+      window.location.href = j.redirect || '/admin/qa/vendors';
+    } catch (e) { alert(e.message); }
+  });
+}
 </script>
 </body>
 </html>

@@ -47,13 +47,14 @@
 {% else %}
 <table>
 <thead>
-<tr><th>WhatsApp</th><th>Company</th><th>Country</th><th>Status</th><th>Score</th><th>Updated</th></tr>
+<tr><th>WhatsApp</th><th>Company</th><th>Type</th><th>Country</th><th>Status</th><th>Score</th><th>Updated</th></tr>
 </thead>
 <tbody>
 {% for v in vendors %}
 <tr>
   <td><a href="/admin/qa/vendors/{{ v.id }}" style="font-family:monospace;font-size:13px;">{{ v.whatsapp_number or '—' }}</a></td>
   <td><a href="/admin/qa/vendors/{{ v.id }}">{{ v.company_name }}</a></td>
+  <td>{{ (v.vendor_type or 'supplier').replace('_', ' ') }}</td>
   <td>{{ v.country or '—' }}</td>
   <td><span class="badge badge-{{ v.status|lower }}">{{ v.status.replace('_', ' ') }}</span></td>
   <td>{{ v.score if v.score is not none else '—' }}</td>

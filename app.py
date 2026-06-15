@@ -6779,9 +6779,13 @@ def list_po_vendors():
     pipeline and purchasing share a single vendor identity."""
     conn = get_db()
     try:
+        # Suppliers only — testing labs (vendor_type='testing_lab') must not
+        # appear in the PO supplier dropdown. NULL treated as supplier for any
+        # rows predating the vendor_type column.
         rows = conn.execute('''
             SELECT id, company_name, contact_name, whatsapp_number, email, status
             FROM qa_vendors
+            WHERE vendor_type = 'supplier' OR vendor_type IS NULL
             ORDER BY company_name
         ''').fetchall()
         vendors = [dict(r) for r in rows]

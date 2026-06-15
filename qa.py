@@ -348,6 +348,34 @@ def init_qa_tables(c, using_postgres, auto_id):
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_vendors_whatsapp_unique "
               "ON qa_vendors(whatsapp_normalized) WHERE whatsapp_normalized IS NOT NULL AND whatsapp_normalized != ''")
 
+    # ── 2026-06-14 vendor foundation migrations ──────────────────────────────
+    # vendor_type distinguishes suppliers (default) from testing labs so labs
+    # can be modeled as vendors without polluting the PO supplier dropdown.
+    # phone is a plain contact number distinct from whatsapp; address is needed
+    # for shipping samples to testing labs (Feature #4).
+    qa_vendor_migrations = [
+        ("qa_vendors", "vendor_type TEXT DEFAULT 'supplier'"),
+        ("qa_vendors", "phone TEXT"),
+        ("qa_vendors", "address TEXT"),
+    ]
+    for tbl, col_def in qa_vendor_migrations:
+        if using_postgres:
+            try:
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col_def}")
+            except Exception as e:
+                print(f"Note: {tbl}.{col_def}: {e}")
+        else:
+            try:
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col_def}")
+            except Exception:
+                pass  # already exists
+    # Backfill any pre-existing rows that came in as NULL (SQLite ADD COLUMN with
+    # DEFAULT backfills, but be explicit so the supplier filter is reliable).
+    try:
+        c.execute("UPDATE qa_vendors SET vendor_type='supplier' WHERE vendor_type IS NULL OR vendor_type=''")
+    except Exception:
+        pass
+
 
 def normalize_phone(raw):
     """Normalize a phone number to digits-only with optional leading +.
@@ -431,13 +459,13 @@ def vendors_list():
     cur = conn.cursor()
     if status_filter and status_filter in VENDOR_STATUSES:
         cur.execute(
-            "SELECT id, company_name, whatsapp_number, country, status, score, updated_at "
+            "SELECT id, company_name, whatsapp_number, country, status, score, updated_at, vendor_type "
             "FROM qa_vendors WHERE status=? ORDER BY updated_at DESC",
             (status_filter,),
         )
     else:
         cur.execute(
-            "SELECT id, company_name, whatsapp_number, country, status, score, updated_at "
+            "SELECT id, company_name, whatsapp_number, country, status, score, updated_at, vendor_type "
             "FROM qa_vendors ORDER BY updated_at DESC"
         )
     rows = cur.fetchall()
@@ -467,6 +495,10 @@ def vendor_new():
     whatsapp_raw = (data.get("whatsapp_number") or "").strip()
     whatsapp_norm = normalize_phone(whatsapp_raw)
 
+    vendor_type = (data.get("vendor_type") or "supplier").strip().lower()
+    if vendor_type not in ("supplier", "testing_lab"):
+        vendor_type = "supplier"
+
     # Pre-check uniqueness so we can give a friendly error before the DB constraint fires
     conn = _get_db()
     cur = conn.cursor()
@@ -488,19 +520,22 @@ def vendor_new():
     now = _now_iso()
     cur.execute(
         "INSERT INTO qa_vendors "
-        "(company_name, contact_name, whatsapp_number, whatsapp_normalized, email, website, country, "
-        " manufacturer_or_trading_company, source_of_lead, status, notes, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROSPECT', ?, ?, ?)",
+        "(company_name, contact_name, whatsapp_number, whatsapp_normalized, phone, address, email, website, country, "
+        " manufacturer_or_trading_company, source_of_lead, vendor_type, status, notes, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROSPECT', ?, ?, ?)",
         (
             company_name,
             (data.get("contact_name") or "").strip() or None,
             whatsapp_raw or None,
             whatsapp_norm or None,
+            (data.get("phone") or "").strip() or None,
+            (data.get("address") or "").strip() or None,
             (data.get("email") or "").strip() or None,
             (data.get("website") or "").strip() or None,
             (data.get("country") or "").strip() or None,
             (data.get("manufacturer_or_trading_company") or "").strip() or None,
             (data.get("source_of_lead") or "").strip() or None,
+            vendor_type,
             (data.get("notes") or "").strip() or None,
             now,
             now,
@@ -607,6 +642,121 @@ def vendor_detail(vendor_id):
         latest_vqq=latest_vqq,
         samples=samples,
     )
+
+
+@qa_bp.route("/vendors/<int:vendor_id>/edit", methods=["GET", "POST"])
+def vendor_edit(vendor_id):
+    if not _is_logged_in_admin():
+        return jsonify({"error": "Admin access required"}), 403
+    conn = _get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM qa_vendors WHERE id=?", (vendor_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Vendor not found"}), 404
+    vendor = _row_to_dict(row)
+
+    if request.method == "GET":
+        conn.close()
+        return render_template("qa/vendor_edit.html", vendor=vendor)
+
+    # POST — update editable fields
+    data = request.form if request.form else (request.get_json() or {})
+    company_name = (data.get("company_name") or "").strip()
+    if not company_name:
+        conn.close()
+        return jsonify({"error": "company_name is required"}), 400
+
+    whatsapp_raw = (data.get("whatsapp_number") or "").strip()
+    whatsapp_norm = normalize_phone(whatsapp_raw)
+    vendor_type = (data.get("vendor_type") or vendor.get("vendor_type") or "supplier").strip().lower()
+    if vendor_type not in ("supplier", "testing_lab"):
+        vendor_type = "supplier"
+
+    # If the phone changed, make sure it doesn't collide with a different vendor
+    if whatsapp_norm and whatsapp_norm != (vendor.get("whatsapp_normalized") or ""):
+        cur.execute(
+            "SELECT id, company_name FROM qa_vendors WHERE whatsapp_normalized=? AND id<>?",
+            (whatsapp_norm, vendor_id),
+        )
+        clash = cur.fetchone()
+        if clash:
+            clash_d = _row_to_dict(clash)
+            conn.close()
+            return jsonify({
+                "error": f"Another vendor already uses this phone: "
+                         f"#{clash_d['id']} {clash_d['company_name']}",
+            }), 409
+
+    cur.execute(
+        "UPDATE qa_vendors SET company_name=?, contact_name=?, whatsapp_number=?, whatsapp_normalized=?, "
+        "phone=?, address=?, email=?, website=?, country=?, manufacturer_or_trading_company=?, "
+        "source_of_lead=?, vendor_type=?, notes=?, updated_at=? WHERE id=?",
+        (
+            company_name,
+            (data.get("contact_name") or "").strip() or None,
+            whatsapp_raw or None,
+            whatsapp_norm or None,
+            (data.get("phone") or "").strip() or None,
+            (data.get("address") or "").strip() or None,
+            (data.get("email") or "").strip() or None,
+            (data.get("website") or "").strip() or None,
+            (data.get("country") or "").strip() or None,
+            (data.get("manufacturer_or_trading_company") or "").strip() or None,
+            (data.get("source_of_lead") or "").strip() or None,
+            vendor_type,
+            (data.get("notes") or "").strip() or None,
+            _now_iso(),
+            vendor_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "vendor_id": vendor_id, "redirect": f"/admin/qa/vendors/{vendor_id}"})
+
+
+@qa_bp.route("/vendors/<int:vendor_id>/delete", methods=["POST"])
+def vendor_delete(vendor_id):
+    if not _is_logged_in_admin():
+        return jsonify({"error": "Admin access required"}), 403
+    conn = _get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, company_name FROM qa_vendors WHERE id=?", (vendor_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Vendor not found"}), 404
+
+    # Refuse to delete a vendor that's referenced elsewhere — would orphan POs,
+    # samples, or price lists. Each lookup is guarded in case a table is absent.
+    blockers = []
+    for label, sql in (
+        ("purchase order(s)", "SELECT COUNT(*) FROM purchase_orders WHERE vendor_id=?"),
+        ("sample(s)", "SELECT COUNT(*) FROM qa_sample_submissions WHERE vendor_id=?"),
+        ("price list(s)", "SELECT COUNT(*) FROM qa_vendor_price_lists WHERE vendor_id=?"),
+    ):
+        try:
+            cur.execute(sql, (vendor_id,))
+            r = cur.fetchone()
+            n = (r[0] if not hasattr(r, "keys") else r[0]) or 0
+            if n:
+                blockers.append(f"{n} {label}")
+        except Exception:
+            pass  # table may not exist yet on this DB
+    if blockers:
+        conn.close()
+        return jsonify({
+            "error": "Can't delete — this vendor is still referenced by "
+                     + ", ".join(blockers)
+                     + ". Reassign or remove those first.",
+        }), 409
+
+    cur.execute("DELETE FROM qa_vendor_status_history WHERE vendor_id=?", (vendor_id,))
+    cur.execute("DELETE FROM qa_vendors WHERE id=?", (vendor_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "redirect": "/admin/qa/vendors"})
 
 
 @qa_bp.route("/vendors/<int:vendor_id>/send_vqq", methods=["POST"])
