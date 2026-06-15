@@ -27,3 +27,7 @@ research_orders.db
 # OneDrive sync conflict junk
 *-DESKTOP-*.py
 *-DESKTOP-*.html
+
+
+# Runtime price-list uploads (ephemeral)
+uploads/
