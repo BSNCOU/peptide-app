@@ -5171,7 +5171,9 @@ The Peptide Wizard Team"></textarea>
                 return;
             }
             if (!Array.isArray(vendors) || vendors.length === 0) {
-                showAlert('No QA vendors yet. Add one under /admin/qa/vendors first.');
+                if (confirm('No vendors yet — a price list has to be attached to a vendor.\n\nOpen the "Add Vendor" page now? After you create the vendor, come back and click Vendor Price Lists again.')) {
+                    window.open('/admin/qa/vendors/new', '_blank');
+                }
                 return;
             }
 
@@ -5199,7 +5201,7 @@ The Peptide Wizard Team"></textarea>
                         <td>${v.lists?.length || 0}</td>
                         <td>${latestLabel}</td>
                         <td>
-                            <button class="btn btn-small" style="background:#3182ce;color:white;" onclick="openPriceListUpload(${v.id}, '${escapeHtml(v.company_name).replace(/'/g,"\\\\'")}')">+ Upload</button>
+                            <button class="btn btn-small" style="background:#3182ce;color:white;" onclick="openPriceListUpload(${v.id}, '${escapeHtml(v.company_name).replace(/'/g,"\\'")}')">+ Upload</button>
                             ${reviewBtn}
                         </td>
                     </tr>
@@ -5224,7 +5226,8 @@ The Peptide Wizard Team"></textarea>
                                 <tbody>${rows}</tbody>
                             </table>
                         </div>
-                        <div style="text-align:right;margin-top:18px;">
+                        <div style="display:flex;justify-content:space-between;margin-top:18px;">
+                            <button class="btn btn-small" style="background:#3182ce;color:white;" onclick="window.open('/admin/qa/vendors/new','_blank')">+ Add Vendor</button>
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                         </div>
                     </div>
