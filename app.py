@@ -370,6 +370,18 @@ def init_po_tables(c, using_postgres, auto_id):
         ("purchase_order_items",  "testing_allocated REAL DEFAULT 0"),
         ("purchase_order_items",  "lot_number TEXT"),
         ("inventory_receipts",    "po_item_id INTEGER"),
+        # ── 2026-06-22 case-based PO upgrade ─────────────────────────────────
+        # Order in CASES at a per-case price (vendor format: "BC10 - 2  51×2=102").
+        # quantity_ordered stays = number of cases. cost_per_case is the vendor's
+        # per-case price; units_per_case is the pack size for THIS line (almost
+        # always 10) and overrides product.supplier_pack_size at receive time.
+        # Left nullable (no default) so existing PO lines keep using
+        # supplier_pack_size — only new case-based lines populate it.
+        # order_discount = surprise discount given at order time; folds into
+        # landed cost pro-rata at receive (negative overhead).
+        ("purchase_order_items",  "cost_per_case REAL"),
+        ("purchase_order_items",  "units_per_case INTEGER"),
+        ("purchase_orders",       "order_discount REAL DEFAULT 0"),
     ]
     for tbl, col_def in po_migrations:
         if using_postgres:
@@ -7191,6 +7203,13 @@ def update_purchase_order(po_id):
         vals.append((data.get('supplier_name') or '').strip() or 'Primary Supplier')
     if 'notes' in data:
         sets.append('notes = ?'); vals.append((data.get('notes') or '').strip())
+    # Order-time money fields: shipping (freight) + the surprise discount the
+    # vendor applies when you actually place the order. Both flow into landed
+    # cost at receive — discount as a negative overhead.
+    if 'freight_cost' in data:
+        sets.append('freight_cost = ?'); vals.append(float(data.get('freight_cost') or 0))
+    if 'order_discount' in data:
+        sets.append('order_discount = ?'); vals.append(float(data.get('order_discount') or 0))
     if not sets:
         conn.close()
         return jsonify({'error': 'nothing to update'}), 400
@@ -7221,14 +7240,32 @@ def add_po_item(po_id):
     
     # Get product default cost. Resolution order:
     #   1. caller-supplied unit_cost wins (admin override)
-    #   2. confirmed vendor price for this PO's vendor (Slice B autofill)
-    #   3. product.cost (weighted-avg landed cost)
+    #   2. case-based: cost_per_case / units_per_case (the 2026-06-22 flow)
+    #   3. confirmed vendor price for this PO's vendor (Slice B autofill)
+    #   4. product.cost (weighted-avg landed cost)
     product = c.execute('SELECT cost FROM products WHERE id = ?', (data['product_id'],)).fetchone()
     default_cost = dict(product)['cost'] if product else 0
     po_dict = dict(po)
     po_vendor_id = po_dict.get('vendor_id')
+
+    # ── Case-based inputs (new). quantity_ordered == number of cases. ────────
+    # Accept explicit 'cases'; fall back to legacy 'quantity' for older callers
+    # (quick-PO-from-low-stock still sends 'quantity').
+    cases = data.get('cases', data.get('quantity', 1))
+    try:
+        cases = int(cases) or 1
+    except (TypeError, ValueError):
+        cases = 1
+    units_per_case = data.get('units_per_case')
+    units_per_case = int(units_per_case) if units_per_case else None
+    cost_per_case = data.get('cost_per_case')
+    cost_per_case = float(cost_per_case) if cost_per_case not in (None, '') else None
+
+    # Pricelist autofill — yields per-unit cost AND per-case (pack) data
     autofill_cost = None
     autofill_source = None
+    autofill_pack_cost = None
+    autofill_pack_size = None
     if po_vendor_id:
         row = c.execute('''
             SELECT pi.unit_cost, pi.pack_cost, pi.pack_size, pl.id as price_list_id,
@@ -7244,73 +7281,115 @@ def add_po_item(po_id):
         ''', (po_vendor_id, data['product_id'])).fetchone()
         if row:
             r = dict(row)
+            autofill_pack_cost = r.get('pack_cost')
+            autofill_pack_size = r.get('pack_size')
             autofill_cost = r.get('unit_cost') or (
-                (r.get('pack_cost') / r.get('pack_size')) if (r.get('pack_cost') and r.get('pack_size')) else None
+                (autofill_pack_cost / autofill_pack_size) if (autofill_pack_cost and autofill_pack_size) else None
             )
             autofill_source = f"vendor_price_list#{r.get('price_list_id')}"
+
+    # Fill case fields from the pricelist when the caller didn't supply them
+    if cost_per_case is None and autofill_pack_cost:
+        cost_per_case = float(autofill_pack_cost)
+    if units_per_case is None and autofill_pack_size:
+        units_per_case = int(autofill_pack_size)
+    # Per-case orders default to 10 units/case (the house standard) when a
+    # per-case price is known but no pack size was given anywhere.
+    if cost_per_case is not None and not units_per_case:
+        units_per_case = 10
+
+    # ── Resolve per-unit cost (everything downstream keys off this) ──────────
     if data.get('unit_cost') is not None:
-        unit_cost = data['unit_cost']
+        unit_cost = float(data['unit_cost'])
+        unit_cost_source = 'admin_override'
+    elif cost_per_case is not None and units_per_case:
+        unit_cost = cost_per_case / units_per_case
+        unit_cost_source = 'case_price'
     elif autofill_cost is not None:
         unit_cost = autofill_cost
+        unit_cost_source = autofill_source
     else:
         unit_cost = default_cost
-    
-    # Check if item already exists in PO
-    existing = c.execute('SELECT id, quantity_ordered FROM purchase_order_items WHERE po_id = ? AND product_id = ?', 
+        unit_cost_source = 'product_cost'
+
+    # Check if item already exists in PO — add cases, refresh case pricing
+    existing = c.execute('SELECT id, quantity_ordered FROM purchase_order_items WHERE po_id = ? AND product_id = ?',
                         (po_id, data['product_id'])).fetchone()
-    
+
     if existing:
-        # Update quantity and cost
-        new_qty = dict(existing)['quantity_ordered'] + data.get('quantity', 1)
-        c.execute('UPDATE purchase_order_items SET quantity_ordered = ?, unit_cost = ? WHERE id = ?', 
-                 (new_qty, unit_cost, dict(existing)['id']))
+        new_qty = (dict(existing)['quantity_ordered'] or 0) + cases
+        c.execute('''UPDATE purchase_order_items
+                     SET quantity_ordered = ?, unit_cost = ?, cost_per_case = ?, units_per_case = ?
+                     WHERE id = ?''',
+                  (new_qty, unit_cost, cost_per_case, units_per_case, dict(existing)['id']))
     else:
-        c.execute('''INSERT INTO purchase_order_items (po_id, product_id, quantity_ordered, unit_cost) 
-                     VALUES (?, ?, ?, ?)''',
-                  (po_id, data['product_id'], data.get('quantity', 1), unit_cost))
-    
+        c.execute('''INSERT INTO purchase_order_items
+                       (po_id, product_id, quantity_ordered, unit_cost, cost_per_case, units_per_case)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (po_id, data['product_id'], cases, unit_cost, cost_per_case, units_per_case))
+
     conn.commit()
     conn.close()
 
     return jsonify({
         'message': 'Item added to PO',
         'unit_cost_used': unit_cost,
-        'unit_cost_source': autofill_source or ('admin_override' if data.get('unit_cost') is not None else 'product_cost'),
+        'unit_cost_source': unit_cost_source,
+        'cost_per_case': cost_per_case,
+        'units_per_case': units_per_case,
     })
 
 
 @app.route('/api/admin/po/<int:po_id>/items/<int:item_id>', methods=['PUT'])
 @admin_required
 def update_po_item(po_id, item_id):
-    """Update PO item quantity and/or unit cost"""
-    data = request.json
-    
+    """Update PO item: cases/quantity, per-case price, units/case, or unit cost.
+
+    'cases' is the new alias for quantity_ordered (number of cases). When the
+    per-case price or pack size changes, unit_cost (per-unit) is recomputed
+    from cost_per_case / units_per_case unless an explicit unit_cost is sent."""
+    data = request.json or {}
+
     conn = get_db()
     c = conn.cursor()
-    
-    if data.get('quantity_ordered', 0) == 0:
-        # Delete item if quantity is 0
+
+    new_qty = data.get('quantity_ordered', data.get('cases'))
+    if new_qty is not None and int(new_qty) == 0:
+        # Zero cases removes the line
         c.execute('DELETE FROM purchase_order_items WHERE id = ? AND po_id = ?', (item_id, po_id))
-    else:
-        # Build update dynamically based on what's provided
-        updates = []
-        values = []
-        
-        if 'quantity_ordered' in data:
-            updates.append('quantity_ordered = ?')
-            values.append(data['quantity_ordered'])
-        
-        if 'unit_cost' in data:
-            updates.append('unit_cost = ?')
-            values.append(data['unit_cost'])
-        
-        if updates:
-            values.extend([item_id, po_id])
-            c.execute(f'UPDATE purchase_order_items SET {", ".join(updates)} WHERE id = ? AND po_id = ?', values)
-    
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Item removed'})
+
+    # Load current line so case-field edits can recompute unit_cost
+    row = c.execute('SELECT cost_per_case, units_per_case FROM purchase_order_items WHERE id = ? AND po_id = ?',
+                    (item_id, po_id)).fetchone()
+    cur = dict(row) if row else {}
+    cost_per_case = cur.get('cost_per_case')
+    units_per_case = cur.get('units_per_case')
+
+    updates, values = [], []
+    if new_qty is not None:
+        updates.append('quantity_ordered = ?'); values.append(int(new_qty))
+    if 'cost_per_case' in data:
+        cost_per_case = float(data['cost_per_case']) if data['cost_per_case'] not in (None, '') else None
+        updates.append('cost_per_case = ?'); values.append(cost_per_case)
+    if 'units_per_case' in data:
+        units_per_case = int(data['units_per_case']) if data['units_per_case'] else None
+        updates.append('units_per_case = ?'); values.append(units_per_case)
+
+    if 'unit_cost' in data:
+        updates.append('unit_cost = ?'); values.append(float(data['unit_cost']))
+    elif ('cost_per_case' in data or 'units_per_case' in data) and cost_per_case is not None and units_per_case:
+        updates.append('unit_cost = ?'); values.append(cost_per_case / units_per_case)
+
+    if updates:
+        values.extend([item_id, po_id])
+        c.execute(f'UPDATE purchase_order_items SET {", ".join(updates)} WHERE id = ? AND po_id = ?', values)
+
     conn.commit()
     conn.close()
-    
+
     return jsonify({'message': 'Item updated'})
 
 
@@ -7359,9 +7438,11 @@ def receive_po_items(po_id):
     conn = get_db()
     c = conn.cursor()
 
-    # Get PO number for default lot generation
-    po_row = c.execute('SELECT po_number FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
-    po_number = dict(po_row)['po_number'] if po_row else f'PO{po_id}'
+    # Get PO number for default lot generation + the order-time discount
+    po_row = c.execute('SELECT po_number, order_discount FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    po_row = dict(po_row) if po_row else {}
+    po_number = po_row.get('po_number') or f'PO{po_id}'
+    order_discount = float(po_row.get('order_discount') or 0)
 
     # Save freight + testing cost on PO header
     c.execute('UPDATE purchase_orders SET freight_cost = ?, testing_cost = ? WHERE id = ?',
@@ -7388,7 +7469,9 @@ def receive_po_items(po_id):
             continue
 
         poi_dict = dict(poi)
-        pack_size = poi_dict.get('supplier_pack_size') or 1
+        # Line-level units_per_case (the case-based flow) wins; fall back to the
+        # product's supplier_pack_size for older lines that predate it.
+        pack_size = poi_dict.get('units_per_case') or poi_dict.get('supplier_pack_size') or 1
         units_received = qty_received * pack_size
         line_product_cost = (poi_dict['unit_cost'] or 0) * units_received
         total_product_cost += line_product_cost
@@ -7413,8 +7496,13 @@ def receive_po_items(po_id):
             'lot_number': lot_number,
         })
 
-    # ── Step 2: Allocate freight + testing pro-rata by line cost ────────────
-    total_overhead = freight_cost + testing_cost
+    # ── Step 2: Allocate freight + testing + (−discount) pro-rata by cost ────
+    # order_discount is the surprise discount the vendor gave at order time. It
+    # lowers true landed cost, so it rides along as a NEGATIVE overhead split by
+    # the same pro-rata share as freight/testing. (Note: applied per-receive, so
+    # a fully-received PO gets the whole discount — the normal case here. Partial
+    # receives would re-apply it; manage like freight if you split a shipment.)
+    total_overhead = freight_cost + testing_cost - order_discount
     for line in line_data:
         if total_product_cost > 0:
             share = (line['line_product_cost'] / total_product_cost)
@@ -7422,9 +7510,10 @@ def receive_po_items(po_id):
             share = 1.0 / len(line_data) if line_data else 0
         freight_share = freight_cost * share
         testing_share = testing_cost * share
-        overhead_share = freight_share + testing_share
+        discount_share = order_discount * share
+        overhead_share = freight_share + testing_share - discount_share
         per_unit_overhead = overhead_share / line['units_received'] if line['units_received'] > 0 else 0
-        landed_per_unit = line['unit_cost'] + per_unit_overhead
+        landed_per_unit = max(0.0, line['unit_cost'] + per_unit_overhead)
 
         line['freight_allocated'] = round(freight_share, 4)
         line['testing_allocated'] = round(testing_share, 4)
@@ -7744,20 +7833,33 @@ def get_po_whatsapp_text(po_id):
         "─" * 20
     ]
 
-    total_cost = 0
+    def _num(x):
+        # Trim trailing .0 so 51.0 prints as 51, 5.5 stays 5.5 (vendor style)
+        return f"{x:.2f}".rstrip('0').rstrip('.')
+
+    subtotal = 0
     for item in items:
         i = dict(item)
-        qty = i['quantity_ordered']
-        pack_size = i.get('supplier_pack_size') or 1
-        total_units = qty * pack_size
-        line_cost = total_units * (i['unit_cost'] or 0)
-        total_cost += line_cost
-        lines.append(f"• {i['sku']} - {i['name']}")
-        lines.append(f"  Qty: {qty} packs × {pack_size} = {total_units} units @ ${i['unit_cost']:.2f} = ${line_cost:.2f}")
+        cases = i['quantity_ordered']
+        units_per_case = i.get('units_per_case') or i.get('supplier_pack_size') or 10
+        cost_per_case = i['cost_per_case'] if i.get('cost_per_case') is not None else (i['unit_cost'] or 0) * units_per_case
+        line_cost = cases * cost_per_case
+        subtotal += line_cost
+        # Vendor format: "BC10 - 2   51×2=102"
+        lines.append(f"• {i['sku']} - {cases}   {_num(cost_per_case)}×{cases}={_num(line_cost)}")
 
+    shipping = float(po_dict.get('freight_cost') or 0)
+    discount = float(po_dict.get('order_discount') or 0)
+    grand_total = subtotal + shipping - discount
+
+    lines.append("─" * 20)
+    lines.append(f"Subtotal: ${_num(subtotal)}")
+    if shipping:
+        lines.append(f"Shipping: ${_num(shipping)}")
+    if discount:
+        lines.append(f"Discount: −${_num(discount)}")
     lines.extend([
-        "─" * 20,
-        f"*Total: ${total_cost:.2f}*",
+        f"*Total: ${_num(grand_total)}*",
         "",
         "Please confirm availability and ETA.",
         "Thank you! 🙏"
@@ -7808,11 +7910,11 @@ def export_po_costs(po_id):
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Header (vendor + testing cost columns added 2026-06-08)
+    # Header (case-based columns added 2026-06-22)
     writer.writerow([
         'PO Number', 'Vendor', 'Received Date',
         'SKU', 'Product Name', 'Lot Number',
-        'Packs Ordered', 'Packs Received', 'Units Per Pack', 'Units Received',
+        'Cases Ordered', 'Cases Received', 'Units Per Case', 'Cost Per Case', 'Units Received',
         'Unit Cost (Product)', 'Line Product Cost',
         'Freight Allocated', 'Testing Allocated',
         'Landed Cost Per Unit', 'Total Landed Cost'
@@ -7820,16 +7922,19 @@ def export_po_costs(po_id):
 
     freight_total = po_dict.get('freight_cost') or 0
     testing_total = po_dict.get('testing_cost') or 0
+    discount_total = po_dict.get('order_discount') or 0
     received_date = po_dict.get('received_at') or po_dict.get('closed_at') or ''
     if received_date:
         received_date = str(received_date)[:10]
 
     for item in items:
         i = dict(item)
-        pack_size = i.get('supplier_pack_size') or 1
-        packs_received = i.get('quantity_received') or 0
-        units_received = packs_received * pack_size
+        # Line-level units/case wins; fall back to product pack size
+        pack_size = i.get('units_per_case') or i.get('supplier_pack_size') or 1
+        cases_received = i.get('quantity_received') or 0
+        units_received = cases_received * pack_size
         unit_cost = i.get('unit_cost') or 0
+        cost_per_case = i['cost_per_case'] if i.get('cost_per_case') is not None else unit_cost * pack_size
         freight_alloc = i.get('freight_allocated') or 0
         testing_alloc = i.get('testing_allocated') or 0
         landed = i.get('landed_cost') or 0
@@ -7844,8 +7949,9 @@ def export_po_costs(po_id):
             i['name'],
             i.get('lot_number', '') or '',
             i.get('quantity_ordered', 0),
-            packs_received,
+            cases_received,
             pack_size,
+            f"{cost_per_case:.2f}",
             units_received,
             f"{unit_cost:.4f}",
             f"{line_product_cost:.2f}",
@@ -7857,8 +7963,9 @@ def export_po_costs(po_id):
 
     # Summary rows
     writer.writerow([])
-    writer.writerow(['', '', '', '', 'TOTAL FREIGHT', '', '', '', '', '', '', '', f"${freight_total:.2f}", '', '', ''])
-    writer.writerow(['', '', '', '', 'TOTAL TESTING', '', '', '', '', '', '', '', '', f"${testing_total:.2f}", '', ''])
+    writer.writerow(['TOTAL FREIGHT (SHIPPING)', f"${freight_total:.2f}"])
+    writer.writerow(['TOTAL TESTING', f"${testing_total:.2f}"])
+    writer.writerow(['TOTAL ORDER DISCOUNT', f"-${discount_total:.2f}"])
 
     csv_data = output.getvalue()
     response = make_response(csv_data)

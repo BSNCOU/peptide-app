@@ -4898,8 +4898,15 @@ The Peptide Wizard Team"></textarea>
                 
                 // Allow editing for draft, open, and closed POs
                 const isEditable = po.status === 'draft' || po.status === 'open' || po.status === 'closed';
-                // Total = packs × pack_size × unit_cost
-                const totalCost = po.items.reduce((sum, i) => sum + (i.quantity_ordered * (i.supplier_pack_size || 1) * (i.unit_cost || 0)), 0);
+                // Per-line helpers: units/case (line override → product pack → 10),
+                // and $/case (stored cost_per_case, or derived from unit_cost for
+                // legacy lines). Subtotal = Σ cases × $/case.
+                const lineUpc = (i) => i.units_per_case || i.supplier_pack_size || 10;
+                const lineCpc = (i) => (i.cost_per_case != null) ? i.cost_per_case : (i.unit_cost || 0) * lineUpc(i);
+                const subtotal = po.items.reduce((sum, i) => sum + i.quantity_ordered * lineCpc(i), 0);
+                const shipping = parseFloat(po.freight_cost || 0);
+                const discount = parseFloat(po.order_discount || 0);
+                const grandTotal = subtotal + shipping - discount;
                 
                 document.getElementById('modalContainer').innerHTML = `
                     <div class="modal" onclick="if(event.target===this)closeModal()">
@@ -4922,18 +4929,22 @@ The Peptide Wizard Team"></textarea>
                                 <div style="margin-bottom: 20px; padding: 15px; background: #f7fafc; border-radius: 8px;">
                                     <strong>Add Item:</strong>
                                     <div style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; align-items: center;">
-                                        <select id="addPoProductId" style="flex: 1; min-width: 200px; padding: 8px;" onchange="updatePoDefaultCost()">
+                                        <select id="addPoProductId" style="flex: 1; min-width: 180px; padding: 8px;" onchange="updatePoCasePreview()">
                                             <option value="">Select product...</option>
-                                            ${state.products.filter(p => p.active).map(p => `<option value="${p.id}" data-cost="${p.cost || 0}">${p.sku} - ${p.name}</option>`).join('')}
+                                            ${state.products.filter(p => p.active).map(p => `<option value="${p.id}" data-cost="${p.cost || 0}" data-pack="${p.supplier_pack_size || 10}">${p.sku} - ${p.name}</option>`).join('')}
                                         </select>
-                                        <input type="number" id="addPoQty" value="10" min="1" style="width: 70px; padding: 8px;" placeholder="Qty">
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="addPoCases" value="1" min="1" style="width: 56px; padding: 8px;" placeholder="Cases" oninput="updatePoCasePreview()">
+                                            <span style="color: #718096;">cases ×</span>
+                                        </div>
                                         <div style="display: flex; align-items: center; gap: 3px;">
                                             <span style="color: #718096;">$</span>
-                                            <input type="number" id="addPoCost" value="" step="0.01" min="0" style="width: 80px; padding: 8px;" placeholder="Cost">
+                                            <input type="number" id="addPoCostPerCase" value="" step="0.01" min="0" style="width: 76px; padding: 8px;" placeholder="/case" oninput="updatePoCasePreview()">
+                                            <span style="color: #718096;">/case</span>
                                         </div>
                                         <button class="btn btn-success" onclick="addItemToPO(${po.id})">+ Add</button>
                                     </div>
-                                    <small style="color: #718096; margin-top: 5px; display: block;">Unit cost auto-fills from product default but can be changed for this PO</small>
+                                    <small id="addPoPreview" style="color: #718096; margin-top: 6px; display: block;">Enter cases × $/case (e.g. 2 × $51 = $102). Leave $/case blank to auto-fill from the vendor price list. 10 units per case.</small>
                                 </div>
                             ` : ''}
                             
@@ -4943,37 +4954,40 @@ The Peptide Wizard Team"></textarea>
                                         <tr>
                                             <th>SKU</th>
                                             <th>Product</th>
-                                            <th>Packs Ordered</th>
-                                            <th>Pack Size</th>
-                                            <th>Units (Stock)</th>
+                                            <th>Cases</th>
+                                            <th>$/Case</th>
+                                            <th>Units/Case</th>
+                                            <th>Units</th>
                                             <th>Received</th>
                                             <th>Unit Cost</th>
-                                            <th>Freight Alloc.</th>
+                                            <th>Freight</th>
                                             <th>Landed/Unit</th>
-                                            <th>Total</th>
-                                            ${isEditable ? '<th>Actions</th>' : ''}
+                                            <th>Line Total</th>
+                                            ${isEditable ? '<th></th>' : ''}
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${po.items.length === 0 ? '<tr><td colspan="11" style="text-align: center; color: #718096;">No items yet</td></tr>' : 
+                                        ${po.items.length === 0 ? '<tr><td colspan="12" style="text-align: center; color: #718096;">No items yet</td></tr>' :
                                             po.items.map(i => {
-                                                const packSize = i.supplier_pack_size || 1;
+                                                const packSize = lineUpc(i);
+                                                const cpc = lineCpc(i);
                                                 const totalUnits = i.quantity_ordered * packSize;
                                                 const receivedUnits = i.quantity_received * packSize;
-                                                const lineCost = i.quantity_ordered * packSize * (i.unit_cost || 0);
+                                                const lineCost = i.quantity_ordered * cpc;
                                                 const hasLanded = i.landed_cost && i.landed_cost > 0;
                                                 return `
                                                 <tr style="${i.quantity_received >= i.quantity_ordered ? 'background: #c6f6d5;' : i.quantity_received > 0 ? 'background: #fefcbf;' : ''}">
                                                     <td><strong>${escapeHtml(i.sku)}</strong></td>
                                                     <td>${escapeHtml(i.name)}</td>
-                                                    <td>${isEditable ? `<input type="number" value="${i.quantity_ordered}" min="0" style="width: 60px;" onchange="updatePOItemQty(${po.id}, ${i.id}, this.value)">` : i.quantity_ordered}</td>
-                                                    <td style="color: #718096;">${packSize}/pack</td>
+                                                    <td>${isEditable ? `<input type="number" value="${i.quantity_ordered}" min="0" style="width: 52px;" onchange="updatePOItemCases(${po.id}, ${i.id}, this.value)">` : i.quantity_ordered}</td>
+                                                    <td>${isEditable ? `$<input type="number" value="${cpc.toFixed(2)}" step="0.01" min="0" style="width: 68px;" onchange="updatePOItemCostPerCase(${po.id}, ${i.id}, this.value)">` : '$' + cpc.toFixed(2)}</td>
+                                                    <td style="color: #718096;">${packSize}</td>
                                                     <td><strong>${totalUnits}</strong></td>
-                                                    <td>${i.quantity_received} packs (${receivedUnits} units)</td>
-                                                    <td>${isEditable ? `<input type="number" value="${parseFloat(i.unit_cost || 0).toFixed(2)}" step="0.01" min="0" style="width: 70px;" onchange="updatePOItemCost(${po.id}, ${i.id}, this.value)">` : '$' + parseFloat(i.unit_cost || 0).toFixed(2)}</td>
+                                                    <td>${i.quantity_received} (${receivedUnits}u)</td>
+                                                    <td style="color:#718096;">$${parseFloat(i.unit_cost || 0).toFixed(2)}</td>
                                                     <td style="color:#805ad5;">${hasLanded ? '$' + parseFloat(i.freight_allocated || 0).toFixed(4) : '<span style="color:#ccc;">—</span>'}</td>
                                                     <td style="font-weight:600;color:${hasLanded ? '#2f855a' : '#718096'};">${hasLanded ? '$' + parseFloat(i.landed_cost).toFixed(4) : '<span style="color:#ccc;">—</span>'}</td>
-                                                    <td>$${lineCost.toFixed(2)}</td>
+                                                    <td><strong>$${lineCost.toFixed(2)}</strong></td>
                                                     ${isEditable ? `<td><button class="btn btn-danger btn-small" onclick="removePOItem(${po.id}, ${i.id})">✕</button></td>` : ''}
                                                 </tr>
                                             `}).join('')
@@ -4983,9 +4997,14 @@ The Peptide Wizard Team"></textarea>
                             </div>
                             
                             <div style="text-align: right; margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px;">
-                                <div>Product Cost: <strong>$${totalCost.toFixed(2)}</strong></div>
-                                ${po.freight_cost > 0 ? `<div style="color:#805ad5;">Freight: <strong>$${parseFloat(po.freight_cost).toFixed(2)}</strong></div>
-                                <div style="font-size:16px;margin-top:6px;">Landed Total: <strong>$${(totalCost + parseFloat(po.freight_cost || 0)).toFixed(2)}</strong></div>` : ''}
+                                <div>Subtotal: <strong>$${subtotal.toFixed(2)}</strong></div>
+                                <div style="margin-top:6px;">Shipping: ${isEditable
+                                    ? `$<input type="number" value="${shipping.toFixed(2)}" step="0.01" min="0" style="width:84px;text-align:right;padding:3px;" onchange="setPOShipping(${po.id}, this.value)">`
+                                    : `<strong>$${shipping.toFixed(2)}</strong>`}</div>
+                                <div style="margin-top:6px;color:#c53030;">Order Discount: ${isEditable
+                                    ? `−$<input type="number" value="${discount.toFixed(2)}" step="0.01" min="0" style="width:84px;text-align:right;padding:3px;" onchange="setPODiscount(${po.id}, this.value)">`
+                                    : `<strong>−$${discount.toFixed(2)}</strong>`}</div>
+                                <div style="font-size:18px;margin-top:10px;border-top:1px solid #e2e8f0;padding-top:8px;">Grand Total: <strong>$${grandTotal.toFixed(2)}</strong></div>
                             </div>
                             
                             <div style="display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;">
@@ -5024,35 +5043,93 @@ The Peptide Wizard Team"></textarea>
             } catch (e) { showAlert(e.message); }
         }
 
-        function updatePoDefaultCost() {
-            const select = document.getElementById('addPoProductId');
-            const costInput = document.getElementById('addPoCost');
-            if (select && costInput) {
-                const selectedOption = select.options[select.selectedIndex];
-                const defaultCost = selectedOption.dataset.cost || 0;
-                costInput.value = parseFloat(defaultCost).toFixed(2);
+        // Live preview under the add-item row: cases × $/case → line total,
+        // per-unit cost, and total units (10/case unless the product overrides).
+        function updatePoCasePreview() {
+            const sel = document.getElementById('addPoProductId');
+            const casesEl = document.getElementById('addPoCases');
+            const cpcEl = document.getElementById('addPoCostPerCase');
+            const prev = document.getElementById('addPoPreview');
+            if (!sel || !prev) return;
+            const opt = sel.options[sel.selectedIndex];
+            const pack = (opt && opt.dataset.pack) ? (parseInt(opt.dataset.pack) || 10) : 10;
+            const cases = parseInt(casesEl.value) || 0;
+            const cpc = parseFloat(cpcEl.value);
+            if (!isNaN(cpc) && cpc > 0 && cases > 0) {
+                const lineTotal = cases * cpc;
+                const perUnit = cpc / pack;
+                prev.innerHTML = `= <strong>$${lineTotal.toFixed(2)}</strong> &middot; ${pack}/case &rarr; $${perUnit.toFixed(2)}/unit &middot; ${cases * pack} units`;
+            } else {
+                prev.innerHTML = `Enter cases &times; $/case (e.g. 2 &times; $51 = $102). Leave $/case blank to auto-fill from the vendor price list. ${pack} units per case.`;
             }
         }
 
         async function addItemToPO(poId) {
             const productId = document.getElementById('addPoProductId').value;
-            const qty = document.getElementById('addPoQty').value;
-            const costInput = document.getElementById('addPoCost');
-            const unitCost = costInput.value ? parseFloat(costInput.value) : null;
-            
+            const cases = document.getElementById('addPoCases').value;
+            const cpcEl = document.getElementById('addPoCostPerCase');
+            const costPerCase = cpcEl.value !== '' ? parseFloat(cpcEl.value) : null;
+
             if (!productId) {
                 showAlert('Please select a product');
                 return;
             }
-            
+
             try {
-                const payload = { product_id: parseInt(productId), quantity: parseInt(qty) };
-                if (unitCost !== null) {
-                    payload.unit_cost = unitCost;
-                }
+                const payload = { product_id: parseInt(productId), cases: parseInt(cases) || 1 };
+                // Blank $/case → let the server auto-fill from the vendor price list.
+                if (costPerCase !== null) payload.cost_per_case = costPerCase;
                 await api(`/api/admin/po/${poId}/items`, {
                     method: 'POST',
                     body: JSON.stringify(payload)
+                });
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function updatePOItemCases(poId, itemId, cases) {
+            try {
+                await api(`/api/admin/po/${poId}/items/${itemId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ cases: parseInt(cases) })
+                });
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function updatePOItemCostPerCase(poId, itemId, cost) {
+            try {
+                await api(`/api/admin/po/${poId}/items/${itemId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ cost_per_case: parseFloat(cost) })
+                });
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function setPOShipping(poId, val) {
+            try {
+                await api(`/api/admin/po/${poId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ freight_cost: parseFloat(val) || 0 })
+                });
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+            }
+        }
+
+        async function setPODiscount(poId, val) {
+            try {
+                await api(`/api/admin/po/${poId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ order_discount: parseFloat(val) || 0 })
                 });
                 showPODetail(poId);
             } catch (err) {
