@@ -4921,6 +4921,14 @@ The Peptide Wizard Team"></textarea>
                                             ${poVendors.map(v => `<option value="${v.id}" ${po.vendor_id == v.id ? 'selected' : ''}>${escapeHtml(v.company_name)}</option>`).join('')}
                                         </select>
                                     </div>
+                                    ${po.vendor && po.vendor.whatsapp_number ? `
+                                        <div style="font-size: 13px; margin-top: 2px;">
+                                            <span style="color:#718096;">📱 Order via WhatsApp:</span>
+                                            <a href="https://wa.me/${(po.vendor.whatsapp_normalized || po.vendor.whatsapp_number || '').replace(/[^0-9]/g, '')}" target="_blank" style="color:#25D366; text-decoration:none; font-weight:600;">${escapeHtml(po.vendor.whatsapp_number)}</a>
+                                        </div>
+                                    ` : (po.vendor ? `
+                                        <div style="font-size: 12px; margin-top: 2px; color:#a0aec0;">📱 No WhatsApp # on file — add it in Vendors</div>
+                                    ` : '')}
                                 </div>
                                 <span style="background: ${getStatusColor(po.status)}; color: white; padding: 5px 15px; border-radius: 15px;">${po.status.toUpperCase()}</span>
                             </div>
@@ -4983,7 +4991,7 @@ The Peptide Wizard Team"></textarea>
                                                     <td>${isEditable ? `$<input type="number" value="${cpc.toFixed(2)}" step="0.01" min="0" style="width: 68px;" onchange="updatePOItemCostPerCase(${po.id}, ${i.id}, this.value)">` : '$' + cpc.toFixed(2)}</td>
                                                     <td style="color: #718096;">${packSize}</td>
                                                     <td><strong>${totalUnits}</strong></td>
-                                                    <td>${i.quantity_received} (${receivedUnits}u)</td>
+                                                    <td>${isEditable ? `<input type="number" value="${i.quantity_received}" min="0" title="Correct received cases — adjusts stock by the difference" style="width: 46px;" onchange="updatePOItemReceived(${po.id}, ${i.id}, this.value)"> (${receivedUnits}u)` : `${i.quantity_received} (${receivedUnits}u)`}</td>
                                                     <td style="color:#718096;">$${parseFloat(i.unit_cost || 0).toFixed(2)}</td>
                                                     <td style="color:#805ad5;">${hasLanded ? '$' + parseFloat(i.freight_allocated || 0).toFixed(4) : '<span style="color:#ccc;">—</span>'}</td>
                                                     <td style="font-weight:600;color:${hasLanded ? '#2f855a' : '#718096'};">${hasLanded ? '$' + parseFloat(i.landed_cost).toFixed(4) : '<span style="color:#ccc;">—</span>'}</td>
@@ -5110,6 +5118,28 @@ The Peptide Wizard Team"></textarea>
                 showPODetail(poId);
             } catch (err) {
                 showAlert(err.message);
+            }
+        }
+
+        async function updatePOItemReceived(poId, itemId, qty) {
+            // Touches inventory, so confirm before moving stock.
+            if (!confirm('Correct the received cases for this line?\n\nThis adjusts the product\'s stock by the difference (and does NOT change its cost — verify that separately if the change is large).')) {
+                showPODetail(poId);  // revert the input to the stored value
+                return;
+            }
+            try {
+                const r = await api(`/api/admin/po/${poId}/items/${itemId}/received`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ quantity_received: parseInt(qty) })
+                });
+                const dir = r.delta_units > 0 ? 'added' : 'removed';
+                let msg = `Received corrected. Stock ${dir} ${Math.abs(r.delta_units)} units → new stock ${r.new_stock}.`;
+                if (r.stock_clamped_to_zero) msg += ' (clamped at 0 — double-check inventory.)';
+                showAlert(msg, 'success');
+                showPODetail(poId);
+            } catch (err) {
+                showAlert(err.message);
+                showPODetail(poId);
             }
         }
 

@@ -7401,8 +7401,89 @@ def delete_po_item(po_id, item_id):
     conn.execute('DELETE FROM purchase_order_items WHERE id = ? AND po_id = ?', (item_id, po_id))
     conn.commit()
     conn.close()
-    
+
     return jsonify({'message': 'Item removed'})
+
+
+@app.route('/api/admin/po/<int:po_id>/items/<int:item_id>/received', methods=['PUT'])
+@admin_required
+def update_po_item_received(po_id, item_id):
+    """Correct the RECEIVED quantity (in CASES) on an editable PO and reconcile
+    product stock by the difference. For fixing a mis-keyed receipt (e.g. logged
+    4 cases received when only 1 arrived) without an "un-receive" flow.
+
+    Stock moves by delta_cases * units_per_case (floored at 0 so the storefront
+    never goes negative). Product weighted-avg COST is intentionally left alone —
+    it can't be exactly un-weighted without the pre-receipt snapshot — so the
+    response flags that the cost should be verified after a large correction."""
+    data = request.json or {}
+    conn = get_db()
+    c = conn.cursor()
+
+    po = c.execute('SELECT status FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+    # Only on an editable PO — close/reopen a submitted PO first (same gate as edits)
+    if dict(po)['status'] not in ('draft', 'open', 'closed'):
+        conn.close()
+        return jsonify({'error': 'Close or reopen the PO first to correct received quantities'}), 400
+
+    row = c.execute('''SELECT poi.quantity_received, poi.quantity_ordered, poi.units_per_case,
+                              poi.product_id, p.supplier_pack_size, p.stock
+                       FROM purchase_order_items poi
+                       JOIN products p ON poi.product_id = p.id
+                       WHERE poi.id = ? AND poi.po_id = ?''', (item_id, po_id)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Line not found'}), 404
+    r = dict(row)
+
+    try:
+        new_recv = int(data.get('quantity_received'))
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({'error': 'quantity_received must be a whole number of cases'}), 400
+    if new_recv < 0:
+        conn.close()
+        return jsonify({'error': 'quantity_received cannot be negative'}), 400
+
+    old_recv = r['quantity_received'] or 0
+    pack = r['units_per_case'] or r['supplier_pack_size'] or 1
+    delta_cases = new_recv - old_recv
+    delta_units = delta_cases * pack
+
+    # Reconcile product stock by the delta; floor at 0 for storefront safety
+    cur_stock = r['stock'] or 0
+    new_stock = cur_stock + delta_units
+    clamped = False
+    if new_stock < 0:
+        new_stock = 0
+        clamped = True
+    c.execute('UPDATE products SET stock = ? WHERE id = ?', (new_stock, r['product_id']))
+
+    # Update the line + recompute its status against ordered cases
+    c.execute('UPDATE purchase_order_items SET quantity_received = ? WHERE id = ? AND po_id = ?',
+              (new_recv, item_id, po_id))
+    qo = r['quantity_ordered'] or 0
+    if qo > 0 and new_recv >= qo:
+        status = 'received'
+    elif new_recv > 0:
+        status = 'partial'
+    else:
+        status = 'pending'
+    c.execute('UPDATE purchase_order_items SET status = ? WHERE id = ?', (status, item_id))
+
+    conn.commit()
+    conn.close()
+    return jsonify({
+        'message': 'Received quantity corrected',
+        'delta_cases': delta_cases,
+        'delta_units': delta_units,
+        'new_stock': new_stock,
+        'stock_clamped_to_zero': clamped,
+        'cost_unchanged': True,
+    })
 
 
 @app.route('/api/admin/po/<int:po_id>/submit', methods=['POST'])
