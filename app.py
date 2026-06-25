@@ -5693,8 +5693,23 @@ def admin_get_user(uid):
     
     if not user:
         return jsonify({'error': 'User not found'}), 404
-    
+
     return jsonify(dict(user))
+
+@app.route('/api/admin/users/<int:uid>/orders', methods=['GET'])
+@admin_required
+def admin_get_user_orders(uid):
+    """All of a user's orders, newest first — powers the user-detail drill-down
+    (pull up a user -> see every order + date -> click to open it). Fetched live
+    so it doesn't depend on the client-side orders cache."""
+    conn = get_db()
+    orders = conn.execute(
+        'SELECT id, order_number, created_at, status, total, tracking_number '
+        'FROM orders WHERE user_id = ? ORDER BY created_at DESC',
+        (uid,)
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(o) for o in orders])
 
 @app.route('/api/admin/users/<int:uid>', methods=['PUT'])
 @admin_required
@@ -5799,7 +5814,7 @@ def get_eligible_orders():
                    (SELECT COUNT(*) FROM returns r WHERE r.order_id = o.id AND r.status != 'denied') as existing_returns
             FROM orders o 
             WHERE o.user_id = %s 
-              AND o.status IN ('fulfilled', 'delivered', 'shipped')
+              AND o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
               AND o.created_at > NOW() - INTERVAL '90 days'
             ORDER BY o.created_at DESC
         ''', (session['user_id'],)).fetchall()
@@ -5809,7 +5824,7 @@ def get_eligible_orders():
                    (SELECT COUNT(*) FROM returns r WHERE r.order_id = o.id AND r.status != 'denied') as existing_returns
             FROM orders o 
             WHERE o.user_id = ? 
-              AND o.status IN ('fulfilled', 'delivered', 'shipped')
+              AND o.status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
               AND o.created_at > datetime('now', '-90 days')
             ORDER BY o.created_at DESC
         ''', (session['user_id'],)).fetchall()
@@ -5870,10 +5885,10 @@ def submit_return_request():
     # Verify order belongs to user and is eligible
     order = conn.execute('''
         SELECT id, order_number, user_id, status FROM orders 
-        WHERE id = ? AND user_id = ? AND status IN ('fulfilled', 'delivered', 'shipped')
+        WHERE id = ? AND user_id = ? AND status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
     '''.replace('?', '%s') if is_postgres() else '''
         SELECT id, order_number, user_id, status FROM orders 
-        WHERE id = ? AND user_id = ? AND status IN ('fulfilled', 'delivered', 'shipped')
+        WHERE id = ? AND user_id = ? AND status IN ('paid', 'processing', 'ready_to_ship', 'shipped', 'delivered', 'fulfilled')
     ''', (order_id, session['user_id'])).fetchone()
     
     if not order:

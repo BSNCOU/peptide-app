@@ -2654,24 +2654,31 @@ BC10,8.00</pre>
                 return;
             }
             
-            // Get user's orders
-            const userOrders = state.orders.filter(o => o.user_id === id);
+            // Get user's orders LIVE (full history, newest first) so it doesn't
+            // depend on whether the Orders tab cache happens to be loaded.
+            let userOrders = [];
+            try {
+                userOrders = await api(`/api/admin/users/${id}/orders`);
+            } catch (err) {
+                userOrders = state.orders.filter(o => o.user_id === id);  // fallback to cache
+            }
             const totalSpent = userOrders.filter(o => !['cancelled', 'refunded'].includes(o.status)).reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
             const orderCount = userOrders.filter(o => !['cancelled', 'refunded'].includes(o.status)).length;
             
             const ordersHtml = userOrders.length > 0 ? `
-                <div style="max-height: 200px; overflow-y: auto; margin-top: 15px;">
+                <div style="max-height: 280px; overflow-y: auto; margin-top: 15px;">
                     <table style="font-size: 0.85rem;">
                         <thead>
-                            <tr><th>Order #</th><th>Date</th><th>Status</th><th>Total</th></tr>
+                            <tr><th>Order #</th><th>Date</th><th>Status</th><th>Total</th><th></th></tr>
                         </thead>
                         <tbody>
-                            ${userOrders.slice(0, 10).map(o => `
+                            ${userOrders.map(o => `
                                 <tr style="cursor: pointer;" onclick="closeModal(); setTimeout(() => showOrderDetailModal(${o.id}), 100);">
-                                    <td>${o.order_number}</td>
+                                    <td>${escapeHtml(o.order_number)}</td>
                                     <td>${new Date(o.created_at).toLocaleDateString()}</td>
                                     <td><span class="status-badge status-${o.status}">${o.status}</span></td>
                                     <td>$${parseFloat(o.total || 0).toFixed(2)}</td>
+                                    <td><button class="btn btn-small" onclick="event.stopPropagation(); closeModal(); setTimeout(() => showOrderDetailModal(${o.id}), 100);">Open</button></td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -2708,7 +2715,7 @@ BC10,8.00</pre>
                             ${u.is_admin ? '<p style="margin: 5px 0;"><strong>Admin:</strong> 👑 Yes</p>' : ''}
                         </div>
                         
-                        <h4 style="margin: 20px 0 10px 0; color: #4a5568;">📦 Recent Orders</h4>
+                        <h4 style="margin: 20px 0 10px 0; color: #4a5568;">📦 Orders (${userOrders.length})</h4>
                         ${ordersHtml}
                         
                         <div style="display: flex; gap: 10px; margin-top: 20px;">
