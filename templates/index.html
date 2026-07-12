@@ -1409,9 +1409,27 @@
             const ack3 = document.getElementById('ack3').checked;
             const ack4 = document.getElementById('ack4').checked;
             const ack5 = document.getElementById('ack5').checked;
-            
-            if (!ack1 || !ack2 || !ack3 || !ack4 || !ack5) {
-                showAlert('Please confirm all acknowledgments including the Terms of Service');
+
+            // If any box is unchecked, don't fail silently — scroll to it and highlight it
+            // so the customer sees exactly what's blocking the order (the ToS box at the
+            // bottom is the easy one to miss).
+            const _acks = { ack1, ack2, ack3, ack4, ack5 };
+            const _missingAcks = Object.keys(_acks).filter(id => !_acks[id]);
+            ['ack1', 'ack2', 'ack3', 'ack4', 'ack5'].forEach(id => {
+                const grp = document.getElementById(id).closest('.checkbox-group');
+                if (grp) { grp.style.outline = ''; grp.style.outlineOffset = ''; }
+            });
+            if (_missingAcks.length) {
+                _missingAcks.forEach(id => {
+                    const grp = document.getElementById(id).closest('.checkbox-group');
+                    if (grp) { grp.style.outline = '2px solid #e53e3e'; grp.style.outlineOffset = '2px'; }
+                });
+                const firstGrp = document.getElementById(_missingAcks[0]).closest('.checkbox-group')
+                                 || document.getElementById(_missingAcks[0]);
+                if (firstGrp && firstGrp.scrollIntoView) {
+                    firstGrp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                showAlert(`Please check the ${_missingAcks.length} highlighted box${_missingAcks.length > 1 ? 'es' : ''} to place your order — including the Terms of Service at the bottom.`, 'warning');
                 return;
             }
 
