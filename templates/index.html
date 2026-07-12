@@ -1438,6 +1438,14 @@
             let addressData = null;
 
             if (state.deliveryMethod === 'ship') {
+                // Salvage a typed-but-not-selected address: if the user typed into the
+                // Places autocomplete box but never tapped a suggestion, the structured
+                // street field stays empty. Copy the raw text over so the order still works.
+                const _acEl = document.getElementById('addressAutocomplete');
+                const _s1El = document.getElementById('addrStreet1');
+                if (_s1El && !(_s1El.value || '').trim() && _acEl && (_acEl.value || '').trim()) {
+                    _s1El.value = _acEl.value.trim();
+                }
                 // Get structured address fields
                 const street1 = document.getElementById('addrStreet1')?.value?.trim() || '';
                 const street2 = document.getElementById('addrStreet2')?.value?.trim() || '';
@@ -1445,8 +1453,29 @@
                 const addrState = document.getElementById('addrState')?.value?.trim().toUpperCase() || '';
                 const zip = document.getElementById('addrZip')?.value?.trim() || '';
 
-                if (!street1 || !city || !addrState || !zip) {
-                    showAlert('Please enter a complete shipping address');
+                // Don't fail silently on a missing address field (e.g. the street field
+                // when the Places autocomplete was used but the row didn't populate).
+                // Highlight + scroll to the first empty required field.
+                const _addrFields = [
+                    ['addrStreet1', street1], ['addrCity', city],
+                    ['addrState', addrState], ['addrZip', zip]
+                ];
+                ['addrStreet1', 'addrStreet2', 'addrCity', 'addrState', 'addrZip'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) { el.style.outline = ''; el.style.outlineOffset = ''; }
+                });
+                const _emptyAddr = _addrFields.filter(([id, v]) => !v);
+                if (_emptyAddr.length) {
+                    _emptyAddr.forEach(([id]) => {
+                        const el = document.getElementById(id);
+                        if (el) { el.style.outline = '2px solid #e53e3e'; el.style.outlineOffset = '2px'; }
+                    });
+                    const firstEl = document.getElementById(_emptyAddr[0][0]);
+                    if (firstEl) {
+                        if (firstEl.scrollIntoView) firstEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        if (firstEl.focus) firstEl.focus();
+                    }
+                    showAlert('Please complete your shipping address — the highlighted field is empty.', 'warning');
                     return;
                 }
 
