@@ -1591,6 +1591,13 @@ BC10,8.00</pre>
                             <span style="font-size:12px;color:#718096;">Tip: check the mis-shipped item above to default this to its value.</span>
                         </div>
 
+                        <div id="corrEmailSection" class="form-group" style="display:none;">
+                            <label style="display:flex;gap:8px;align-items:flex-start;">
+                                <input type="checkbox" id="corrEmailLabel" checked style="margin-top:3px;">
+                                <span>Email the return label to the customer<br><span style="font-size:12px;color:#718096;">Uncheck if you're printing it to tape inside the box you're shipping. Either way, the label is prepaid and you'll get a Print button after applying.</span></span>
+                            </label>
+                        </div>
+
                         <div class="form-group">
                             <label style="font-weight:600;">Reason / note</label>
                             <input type="text" id="corrReason" value="Shipping error - wrong product sent" style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;box-sizing:border-box;">
@@ -1609,6 +1616,8 @@ BC10,8.00</pre>
             const isCredit = t === 'store_credit';
             document.getElementById('corrProductSection').style.display = isCredit ? 'none' : 'block';
             document.getElementById('corrCreditSection').style.display = isCredit ? 'block' : 'none';
+            const es = document.getElementById('corrEmailSection');
+            if (es) es.style.display = (t === 'reship_return') ? 'block' : 'none';
         }
 
         function updateCorrectionCreditDefault() {
@@ -1660,7 +1669,9 @@ BC10,8.00</pre>
                 payload.items = items.map(i => ({ product_id: i.product_id, quantity: i.quantity }));
                 const list = items.map(i => `• ${i.quantity}× ${i.name}`).join('\\n');
                 if (type === 'reship_return') {
-                    confirmMsg = `Create a FREE reship order with:\\n${list}\\n\\nAND buy a PREPAID RETURN LABEL (real postage cost) and EMAIL it to the customer?`;
+                    const emailIt = document.getElementById('corrEmailLabel').checked;
+                    payload.email_label = emailIt;
+                    confirmMsg = `Create a FREE reship order with:\\n${list}\\n\\nAND buy a PREPAID RETURN LABEL (real postage cost)` + (emailIt ? ' and EMAIL it to the customer?' : ' for you to PRINT and include in the box?');
                 } else {
                     confirmMsg = `Create a FREE reship order with:\\n${list}\\n\\nInventory will be deducted. You'll buy the shipping label in Open Orders.`;
                 }
@@ -1674,14 +1685,38 @@ BC10,8.00</pre>
                     body: JSON.stringify(payload)
                 });
                 closeModal();
-                let msg = result.message || 'Correction applied';
-                if (result.new_order_number) msg += `\\nReship order: ${result.new_order_number} (buy its label in Open Orders)`;
-                if (result.return_label_error) msg += `\\n⚠️ Return label failed: ${result.return_label_error}`;
-                showAlert(msg, result.return_label_error ? 'error' : 'success');
                 loadOrders();
+                if (result.return_label && result.return_label.label_url) {
+                    showCorrectionResult(result);
+                } else {
+                    let msg = result.message || 'Correction applied';
+                    if (result.new_order_number) msg += `\\nReship order: ${result.new_order_number} (buy its label in Open Orders)`;
+                    if (result.return_label_error) msg += `\\n⚠️ Return label failed: ${result.return_label_error}`;
+                    showAlert(msg, result.return_label_error ? 'error' : 'success');
+                }
             } catch (err) {
                 showAlert(err.message || 'Error applying correction');
             }
+        }
+
+        function showCorrectionResult(result) {
+            const rl = result.return_label || {};
+            const reship = result.new_order_number
+                ? `<p>✅ Reship order <strong>${escapeHtml(result.new_order_number)}</strong> created — buy its outbound label in Open Orders.</p>` : '';
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:480px;text-align:center;">
+                        <h3>↩️ Prepaid Return Label Ready</h3>
+                        <div style="text-align:left;margin:10px 0;">
+                            ${reship}
+                            <p style="margin:8px 0;">Carrier: <strong>${escapeHtml(rl.carrier||'')} ${escapeHtml(rl.service||'')}</strong> · $${parseFloat(rl.rate||0).toFixed(2)}</p>
+                            <p style="margin:8px 0;">Return tracking: <span style="font-family:monospace;">${escapeHtml(rl.tracking||'')}</span></p>
+                        </div>
+                        <a href="${rl.label_url}" target="_blank" rel="noopener" class="btn" style="background:#3182ce;color:#fff;display:inline-block;margin:6px 0;text-decoration:none;">🖨️ Print Return Label</a>
+                        <p style="font-size:12px;color:#718096;margin:10px 0;">Print this and tape it inside the box you're shipping, so the customer can send the wrong item back. (It was also emailed to them if you left that box checked.)</p>
+                        <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="closeModal()">Done</button></div>
+                    </div>
+                </div>`;
         }
 
         function showUpdateStatusModal(id) {

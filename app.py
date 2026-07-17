@@ -5286,7 +5286,7 @@ def _buy_return_label(order_dict, user_dict, items):
         rates = sorted(shipment.rates, key=lambda r: float(r.rate))
         if not rates:
             return None, 'No return rates available'
-        purchased = easypost_client.shipment.buy(shipment.id, rate={'id': rates[0].id})
+        purchased = easypost_client.shipment.buy(shipment.id, rate={'id': rates[0].id}, label_format='PDF')
         return {
             'tracking': purchased.tracking_code,
             'label_url': purchased.postage_label.label_url,
@@ -5419,6 +5419,7 @@ def correct_order(oid):
 
     # --- Prepaid return label (customer keeps the correct one, sends wrong one back) ---
     if ctype == 'reship_return':
+        email_label = data.get('email_label', True)
         info, err = _buy_return_label(od, user, chosen)
         if err:
             result['return_label_error'] = err
@@ -5428,9 +5429,12 @@ def correct_order(oid):
             note_lines.append(
                 f"Return label purchased ({info['carrier']} {info['service']}, "
                 f"${info['rate']:.2f}, tracking {info['tracking']}).")
-            emailed = _email_return_label(user, od, info)
-            note_lines.append("Return label emailed to customer."
-                              if emailed else "Return label email FAILED (customer not notified).")
+            if email_label:
+                emailed = _email_return_label(user, od, info)
+                note_lines.append("Return label emailed to customer."
+                                  if emailed else "Return label email FAILED (customer not notified).")
+            else:
+                note_lines.append("Return label printed by admin to include in the box (not emailed).")
 
     # --- Log to the original order's admin notes ---
     existing = od.get('admin_notes') or ''
