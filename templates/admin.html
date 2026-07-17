@@ -1417,7 +1417,7 @@ BC10,8.00</pre>
                         <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                             <button class="btn" onclick="showEditOrderModal(${o.id})">✏️ Edit Order</button>
-                            <button class="btn" style="background: #ed8936;" onclick="createReplacementOrder(${o.id}, '${escapeHtml(o.order_number)}')">🔄 Create Replacement</button>
+                            <button class="btn" style="background: #ed8936;" onclick="showCorrectionModal(${o.id})">🔧 Correct Order</button>
                             ${parseFloat(o.total || 0) === 0 && ['pending','pending_payment'].includes(o.status) ? `
                                 <button class="btn btn-success" onclick="markZeroTotalPaid(${o.id})" style="background:#276749;">
                                     ✅ Mark as Paid ($0 — Credits Covered)
@@ -1522,6 +1522,165 @@ BC10,8.00</pre>
                 loadOrders();
             } catch (err) {
                 showAlert(err.message || 'Error creating replacement');
+            }
+        }
+
+        // ---- Order Correction (mis-ship fix): reship / store credit / reship + return label ----
+        function showCorrectionModal(orderId) {
+            const o = state.orders.find(x => x.id === orderId);
+            if (!o) { showAlert('Order not found'); return; }
+            const items = o.items || [];
+            const orderTotal = parseFloat(o.total || 0).toFixed(2);
+
+            const itemRows = items.length ? items.map(i => {
+                const name = i.name || i.product_name || 'Unknown';
+                const price = parseFloat(i.unit_price || i.price_each || 0);
+                return `
+                    <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #edf2f7;border-radius:6px;margin-bottom:6px;">
+                        <input type="checkbox" class="corr-item" data-pid="${i.product_id}" data-name="${escapeHtml(name)}" data-price="${price}" onchange="updateCorrectionCreditDefault()">
+                        <span style="flex:1;">${escapeHtml(name)}</span>
+                        <span style="color:#718096;font-size:12px;">$${price.toFixed(2)}</span>
+                        <input type="number" class="corr-qty" min="1" value="${i.quantity}" style="width:60px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;">
+                    </label>`;
+            }).join('') : '<p style="color:#a0aec0;">No items on this order to pick from — use “add another product” below.</p>';
+
+            const productOpts = (state.products || []).map(p =>
+                `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:560px;">
+                        <h3>🔧 Correct Order ${escapeHtml(o.order_number)}</h3>
+                        <p style="color:#718096;margin:0 0 14px 0;">${escapeHtml(o.full_name || '')} · ${escapeHtml(o.email || '')}</p>
+
+                        <div class="form-group">
+                            <label style="font-weight:600;">What kind of correction?</label>
+                            <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
+                                <label style="display:flex;gap:8px;align-items:flex-start;">
+                                    <input type="radio" name="corrType" value="reship" checked onchange="onCorrectionTypeChange()">
+                                    <span><strong>Send correct product</strong><br><span style="font-size:12px;color:#718096;">Creates a $0 order with just the right item — you buy the label in Open Orders. Customer keeps the wrong one.</span></span>
+                                </label>
+                                <label style="display:flex;gap:8px;align-items:flex-start;">
+                                    <input type="radio" name="corrType" value="reship_return" onchange="onCorrectionTypeChange()">
+                                    <span><strong>Send correct product + return label</strong><br><span style="font-size:12px;color:#718096;">Same as above, PLUS buys a prepaid return label and emails it to the customer to send the wrong item back.</span></span>
+                                </label>
+                                <label style="display:flex;gap:8px;align-items:flex-start;">
+                                    <input type="radio" name="corrType" value="store_credit" onchange="onCorrectionTypeChange()">
+                                    <span><strong>Issue store credit</strong><br><span style="font-size:12px;color:#718096;">Adds credit to the customer's account instead of reshipping.</span></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div id="corrProductSection" class="form-group">
+                            <label style="font-weight:600;">Correct product(s) to send</label>
+                            <div style="margin-top:6px;">${itemRows}</div>
+                            <div style="display:flex;gap:6px;align-items:center;margin-top:8px;">
+                                <select id="corrAddProduct" style="flex:1;padding:8px;border:1px solid #e2e8f0;border-radius:6px;">
+                                    <option value="">+ Add another product…</option>
+                                    ${productOpts}
+                                </select>
+                                <input type="number" id="corrAddQty" min="1" value="1" style="width:60px;padding:8px;border:1px solid #e2e8f0;border-radius:6px;">
+                                <button type="button" class="btn btn-small" onclick="addCorrectionProduct()">Add</button>
+                            </div>
+                            <div id="corrExtraItems"></div>
+                        </div>
+
+                        <div id="corrCreditSection" class="form-group" style="display:none;">
+                            <label style="font-weight:600;">Store credit amount ($)</label>
+                            <input type="number" id="corrCreditAmount" min="0" step="0.01" value="0.00" style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;box-sizing:border-box;">
+                            <span style="font-size:12px;color:#718096;">Tip: check the mis-shipped item above to default this to its value.</span>
+                        </div>
+
+                        <div class="form-group">
+                            <label style="font-weight:600;">Reason / note</label>
+                            <input type="text" id="corrReason" value="Shipping error - wrong product sent" style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;box-sizing:border-box;">
+                        </div>
+
+                        <div style="display:flex;gap:10px;margin-top:16px;">
+                            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button class="btn" style="background:#ed8936;" onclick="submitCorrection(${orderId})">Apply Correction</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        function onCorrectionTypeChange() {
+            const t = (document.querySelector('input[name="corrType"]:checked') || {}).value;
+            const isCredit = t === 'store_credit';
+            document.getElementById('corrProductSection').style.display = isCredit ? 'none' : 'block';
+            document.getElementById('corrCreditSection').style.display = isCredit ? 'block' : 'none';
+        }
+
+        function updateCorrectionCreditDefault() {
+            // Default the store-credit amount to the value of the checked items
+            let total = 0;
+            document.querySelectorAll('.corr-item:checked').forEach(cb => {
+                const row = cb.closest('label');
+                const qty = parseInt(row.querySelector('.corr-qty').value) || 0;
+                total += parseFloat(cb.dataset.price || 0) * qty;
+            });
+            const amt = document.getElementById('corrCreditAmount');
+            if (amt && total > 0) amt.value = total.toFixed(2);
+        }
+
+        function addCorrectionProduct() {
+            const sel = document.getElementById('corrAddProduct');
+            const qty = parseInt(document.getElementById('corrAddQty').value) || 1;
+            const pid = sel.value;
+            if (!pid) return;
+            const name = sel.options[sel.selectedIndex].text;
+            const wrap = document.getElementById('corrExtraItems');
+            const div = document.createElement('label');
+            div.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #c6f6d5;border-radius:6px;margin-top:6px;background:#f0fff4;';
+            div.innerHTML = `<input type="checkbox" class="corr-item" data-pid="${pid}" data-name="${escapeHtml(name)}" data-price="0" checked>
+                <span style="flex:1;">${escapeHtml(name)}</span>
+                <input type="number" class="corr-qty" min="1" value="${qty}" style="width:60px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;">`;
+            wrap.appendChild(div);
+            sel.value = '';
+        }
+
+        async function submitCorrection(orderId) {
+            const type = (document.querySelector('input[name="corrType"]:checked') || {}).value;
+            const reason = document.getElementById('corrReason').value.trim();
+            const payload = { correction_type: type, reason };
+            let confirmMsg = '';
+
+            if (type === 'store_credit') {
+                const amount = parseFloat(document.getElementById('corrCreditAmount').value) || 0;
+                if (amount <= 0) { showAlert('Enter a store credit amount greater than 0'); return; }
+                payload.credit_amount = amount;
+                confirmMsg = `Issue $${amount.toFixed(2)} store credit to this customer?`;
+            } else {
+                const items = [];
+                document.querySelectorAll('.corr-item:checked').forEach(cb => {
+                    const qty = parseInt(cb.closest('label').querySelector('.corr-qty').value) || 0;
+                    if (qty > 0) items.push({ product_id: parseInt(cb.dataset.pid), quantity: qty, name: cb.dataset.name });
+                });
+                if (!items.length) { showAlert('Select at least one product to send'); return; }
+                payload.items = items.map(i => ({ product_id: i.product_id, quantity: i.quantity }));
+                const list = items.map(i => `• ${i.quantity}× ${i.name}`).join('\\n');
+                if (type === 'reship_return') {
+                    confirmMsg = `Create a FREE reship order with:\\n${list}\\n\\nAND buy a PREPAID RETURN LABEL (real postage cost) and EMAIL it to the customer?`;
+                } else {
+                    confirmMsg = `Create a FREE reship order with:\\n${list}\\n\\nInventory will be deducted. You'll buy the shipping label in Open Orders.`;
+                }
+            }
+
+            if (!confirm(confirmMsg)) return;
+
+            try {
+                const result = await api(`/api/admin/orders/${orderId}/correct`, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                closeModal();
+                let msg = result.message || 'Correction applied';
+                if (result.new_order_number) msg += `\\nReship order: ${result.new_order_number} (buy its label in Open Orders)`;
+                if (result.return_label_error) msg += `\\n⚠️ Return label failed: ${result.return_label_error}`;
+                showAlert(msg, result.return_label_error ? 'error' : 'success');
+                loadOrders();
+            } catch (err) {
+                showAlert(err.message || 'Error applying correction');
             }
         }
 

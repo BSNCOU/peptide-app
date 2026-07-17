@@ -5241,6 +5241,209 @@ def create_replacement_order(oid):
     })
 
 
+# ============================================
+# ORDER CORRECTION (mis-ship fix) — reship correct product,
+# issue store credit, or reship + prepaid return label.
+# Reuses the proven replacement/EasyPost/store-credit machinery.
+# ============================================
+
+def _correction_parcel_weight(items):
+    """Estimate parcel weight (oz) for a set of items — mirrors get_shipping_rates."""
+    total = 5.0  # base packaging
+    for it in items:
+        name = (it.get('name') or '').lower()
+        qty = int(it.get('quantity') or 0)
+        if '10vial' in name or '10 vial' in name or '/10' in name:
+            total += 3.0 * qty
+        else:
+            total += 1.0 * qty
+    return total
+
+
+def _buy_return_label(order_dict, user_dict, items):
+    """Buy a prepaid return label (customer -> company). Returns (info, error)."""
+    if not easypost_client:
+        return None, 'EasyPost not configured'
+    addr = parse_shipping_address(order_dict.get('shipping_address', '') or '')
+    try:
+        shipment = easypost_client.shipment.create(
+            to_address=COMPANY_SHIPPING_ADDRESS,
+            from_address={
+                'name': user_dict.get('full_name', '') or 'Customer',
+                'street1': addr.get('street1', ''),
+                'street2': addr.get('street2', ''),
+                'city': addr.get('city', ''),
+                'state': addr.get('state', ''),
+                'zip': addr.get('zip', ''),
+                'country': 'US',
+                'phone': user_dict.get('phone', '') or '',
+                'email': user_dict.get('email', '') or ''
+            },
+            parcel={'length': 6, 'width': 4, 'height': 3,
+                    'weight': _correction_parcel_weight(items)},
+            is_return=True
+        )
+        rates = sorted(shipment.rates, key=lambda r: float(r.rate))
+        if not rates:
+            return None, 'No return rates available'
+        purchased = easypost_client.shipment.buy(shipment.id, rate={'id': rates[0].id})
+        return {
+            'tracking': purchased.tracking_code,
+            'label_url': purchased.postage_label.label_url,
+            'rate': float(purchased.selected_rate.rate),
+            'carrier': purchased.selected_rate.carrier,
+            'service': purchased.selected_rate.service,
+        }, None
+    except Exception as e:
+        print(f"[CORRECTION] Return label error: {e}")
+        return None, str(e)
+
+
+def _email_return_label(user_dict, order_dict, info):
+    """Email the prepaid return label to the customer. Returns True/False."""
+    to = user_dict.get('email')
+    if not to:
+        return False
+    html = f"""<html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: linear-gradient(135deg, #1a365d 0%, #2b6cb0 100%); color: white; padding: 20px; text-align: center;">
+        <h1 style="margin: 0;">↩️ Prepaid Return Label</h1>
+    </div>
+    <div style="padding: 30px; background: #f7fafc;">
+        <p style="font-size: 16px;">Hi {user_dict.get('full_name','')},</p>
+        <p>We're sorry about the mix-up on order <strong>{order_dict['order_number']}</strong>.
+        The correct product is on its way, and here is a <strong>prepaid label</strong> to return the incorrect item at no cost to you.</p>
+        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0;">
+            <p style="margin: 0 0 10px 0;"><strong>Carrier:</strong> {info['carrier']} {info['service']}</p>
+            <p style="margin: 0 0 15px 0;"><strong>Return tracking:</strong></p>
+            <p style="font-family: monospace; font-size: 18px; background: #edf2f7; padding: 10px; border-radius: 4px; margin: 0;">{info['tracking']}</p>
+            <a href="{info['label_url']}" style="display: inline-block; background: #3182ce; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 15px;">Print Return Label</a>
+        </div>
+        <p style="font-size: 14px; color: #4a5568;">Please pack the incorrect item, attach the label, and drop it off with the carrier. No payment or account is required.</p>
+        <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 8px; margin-top: 20px;">
+            <strong>⚠️ Research Use Only</strong><br>
+            <span style="font-size: 13px;">All materials are for laboratory research purposes only. Not for human or animal consumption.</span>
+        </div>
+        <p style="color: #718096; font-size: 14px; margin-top: 30px;">Thank you for your patience,<br>The Peptide Wizard Team</p>
+    </div>
+    <div style="background: #1a202c; color: #a0aec0; padding: 15px; text-align: center; font-size: 12px;">
+        <p style="margin: 0;">© 2026 The Peptide Wizard™ | Operated by NH Chemicals LLC</p>
+    </div>
+    </body></html>"""
+    ok, _ = send_email(to, f"Prepaid return label for order {order_dict['order_number']}", html)
+    return ok
+
+
+@app.route('/api/admin/orders/<int:oid>/correct', methods=['POST'])
+@admin_required
+def correct_order(oid):
+    """Unified mis-ship correction. correction_type ∈ reship | store_credit | reship_return."""
+    data = request.json or {}
+    ctype = data.get('correction_type')
+    reason = (data.get('reason') or 'Shipping error - wrong product sent').strip()
+    req_items = data.get('items') or []
+    credit_amount = float(data.get('credit_amount') or 0)
+
+    if ctype not in ('reship', 'store_credit', 'reship_return'):
+        return jsonify({'error': 'Invalid correction_type'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+    original = c.execute('''
+        SELECT o.*, u.full_name, u.email, u.phone
+        FROM orders o JOIN users u ON o.user_id = u.id
+        WHERE o.id = ?
+    ''', (oid,)).fetchone()
+    if not original:
+        conn.close()
+        return jsonify({'error': 'Order not found'}), 404
+    od = dict(original)
+    user = {'full_name': od.get('full_name'), 'email': od.get('email'), 'phone': od.get('phone')}
+
+    result = {'success': True, 'correction_type': ctype}
+    note_lines = []
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M')
+    chosen = []
+
+    # --- Reship: build a $0 order with ONLY the selected correct product(s) ---
+    if ctype in ('reship', 'reship_return'):
+        for it in req_items:
+            pid = it.get('product_id')
+            qty = int(it.get('quantity') or 0)
+            if not pid or qty <= 0:
+                continue
+            prow = c.execute('SELECT id, name, sku FROM products WHERE id = ?', (pid,)).fetchone()
+            if not prow:
+                continue
+            pd = dict(prow)
+            pd['quantity'] = qty
+            chosen.append(pd)
+        if not chosen:
+            conn.close()
+            return jsonify({'error': 'Select at least one valid product to send'}), 400
+
+        order_number = 'RO-' + datetime.now().strftime('%Y%m%d%H%M%S') + '-REP-' + secrets.token_hex(2)
+        c.execute('''
+            INSERT INTO orders (
+                user_id, order_number, subtotal, discount_amount, shipping_cost,
+                sales_tax, processing_fee, delivery_method, total, status,
+                shipping_address, notes, admin_notes
+            ) VALUES (?, ?, 0, 0, 0, 0, 0, ?, 0, 'paid', ?, ?, ?)
+        ''', (
+            od['user_id'], order_number, od['delivery_method'], od['shipping_address'],
+            f"CORRECTION for order {od['order_number']}",
+            f"Correction reship. Reason: {reason}. Original order: #{od['order_number']}"
+        ))
+        new_order_id = c.lastrowid
+        for pd in chosen:
+            c.execute('INSERT INTO order_items (order_id, product_id, quantity, unit_price) VALUES (?, ?, ?, 0)',
+                      (new_order_id, pd['id'], pd['quantity']))
+            c.execute('UPDATE products SET stock = stock - ? WHERE id = ?', (pd['quantity'], pd['id']))
+        result['new_order_id'] = new_order_id
+        result['new_order_number'] = order_number
+        item_str = ', '.join(f"{pd['quantity']}x {pd['name']}" for pd in chosen)
+        note_lines.append(f"Reship order {order_number} created ({item_str}).")
+
+    # --- Store credit ---
+    if ctype == 'store_credit':
+        if credit_amount <= 0:
+            conn.close()
+            return jsonify({'error': 'Credit amount must be greater than 0'}), 400
+        c.execute('UPDATE users SET referral_credit = referral_credit + ? WHERE id = ?',
+                  (credit_amount, od['user_id']))
+        c.execute('''INSERT INTO referral_transactions (user_id, order_id, type, amount, description)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (od['user_id'], oid, 'credit', credit_amount,
+                   f"Store credit for shipping correction on order {od['order_number']}: {reason}"))
+        result['credit_amount'] = credit_amount
+        note_lines.append(f"Store credit issued: ${credit_amount:.2f}.")
+
+    # --- Prepaid return label (customer keeps the correct one, sends wrong one back) ---
+    if ctype == 'reship_return':
+        info, err = _buy_return_label(od, user, chosen)
+        if err:
+            result['return_label_error'] = err
+            note_lines.append(f"Return label FAILED: {err}")
+        else:
+            result['return_label'] = info
+            note_lines.append(
+                f"Return label purchased ({info['carrier']} {info['service']}, "
+                f"${info['rate']:.2f}, tracking {info['tracking']}).")
+            emailed = _email_return_label(user, od, info)
+            note_lines.append("Return label emailed to customer."
+                              if emailed else "Return label email FAILED (customer not notified).")
+
+    # --- Log to the original order's admin notes ---
+    existing = od.get('admin_notes') or ''
+    updated = f"{existing}\n[{ts}] " + ' '.join(note_lines)
+    c.execute('UPDATE orders SET admin_notes = ? WHERE id = ?', (updated.strip(), oid))
+
+    conn.commit()
+    conn.close()
+    print(f"[CORRECTION] Order {od['order_number']} ({ctype}): " + ' '.join(note_lines))
+    result['message'] = ' '.join(note_lines)
+    return jsonify(result)
+
+
 @app.route('/api/admin/orders/<int:oid>/edit', methods=['PUT'])
 @admin_required
 def admin_edit_order(oid):
