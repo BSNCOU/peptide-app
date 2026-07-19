@@ -2652,6 +2652,17 @@ BC10,8.00</pre>
         function renderUsers() {
             const content = document.getElementById('tabContent');
             content.innerHTML = `
+                <!-- ── Customer Finder ── -->
+                <div style="background:#fffaf0;border:1px solid #f6ad55;border-radius:10px;padding:20px;margin-bottom:16px;">
+                    <h4 style="margin:0 0 12px 0;color:#2d3748;">🔎 Find a customer</h4>
+                    <input type="text" id="userSearchInput" autocomplete="off"
+                           placeholder="Start typing a name, email, org, or phone…"
+                           oninput="filterUserSearch(this.value)"
+                           onkeydown="if(event.key==='Enter'){const f=document.querySelector('#userSearchResults [data-uid]'); if(f){showUserDetailModal(parseInt(f.dataset.uid));}}"
+                           style="width:100%;padding:12px 14px;border:2px solid #f6ad55;border-radius:8px;font-size:15px;box-sizing:border-box;">
+                    <div id="userSearchResults" style="margin-top:10px;"></div>
+                </div>
+
                 <!-- ── Credit Lookup Tool ── -->
                 <div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:20px;">
                     <h4 style="margin:0 0 12px 0;color:#2d3748;">🔍 Credit Lookup & Statement</h4>
@@ -2712,6 +2723,39 @@ BC10,8.00</pre>
                     </table>
                 </div>
             `;
+        }
+
+        function filterUserSearch(query) {
+            const panel = document.getElementById('userSearchResults');
+            if (!panel) return;
+            const q = (query || '').trim().toLowerCase();
+            if (q.length < 1) { panel.innerHTML = ''; return; }
+            const matches = (state.users || []).filter(u =>
+                (u.full_name || '').toLowerCase().includes(q) ||
+                (u.email || '').toLowerCase().includes(q) ||
+                (u.organization || '').toLowerCase().includes(q) ||
+                (u.phone || '').toLowerCase().includes(q)
+            ).slice(0, 10);
+            if (matches.length === 0) {
+                panel.innerHTML = '<p style="color:#718096;font-size:14px;margin:6px 0 0;">No customers match.</p>';
+                return;
+            }
+            panel.innerHTML = matches.map(u => {
+                const credit = parseFloat(u.referral_credit || 0);
+                const sub = [escapeHtml(u.email), u.organization ? escapeHtml(u.organization) : '', u.phone ? escapeHtml(u.phone) : ''].filter(Boolean).join(' · ');
+                return `<div data-uid="${u.id}" onclick="showUserDetailModal(${u.id})"
+                        onmouseover="this.style.background='#ebf8ff'" onmouseout="this.style.background='#f7fafc'"
+                        style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;margin-top:6px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                    <div style="min-width:0;">
+                        <strong>${escapeHtml(u.full_name)}</strong>${u.is_admin ? ' 👑' : ''}
+                        <div style="color:#718096;font-size:13px;overflow:hidden;text-overflow:ellipsis;">${sub}</div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+                        ${credit > 0 ? `<span style="font-weight:700;color:#276749;">$${credit.toFixed(2)}</span>` : ''}
+                        <button class="btn btn-small" onclick="event.stopPropagation();showUserDetailModal(${u.id})">View profile →</button>
+                    </div>
+                </div>`;
+            }).join('');
         }
 
         function filterCreditLookup(query) {
