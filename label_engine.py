@@ -159,11 +159,14 @@ def _stamp(c, cx, cy, name, strength, lot, exp):
         c.restoreState()
 
 
-def build_label_pdf(labels):
+def build_label_pdf(labels, start_offset=0):
     """Tile `labels` onto SL583 sheets and stamp each. Returns (pdf_bytes, sheets).
 
     labels: [{"name","strength","lot","exp","count"}] — one physical label printed
     `count` times, in list order, left->right / top->bottom, new sheet every 48.
+    start_offset: skip this many leading cells on the FIRST sheet (0..47) so you can
+    reprint a few labels onto the empty die-cut positions of a partially-used sheet
+    instead of wasting a fresh sheet. Cells before the offset are left blank (no art).
     Returns (None, 0) if reportlab is unavailable.
     """
     try:
@@ -180,12 +183,18 @@ def build_label_pdf(labels):
     if not cells:
         return None, 0
 
+    try:
+        start_offset = max(0, int(start_offset)) % PER_SHEET
+    except (TypeError, ValueError):
+        start_offset = 0
+
     art = _get_art_reader()
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
     for i, lb in enumerate(cells):
-        slot = i % PER_SHEET
-        if i > 0 and slot == 0:
+        pos = start_offset + i
+        slot = pos % PER_SHEET
+        if pos > 0 and slot == 0:
             c.showPage()
         x, y, w, h = _cell_rect(slot)
         c.drawImage(art, x + ART_MARGIN_X, y + ART_MARGIN_Y,
@@ -195,7 +204,7 @@ def build_label_pdf(labels):
                lb.get("lot", ""), lb.get("exp", ""))
     c.showPage()
     c.save()
-    return buf.getvalue(), sheets_needed(len(cells))
+    return buf.getvalue(), sheets_needed(start_offset + len(cells))
 
 
 # ── CLI smoke test ────────────────────────────────────────────────────────────

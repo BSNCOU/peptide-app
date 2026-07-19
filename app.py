@@ -7562,6 +7562,35 @@ def print_po_labels(po_id):
     return resp
 
 
+@app.route('/api/admin/labels/adhoc.pdf', methods=['POST'])
+@admin_required
+def print_adhoc_labels():
+    """Ad-hoc / individual vial labels — reprint a few labels (various lots) whose
+    labels fell off, without generating a whole fresh sheet. `start_offset` lets the
+    print begin partway down so it lands on the empty die-cut cells of a partly-used
+    SL583 sheet. Body: {labels:[{name,strength,lot,exp,count}], start_offset:int}."""
+    import label_engine
+    payload = request.get_json(silent=True) or {}
+    labels = payload.get('labels') or []
+    labels = [lb for lb in labels
+              if int(lb.get('count') or 0) > 0 and (lb.get('name') or '').strip()]
+    if not labels:
+        return jsonify({'error': 'Add at least one label with a name and count > 0.'}), 400
+    try:
+        start_offset = int(payload.get('start_offset') or 0)
+    except (TypeError, ValueError):
+        start_offset = 0
+
+    pdf_bytes, sheets = label_engine.build_label_pdf(labels, start_offset=start_offset)
+    if not pdf_bytes:
+        return jsonify({'error': 'Label engine unavailable (reportlab/Pillow not installed).'}), 500
+
+    resp = make_response(pdf_bytes)
+    resp.headers['Content-Type'] = 'application/pdf'
+    resp.headers['Content-Disposition'] = 'inline; filename=Labels_individual.pdf'
+    return resp
+
+
 @app.route('/api/admin/po/<int:po_id>', methods=['PUT'])
 @admin_required
 def update_purchase_order(po_id):
