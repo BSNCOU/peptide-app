@@ -7397,6 +7397,90 @@ def get_purchase_order(po_id):
     return jsonify(po_dict)
 
 
+def _po_label_defaults(po_id):
+    """Build the default vial-label rows for a PO: one row per line item with the
+    computed lot (SKU + PO# w/o "PO-"), exp (received + 2yr), and label count
+    (bottles received + 2 spares). Shared by the preview + PDF endpoints."""
+    import label_engine
+    conn = get_db()
+    po = conn.execute('SELECT * FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    if not po:
+        conn.close()
+        return None
+    po = dict(po)
+    items = conn.execute('''
+        SELECT poi.*, p.name, p.sku, p.supplier_pack_size
+        FROM purchase_order_items poi
+        JOIN products p ON poi.product_id = p.id
+        WHERE poi.po_id = ? ORDER BY p.sku
+    ''', (po_id,)).fetchall()
+    conn.close()
+
+    po_number = po.get('po_number') or f'PO{po_id}'
+    received = str(po.get('received_at') or '')[:10]
+    exp = label_engine.compute_exp(received)
+    rows = []
+    for it in items:
+        it = dict(it)
+        sku = it.get('sku') or ''
+        pack = it.get('units_per_case') or it.get('supplier_pack_size') or 10
+        # quantity_received is in CASES; fall back to ordered if nothing received yet
+        cases = it.get('quantity_received') or it.get('quantity_ordered') or 0
+        bottles = int(cases) * int(pack)
+        name, strength = label_engine.parse_name_strength(it.get('name'))
+        rows.append({
+            'sku': sku,
+            'product_name': it.get('name') or '',
+            'name': name,
+            'strength': strength,
+            'lot': label_engine.compute_lot(sku, po_number),
+            'exp': exp,
+            'bottles': bottles,
+            'count': bottles + 2 if bottles else 0,   # +2 spares for issues
+        })
+    return {'po_number': po_number, 'received_date': received, 'labels': rows}
+
+
+@app.route('/api/admin/po/<int:po_id>/labels/preview', methods=['GET'])
+@admin_required
+def preview_po_labels(po_id):
+    """Per-SKU vial-label defaults (lot / exp / count) for the print-labels modal."""
+    data = _po_label_defaults(po_id)
+    if data is None:
+        return jsonify({'error': 'PO not found'}), 404
+    return jsonify(data)
+
+
+@app.route('/api/admin/po/<int:po_id>/labels.pdf', methods=['POST'])
+@admin_required
+def print_po_labels(po_id):
+    """Render an SL583 label sheet PDF from the (possibly edited) label rows the
+    modal submits. Returns a print-ready PDF that opens inline in the browser."""
+    import label_engine
+    conn = get_db()
+    po = conn.execute('SELECT po_number FROM purchase_orders WHERE id = ?', (po_id,)).fetchone()
+    conn.close()
+    po_number = (dict(po).get('po_number') if po else None) or f'PO{po_id}'
+
+    payload = request.get_json(silent=True) or {}
+    labels = payload.get('labels')
+    if not labels:  # no edits sent — fall back to computed defaults
+        defaults = _po_label_defaults(po_id)
+        labels = defaults['labels'] if defaults else []
+    labels = [lb for lb in labels if int(lb.get('count') or 0) > 0]
+    if not labels:
+        return jsonify({'error': 'No labels to print (all counts are 0).'}), 400
+
+    pdf_bytes, sheets = label_engine.build_label_pdf(labels)
+    if not pdf_bytes:
+        return jsonify({'error': 'Label engine unavailable (reportlab/Pillow not installed).'}), 500
+
+    resp = make_response(pdf_bytes)
+    resp.headers['Content-Type'] = 'application/pdf'
+    resp.headers['Content-Disposition'] = f'inline; filename=Labels_{po_number}.pdf'
+    return resp
+
+
 @app.route('/api/admin/po/<int:po_id>', methods=['PUT'])
 @admin_required
 def update_purchase_order(po_id):

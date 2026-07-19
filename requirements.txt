@@ -3,6 +3,7 @@ gunicorn
 psycopg2-binary
 stripe
 reportlab
+Pillow
 requests
 easypost
 anthropic

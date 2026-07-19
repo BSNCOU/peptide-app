@@ -31,3 +31,4 @@ research_orders.db
 
 # Runtime price-list uploads (ephemeral)
 uploads/
+output/

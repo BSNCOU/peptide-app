@@ -5226,6 +5226,7 @@ The Peptide Wizard Team"></textarea>
                                 ${po.status === 'closed' ? `<button class="btn" onclick="reopenPO(${po.id})">Reopen PO</button>` : ''}
                                 ${(po.status === 'received' || po.status === 'closed' || po.status === 'partial') ? `<a class="btn" style="background:#805ad5;color:white;text-decoration:none;" href="/api/admin/po/${po.id}/export-costs" download>📊 Export Landed Costs CSV</a>` : ''}
                                 ${(po.status === 'received' || po.status === 'closed' || po.status === 'partial') ? `<button class="btn" style="background:#319795;color:white;" onclick="showQaPickModal(${po.id})">🧪 Pick samples for QA</button>` : ''}
+                                ${(po.status === 'received' || po.status === 'closed' || po.status === 'partial') ? `<button class="btn" style="background:#dd6b20;color:white;" onclick="showLabelModal(${po.id})">🏷️ Print Labels</button>` : ''}
                                 <button class="btn btn-danger" onclick="deletePO(${po.id})">🗑️ Delete PO</button>
                             </div>
                         </div>
@@ -5497,6 +5498,88 @@ The Peptide Wizard Team"></textarea>
                 showAlert(`${r.samples.length} sample batch(es) created. View in QA dashboard.`, 'success');
                 showPODetail(poId);
             } catch (e) { showAlert(e.message); }
+        }
+
+
+        // ── Print vial labels (SL583) ────────────────────────────────────
+        async function showLabelModal(poId) {
+            let preview;
+            try {
+                preview = await api(`/api/admin/po/${poId}/labels/preview`);
+            } catch (e) { showAlert(e.message); return; }
+            if (!preview.labels || preview.labels.length === 0) {
+                showAlert('No line items on this PO to label.');
+                return;
+            }
+
+            const rows = preview.labels.map((lb, i) => `
+                <tr data-lbl-idx="${i}">
+                    <td><strong>${escapeHtml(lb.sku)}</strong></td>
+                    <td><input type="text" class="lbl-name" value="${escapeHtml(lb.name)}" style="width:130px;padding:4px;"></td>
+                    <td><input type="text" class="lbl-strength" value="${escapeHtml(lb.strength)}" style="width:70px;padding:4px;"></td>
+                    <td style="font-family:monospace;font-size:12px;"><input type="text" class="lbl-lot" value="${escapeHtml(lb.lot)}" style="width:150px;padding:4px;font-family:monospace;"></td>
+                    <td><input type="text" class="lbl-exp" value="${escapeHtml(lb.exp)}" style="width:96px;padding:4px;"></td>
+                    <td style="text-align:right;color:#a0aec0;">${lb.bottles}</td>
+                    <td><input type="number" class="lbl-count" min="0" value="${lb.count}" style="width:64px;padding:4px;"></td>
+                </tr>
+            `).join('');
+
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width: 940px;">
+                        <h3>🏷️ Print vial labels — PO ${escapeHtml(preview.po_number)}</h3>
+                        <p style="color:#718096;margin-bottom:6px;">Lot = <strong>SKU + PO#</strong>, Exp = <strong>received + 2 yrs</strong> (${escapeHtml(preview.received_date || 'today')}), labels = <strong>bottles received + 2 spares</strong>. Everything is editable before you print.</p>
+                        <p style="color:#a0aec0;font-size:12px;margin-bottom:12px;">Prints on SheetLabels SL583 (48/sheet). Opens a print-ready PDF in a new tab.</p>
+                        <div style="max-height:440px;overflow-y:auto;">
+                            <table style="font-size:13px;">
+                                <thead><tr>
+                                    <th>SKU</th><th>Name</th><th>Strength</th><th>Lot #</th><th>Exp</th>
+                                    <th style="text-align:right;" title="Bottles received (cases × pack)">Bottles</th>
+                                    <th title="Labels to print (+2 spares)"># Labels</th>
+                                </tr></thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        </div>
+                        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px;">
+                            <button class="btn btn-secondary" onclick="showPODetail(${poId})">Cancel</button>
+                            <button class="btn" style="background:#dd6b20;color:white;" onclick="generatePoLabels(${poId})">🖨️ Generate label sheet(s)</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function generatePoLabels(poId) {
+            const labels = [];
+            document.querySelectorAll('tr[data-lbl-idx]').forEach(tr => {
+                const count = parseInt(tr.querySelector('.lbl-count').value) || 0;
+                if (count <= 0) return;
+                labels.push({
+                    name: (tr.querySelector('.lbl-name').value || '').trim(),
+                    strength: (tr.querySelector('.lbl-strength').value || '').trim(),
+                    lot: (tr.querySelector('.lbl-lot').value || '').trim(),
+                    exp: (tr.querySelector('.lbl-exp').value || '').trim(),
+                    count,
+                });
+            });
+            if (labels.length === 0) { showAlert('Set at least one label count above 0.'); return; }
+            try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (state.csrfToken) headers['X-CSRF-Token'] = state.csrfToken;
+                const res = await fetch(`/api/admin/po/${poId}/labels.pdf`, {
+                    method: 'POST', headers, credentials: 'same-origin',
+                    body: JSON.stringify({ labels }),
+                });
+                if (!res.ok) {
+                    let msg = 'Label generation failed.';
+                    try { msg = (await res.json()).error || msg; } catch (e) {}
+                    showAlert(msg); return;
+                }
+                const blob = await res.blob();
+                window.open(URL.createObjectURL(blob), '_blank');
+                const total = labels.reduce((s, l) => s + l.count, 0);
+                showAlert(`Generated ${total} label(s) — opening print preview.`, 'success');
+            } catch (e) { showAlert('Label generation failed: ' + e.message); }
         }
 
 
