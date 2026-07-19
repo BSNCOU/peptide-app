@@ -35,7 +35,9 @@ COLS, ROWS = 4, 12
 PER_SHEET = COLS * ROWS      # 48
 
 # Calibrated 2026-06-24 from a real test print on Ben's printer (see label_printer/sl583.py)
-MARGIN_LEFT = 54.0           # 40.5 + 3/16"
+# 2026-07-19: Ben's test print landed 3/8" too far right -> shifted the grid 3/8" (27pt)
+# left (was 54.0). Applies to all label printing (PO + individual) so they stay consistent.
+MARGIN_LEFT = 27.0           # 54.0 - 3/8"
 MARGIN_TOP = 27.25           # 36.25 - 1/8"
 COL_PITCH = 135.0            # 1.875"
 ROW_PITCH = 62.75            # 60.5 + 1/32"
