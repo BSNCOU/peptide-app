@@ -2900,6 +2900,10 @@ BC10,8.00</pre>
             } catch (err) {
                 userOrders = state.orders.filter(o => o.user_id === id);  // fallback to cache
             }
+            let extra = { addresses: [], discount_codes: [], acknowledgments: [], referred_by: null, last_login: null };
+            try {
+                extra = Object.assign(extra, await api(`/api/admin/users/${id}/profile-extra`));
+            } catch (err) { console.warn('profile-extra failed', err); }
             const totalSpent = userOrders.filter(o => !['cancelled', 'refunded'].includes(o.status)).reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
             const orderCount = userOrders.filter(o => !['cancelled', 'refunded'].includes(o.status)).length;
             
@@ -2925,7 +2929,38 @@ BC10,8.00</pre>
             ` : '<p style="color: #718096; margin-top: 15px;">No orders yet.</p>';
             
             const credit = parseFloat(u.referral_credit) || 0;
-            
+            const fmtDate = (s) => s ? new Date(s.replace(' ', 'T') + (String(s).includes('Z') ? '' : 'Z')).toLocaleString() : '—';
+            const lastLoginStr = extra.last_login ? fmtDate(extra.last_login) : 'Not since tracking began';
+
+            const referredByHtml = extra.referred_by
+                ? `<div style="margin-top:15px;background:#fffaf0;border:1px solid #f6ad55;padding:12px 15px;border-radius:8px;">
+                       <strong>🤝 Referred by:</strong>
+                       <a href="#" onclick="event.preventDefault();closeModal();setTimeout(()=>showUserDetailModal(${extra.referred_by.id}),100);" style="color:#c05621;font-weight:600;">${escapeHtml(extra.referred_by.full_name)}</a>
+                       <span style="color:#718096;font-size:13px;">(${escapeHtml(extra.referred_by.email)})</span>
+                   </div>` : '';
+
+            const discountCodesHtml = (extra.discount_codes && extra.discount_codes.length)
+                ? `<h4 style="margin:20px 0 8px 0;color:#4a5568;">🏷️ Discount codes used</h4>
+                   <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                     ${extra.discount_codes.map(d => `<span style="background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;padding:5px 10px;font-size:13px;">
+                        <strong style="font-family:monospace;">${escapeHtml(d.code)}</strong>
+                        ${d.discount_percent ? ` · ${parseFloat(d.discount_percent).toFixed(0)}% off` : ''}
+                        · used ${d.times_used}×</span>`).join('')}
+                   </div>` : '';
+
+            const addressesHtml = (extra.addresses && extra.addresses.length)
+                ? `<h4 style="margin:20px 0 8px 0;color:#4a5568;">📍 Shipping addresses</h4>
+                   ${extra.addresses.map(a => `<div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-top:6px;font-size:13px;white-space:pre-wrap;">${escapeHtml(a.shipping_address)}<div style="color:#a0aec0;margin-top:4px;">used ${a.times}× · last ${new Date(a.last_used).toLocaleDateString()}</div></div>`).join('')}`
+                : '';
+
+            const acksHtml = (extra.acknowledgments && extra.acknowledgments.length)
+                ? `<h4 style="margin:20px 0 8px 0;color:#4a5568;">✅ Acknowledgements (${extra.acknowledgments.length})</h4>
+                   <div style="max-height:150px;overflow-y:auto;font-size:13px;">
+                     ${extra.acknowledgments.map(a => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #edf2f7;">
+                        <span>${escapeHtml(a.acknowledgment_type)}</span>
+                        <span style="color:#718096;">${new Date(String(a.timestamp).replace(' ','T')).toLocaleDateString()}</span></div>`).join('')}
+                   </div>` : '';
+
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
                     <div class="modal-content" style="max-width: 600px;">
@@ -2945,20 +2980,29 @@ BC10,8.00</pre>
                                 <p style="margin: 5px 0;"><strong>Total Spent:</strong> $${totalSpent.toFixed(2)}</p>
                                 <p style="margin: 5px 0;"><strong>Credit Balance:</strong> <span style="color: #805ad5;">$${credit.toFixed(2)}</span></p>
                                 <p style="margin: 5px 0;"><strong>Joined:</strong> ${new Date(u.created_at).toLocaleDateString()}</p>
+                                <p style="margin: 5px 0;"><strong>Last login:</strong> ${lastLoginStr}</p>
                             </div>
                         </div>
-                        
+
                         <div style="margin-top: 15px;">
                             <p style="margin: 5px 0;"><strong>Email Verified:</strong> ${u.email_verified ? '✅ Yes' : '❌ No'}</p>
                             ${u.is_admin ? '<p style="margin: 5px 0;"><strong>Admin:</strong> 👑 Yes</p>' : ''}
                         </div>
-                        
+
+                        ${referredByHtml}
+                        ${discountCodesHtml}
+
                         <h4 style="margin: 20px 0 10px 0; color: #4a5568;">📦 Orders (${userOrders.length})</h4>
                         ${ordersHtml}
-                        
-                        <div style="display: flex; gap: 10px; margin-top: 20px;">
+
+                        ${addressesHtml}
+                        ${acksHtml}
+
+                        <div style="display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                             <button class="btn" onclick="closeModal(); showEditUserModal(${id})">✏️ Edit User</button>
+                            <button class="btn btn-success" onclick="showAddCreditModal(${id}, '${escapeHtml(u.full_name).replace(/'/g, "\\'")}', ${credit})">💰 Add Credit</button>
+                            <button class="btn btn-warning" onclick="showResetPasswordModal(${id}, '${escapeHtml(u.full_name).replace(/'/g, "\\'")}', '${escapeHtml(u.email).replace(/'/g, "\\'")}')">🔐 Reset PW</button>
                             <button class="btn btn-success" onclick="composeEmailToUser(${id})">📧 Email</button>
                         </div>
                     </div>

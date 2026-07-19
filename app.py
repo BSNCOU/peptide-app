@@ -829,6 +829,7 @@ def init_db():
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS commission_percent REAL DEFAULT 20")
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS first_order_only INTEGER DEFAULT 0")
             c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_credit REAL DEFAULT 0")
+            c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS introducer_user_id INTEGER DEFAULT NULL")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_promo INTEGER DEFAULT 0")
@@ -844,6 +845,9 @@ def init_db():
             except: pass
             try:
                 c.execute("ALTER TABLE users ADD COLUMN referral_credit REAL DEFAULT 0")
+            except: pass
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN last_login TIMESTAMP")
             except: pass
             try:
                 c.execute("ALTER TABLE orders ADD COLUMN credit_applied REAL DEFAULT 0")
@@ -1803,6 +1807,14 @@ def login():
         return jsonify({'error': 'Invalid credentials'}), 401
     
     session['user_id'] = user['id']
+    # Record last login (best-effort — must never block a successful login).
+    try:
+        lc = get_db()
+        lc.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?", (user['id'],))
+        lc.commit()
+        lc.close()
+    except Exception as e:
+        print(f"[LOGIN] last_login update skipped: {e}")
     print(f"[LOGIN] Success for user {user['id']}: {user['email']}")
     return jsonify({'message': 'Login successful', 'user': {'id': user['id'], 'full_name': user['full_name'], 'email': user['email'], 'is_admin': bool(user['is_admin']), 'first_login_confirmed': bool(user['first_login_confirmed']), 'email_verified': bool(user['email_verified'])}})
 
@@ -5917,6 +5929,75 @@ def admin_get_user_orders(uid):
     ).fetchall()
     conn.close()
     return jsonify([dict(o) for o in orders])
+
+@app.route('/api/admin/users/<int:uid>/profile-extra', methods=['GET'])
+@admin_required
+def admin_get_user_profile_extra(uid):
+    """Extra profile data for the user-detail modal: shipping addresses used,
+    discount codes used, who referred them, acknowledgements, and last login.
+    Each block is defended independently so a missing column can't blank the page."""
+    conn = get_db()
+    out = {'last_login': None, 'addresses': [], 'discount_codes': [],
+           'referred_by': None, 'acknowledgments': []}
+
+    try:
+        row = conn.execute('SELECT last_login FROM users WHERE id=?', (uid,)).fetchone()
+        if row:
+            out['last_login'] = dict(row).get('last_login')
+    except Exception as e:
+        print(f"[PROFILE-EXTRA] last_login: {e}")
+
+    # Distinct shipping addresses used, most-recently used first
+    try:
+        rows = conn.execute(
+            "SELECT shipping_address, MAX(created_at) AS last_used, COUNT(*) AS times "
+            "FROM orders WHERE user_id=? AND shipping_address IS NOT NULL AND shipping_address != '' "
+            "GROUP BY shipping_address ORDER BY last_used DESC", (uid,)).fetchall()
+        out['addresses'] = [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[PROFILE-EXTRA] addresses: {e}")
+
+    # Discount codes this user has used (with how many times + the discount)
+    try:
+        rows = conn.execute(
+            "SELECT dc.code, dc.discount_percent, COUNT(*) AS times_used, MAX(o.created_at) AS last_used "
+            "FROM orders o JOIN discount_codes dc ON o.discount_code_id = dc.id "
+            "WHERE o.user_id=? GROUP BY dc.code, dc.discount_percent ORDER BY times_used DESC", (uid,)).fetchall()
+        out['discount_codes'] = [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[PROFILE-EXTRA] discount_codes: {e}")
+
+    # Who referred them: prefer an order's introducer, else the owner of a referral
+    # code they used. Resolve to a name/email.
+    try:
+        ref_id = None
+        r = conn.execute("SELECT introducer_user_id FROM orders WHERE user_id=? AND introducer_user_id IS NOT NULL "
+                         "ORDER BY created_at DESC LIMIT 1", (uid,)).fetchone()
+        if r and dict(r).get('introducer_user_id'):
+            ref_id = dict(r)['introducer_user_id']
+        if ref_id is None:
+            r = conn.execute(
+                "SELECT dc.referrer_user_id FROM orders o JOIN discount_codes dc ON o.discount_code_id = dc.id "
+                "WHERE o.user_id=? AND dc.referrer_user_id IS NOT NULL ORDER BY o.created_at DESC LIMIT 1", (uid,)).fetchone()
+            if r and dict(r).get('referrer_user_id'):
+                ref_id = dict(r)['referrer_user_id']
+        if ref_id is not None and int(ref_id) != int(uid):
+            ru = conn.execute("SELECT id, full_name, email FROM users WHERE id=?", (int(ref_id),)).fetchone()
+            if ru:
+                out['referred_by'] = dict(ru)
+    except Exception as e:
+        print(f"[PROFILE-EXTRA] referred_by: {e}")
+
+    # Legal/consent acknowledgements
+    try:
+        rows = conn.execute("SELECT acknowledgment_type, timestamp, ip_address FROM acknowledgments "
+                            "WHERE user_id=? ORDER BY timestamp DESC LIMIT 25", (uid,)).fetchall()
+        out['acknowledgments'] = [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[PROFILE-EXTRA] acknowledgments: {e}")
+
+    conn.close()
+    return jsonify(out)
 
 @app.route('/api/admin/users/<int:uid>', methods=['PUT'])
 @admin_required
