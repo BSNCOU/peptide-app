@@ -5357,6 +5357,9 @@ def correct_order(oid):
     reason = (data.get('reason') or 'Shipping error - wrong product sent').strip()
     req_items = data.get('items') or []
     credit_amount = float(data.get('credit_amount') or 0)
+    # Optional corrected shipping address (used by the Reship-returned flow to fix a
+    # bad/incomplete address). Empty -> keep the original order's address.
+    address_override = (data.get('shipping_address') or '').strip()
 
     if ctype not in ('reship', 'store_credit', 'reship_return'):
         return jsonify({'error': 'Invalid correction_type'}), 400
@@ -5404,9 +5407,11 @@ def correct_order(oid):
                 shipping_address, notes, admin_notes
             ) VALUES (?, ?, 0, 0, 0, 0, 0, ?, 0, 'paid', ?, ?, ?)
         ''', (
-            od['user_id'], order_number, od['delivery_method'], od['shipping_address'],
+            od['user_id'], order_number, od['delivery_method'],
+            address_override or od['shipping_address'],
             f"CORRECTION for order {od['order_number']}",
-            f"Correction reship. Reason: {reason}. Original order: #{od['order_number']}"
+            (f"Correction reship. Reason: {reason}. Original order: #{od['order_number']}"
+             + (f". Address corrected to: {address_override}" if address_override else ""))
         ))
         new_order_id = c.lastrowid
         for pd in chosen:
@@ -5416,7 +5421,8 @@ def correct_order(oid):
         result['new_order_id'] = new_order_id
         result['new_order_number'] = order_number
         item_str = ', '.join(f"{pd['quantity']}x {pd['name']}" for pd in chosen)
-        note_lines.append(f"Reship order {order_number} created ({item_str}).")
+        note_lines.append(f"Reship order {order_number} created ({item_str})"
+                          + (f", address corrected." if address_override else "."))
 
     # --- Store credit ---
     if ctype == 'store_credit':

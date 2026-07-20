@@ -1482,12 +1482,27 @@ BC10,8.00</pre>
             const o = state.orders.find(x => x.id === id);
             if (!o) { showAlert('Order not found'); return; }
             const a = parseShipAddr(o.shipping_address || '');
+            const items = o.items || [];
+            const itemRows = items.length ? items.map((i, idx) => {
+                const nm = i.name || i.product_name || 'Unknown';
+                const qty = parseInt(i.quantity) || 1;
+                return `
+                    <label style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-bottom:1px solid #edf2f7;cursor:pointer;">
+                        <input type="checkbox" class="rsItem" data-pid="${i.product_id}" data-idx="${idx}" checked style="width:16px;height:16px;">
+                        <span style="flex:1;">${escapeHtml(nm)}</span>
+                        <span style="color:#718096;font-size:12px;">qty</span>
+                        <input type="number" class="rsQty" data-idx="${idx}" value="${qty}" min="1" style="width:56px;padding:4px;box-sizing:border-box;">
+                    </label>`;
+            }).join('') : '<p style="color:#a0aec0;font-size:13px;">No items on this order.</p>';
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">
                     <div class="modal-content" style="max-width:520px;">
                         <h3>📮 Reship — ${escapeHtml(o.order_number)}</h3>
-                        <p style="color:#718096;font-size:13px;margin-bottom:6px;">Package returned / undeliverable? Fix the address (e.g. add the missing apt/suite), then create a <strong>free $0 reship</strong> — it lands in Open Orders where you buy the label.</p>
-                        <p style="color:#a0aec0;font-size:12px;margin-bottom:14px;">Same items, re-sent to the corrected address. No extra charge to the customer.</p>
+                        <p style="color:#718096;font-size:13px;margin-bottom:10px;">Returned / undeliverable, or one product needs replacing? Pick the item(s) to re-send, fix the address if needed, then create a <strong>free $0 reship</strong> — it lands in Open Orders where you buy the label. No charge to the customer.</p>
+                        <div style="margin-bottom:14px;">
+                            <label style="font-weight:600;font-size:13px;display:block;margin-bottom:4px;">Items to reship <span style="color:#a0aec0;font-weight:400;">— uncheck any that were fine; adjust qty if only some were bad</span></label>
+                            <div style="border:1px solid #e2e8f0;border-radius:6px;">${itemRows}</div>
+                        </div>
                         <div class="form-group"><label>Address 1</label><input type="text" id="rsStreet1" value="${escapeHtml(a.street1)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
                         <div class="form-group"><label>Address 2 (Apt / Suite / Unit)</label><input type="text" id="rsStreet2" value="${escapeHtml(a.street2)}" placeholder="e.g. Suite 125" style="width:100%;padding:8px;box-sizing:border-box;"></div>
                         <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;">
@@ -1507,13 +1522,28 @@ BC10,8.00</pre>
             const g = fid => (document.getElementById(fid)?.value || '').trim();
             const street1 = g('rsStreet1'), street2 = g('rsStreet2'), city = g('rsCity'), state = g('rsState'), zip = g('rsZip');
             if (!street1 || !city || !state || !zip) { showAlert('Address 1, City, State and Zip are required.'); return; }
+            // collect the checked items + their (possibly edited) qty
+            const items = [];
+            document.querySelectorAll('.rsItem:checked').forEach(cb => {
+                const idx = cb.dataset.idx;
+                const qtyEl = document.querySelector(`.rsQty[data-idx="${idx}"]`);
+                const qty = parseInt(qtyEl?.value) || 0;
+                if (qty > 0) items.push({ product_id: parseInt(cb.dataset.pid), quantity: qty });
+            });
+            if (!items.length) { showAlert('Select at least one item to reship (with qty ≥ 1).'); return; }
             // rebuild the checkout newline format so it re-parses cleanly (Address 2 = suite)
             const addr = street2 ? `${street1}\n${street2}\n${city}, ${state} ${zip}` : `${street1}\n${city}, ${state} ${zip}`;
-            if (!confirm(`Create a FREE $0 reship order to:\n\n${addr}\n\nSame items, deducts inventory, appears in Open Orders to buy the label.`)) return;
+            const itemLabel = items.length === 1 ? '1 item' : `${items.length} items`;
+            if (!confirm(`Create a FREE $0 reship (${itemLabel}) to:\n\n${addr}\n\nDeducts inventory for only the selected item(s); appears in Open Orders to buy the label.`)) return;
             try {
-                const r = await api(`/api/admin/orders/${id}/replacement`, {
+                const r = await api(`/api/admin/orders/${id}/correct`, {
                     method: 'POST',
-                    body: JSON.stringify({ reason: 'Package returned / undeliverable — reship to corrected address', shipping_address: addr })
+                    body: JSON.stringify({
+                        correction_type: 'reship',
+                        reason: 'Package returned / undeliverable — reship selected item(s) to corrected address',
+                        items: items,
+                        shipping_address: addr
+                    })
                 });
                 showAlert(`Reship order created: ${r.new_order_number || ''} — buy the label in Open Orders.`, 'success');
                 closeModal();
