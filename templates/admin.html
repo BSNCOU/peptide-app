@@ -1385,10 +1385,18 @@ BC10,8.00</pre>
                                 ${o.tracking_number ? `<p><strong>Tracking:</strong> ${o.tracking_number}</p>` : ''}
                             </div>
                         </div>
-                        ${o.delivery_method === 'ship' && o.shipping_address ? `
-                            <p><strong>Shipping Address:</strong></p>
-                            <p style="background: #f7fafc; padding: 10px; border-radius: 6px; margin-bottom: 15px; white-space: pre-line;">${o.shipping_address}</p>
-                        ` : ''}
+                        ${o.delivery_method === 'ship' && o.shipping_address ? (() => {
+                            const a = parseShipAddr(o.shipping_address);
+                            return `
+                            <p><strong>📦 Ship To</strong> <span style="font-size:12px;color:#718096;">— copy each field into Pirate Ship (Address 2 = the apt/suite)</span></p>
+                            <div style="background:#f7fafc;padding:10px;border-radius:6px;margin-bottom:15px;font-size:13px;line-height:1.8;">
+                                <div>Address 1: <strong>${escapeHtml(a.street1)}</strong></div>
+                                ${a.street2
+                                    ? `<div style="color:#c05621;">Address 2 (Apt/Suite): <strong>${escapeHtml(a.street2)}</strong></div>`
+                                    : `<div style="color:#a0aec0;">Address 2 (Apt/Suite): — none —</div>`}
+                                <div>City: <strong>${escapeHtml(a.city)}</strong> &nbsp;·&nbsp; State: <strong>${escapeHtml(a.state)}</strong> &nbsp;·&nbsp; Zip: <strong>${escapeHtml(a.zip)}</strong></div>
+                            </div>`;
+                        })() : ''}
                         <h4 style="margin-bottom: 10px;">Items</h4>
                         <table>
                             <thead><tr><th>Product</th><th>Qty</th><th>Price</th><th>Subtotal</th></tr></thead>
@@ -1421,6 +1429,7 @@ BC10,8.00</pre>
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                             <button class="btn" onclick="showEditOrderModal(${o.id})">✏️ Edit Order</button>
                             <button class="btn" style="background: #ed8936;" onclick="showCorrectionModal(${o.id})">🔧 Correct Order</button>
+                            ${o.delivery_method === 'ship' ? `<button class="btn" style="background: #d69e2e;" onclick="showReshipModal(${o.id})">📮 Reship (returned)</button>` : ''}
                             ${parseFloat(o.total || 0) === 0 && ['pending','pending_payment'].includes(o.status) ? `
                                 <button class="btn btn-success" onclick="markZeroTotalPaid(${o.id})" style="background:#276749;">
                                     ✅ Mark as Paid ($0 — Credits Covered)
@@ -1439,6 +1448,79 @@ BC10,8.00</pre>
             `;
         }
         
+        // Mirrors app.py parse_shipping_address: street1=first line, city/state/zip=last
+        // line, everything between = the apt/suite line(s). (Old parser dropped the suite.)
+        function parseShipAddr(s) {
+            const out = { street1:'', street2:'', city:'', state:'', zip:'' };
+            if (!s) return out;
+            if (s.includes('|')) {
+                const seg = s.split('|').map(x => x.trim());
+                if (seg.length >= 4) {
+                    out.street1 = seg[0];
+                    out.street2 = seg.length > 4 ? seg[1] : '';
+                    out.city = seg[seg.length-3]; out.state = seg[seg.length-2]; out.zip = seg[seg.length-1];
+                    return out;
+                }
+            }
+            const lines = s.split('\n').map(x => x.trim()).filter(Boolean);
+            if (lines.length >= 2) {
+                out.street1 = lines[0];
+                if (lines.length > 2) out.street2 = lines.slice(1, -1).join(' ');
+                const csz = lines[lines.length - 1];
+                const ci = csz.lastIndexOf(',');
+                if (ci >= 0) {
+                    out.city = csz.slice(0, ci).trim();
+                    const sz = csz.slice(ci + 1).trim().split(/\s+/).filter(Boolean);
+                    if (sz.length >= 2) { out.state = sz[0]; out.zip = sz[1]; }
+                    else if (sz.length === 1) { out.state = sz[0]; }
+                }
+            } else if (lines.length === 1) { out.street1 = lines[0]; }
+            return out;
+        }
+
+        function showReshipModal(id) {
+            const o = state.orders.find(x => x.id === id);
+            if (!o) { showAlert('Order not found'); return; }
+            const a = parseShipAddr(o.shipping_address || '');
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:520px;">
+                        <h3>📮 Reship — ${escapeHtml(o.order_number)}</h3>
+                        <p style="color:#718096;font-size:13px;margin-bottom:6px;">Package returned / undeliverable? Fix the address (e.g. add the missing apt/suite), then create a <strong>free $0 reship</strong> — it lands in Open Orders where you buy the label.</p>
+                        <p style="color:#a0aec0;font-size:12px;margin-bottom:14px;">Same items, re-sent to the corrected address. No extra charge to the customer.</p>
+                        <div class="form-group"><label>Address 1</label><input type="text" id="rsStreet1" value="${escapeHtml(a.street1)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                        <div class="form-group"><label>Address 2 (Apt / Suite / Unit)</label><input type="text" id="rsStreet2" value="${escapeHtml(a.street2)}" placeholder="e.g. Suite 125" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;">
+                            <div class="form-group"><label>City</label><input type="text" id="rsCity" value="${escapeHtml(a.city)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                            <div class="form-group"><label>State</label><input type="text" id="rsState" value="${escapeHtml(a.state)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                            <div class="form-group"><label>Zip</label><input type="text" id="rsZip" value="${escapeHtml(a.zip)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                        </div>
+                        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
+                            <button class="btn btn-secondary" onclick="showOrderDetailModal(${o.id})">Cancel</button>
+                            <button class="btn" style="background:#d69e2e;color:white;" onclick="submitReship(${o.id})">📮 Create $0 Reship</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        async function submitReship(id) {
+            const g = fid => (document.getElementById(fid)?.value || '').trim();
+            const street1 = g('rsStreet1'), street2 = g('rsStreet2'), city = g('rsCity'), state = g('rsState'), zip = g('rsZip');
+            if (!street1 || !city || !state || !zip) { showAlert('Address 1, City, State and Zip are required.'); return; }
+            // rebuild the checkout newline format so it re-parses cleanly (Address 2 = suite)
+            const addr = street2 ? `${street1}\n${street2}\n${city}, ${state} ${zip}` : `${street1}\n${city}, ${state} ${zip}`;
+            if (!confirm(`Create a FREE $0 reship order to:\n\n${addr}\n\nSame items, deducts inventory, appears in Open Orders to buy the label.`)) return;
+            try {
+                const r = await api(`/api/admin/orders/${id}/replacement`, {
+                    method: 'POST',
+                    body: JSON.stringify({ reason: 'Package returned / undeliverable — reship to corrected address', shipping_address: addr })
+                });
+                showAlert(`Reship order created: ${r.new_order_number || ''} — buy the label in Open Orders.`, 'success');
+                closeModal();
+                if (typeof loadOrders === 'function') loadOrders();
+            } catch (e) { showAlert(e.message || 'Reship failed'); }
+        }
+
         function showLinkStripeModal(orderId, orderNumber) {
             document.getElementById('modalContainer').innerHTML = `
                 <div class="modal" onclick="if(event.target===this)closeModal()">

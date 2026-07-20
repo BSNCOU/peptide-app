@@ -5129,29 +5129,29 @@ def parse_shipping_address(address_str):
     if not address_str:
         return parts
     
-    # Try to parse structured format: "Street1|Street2|City|State|Zip"
+    # Structured pipe format: "Street1|[Street2|]City|State|Zip"
     if '|' in address_str:
-        segments = address_str.split('|')
-        if len(segments) >= 4:
-            parts['street1'] = segments[0].strip()
-            parts['street2'] = segments[1].strip() if len(segments) > 4 else ''
-            parts['city'] = segments[-3].strip() if len(segments) > 4 else segments[1].strip()
-            parts['state'] = segments[-2].strip()
-            parts['zip'] = segments[-1].strip()
+        seg = [s.strip() for s in address_str.split('|')]
+        if len(seg) >= 4:
+            parts['street1'] = seg[0]
+            parts['street2'] = seg[1] if len(seg) > 4 else ''
+            parts['city'] = seg[-3]
+            parts['state'] = seg[-2]
+            parts['zip'] = seg[-1]
             return parts
-    
-    # Try line-by-line parsing
+
+    # Line format from checkout: "Street1\n[Apt/Suite\n]City, State Zip".
+    # First line = street; LAST line = city/state/zip; ANYTHING in between is the
+    # apt/suite line(s). The old code only set street2 when there were >3 lines, so a
+    # normal 3-line address (street + suite + city/state/zip) dropped the suite AND
+    # mis-read the city line — that's exactly how 'Suite 125' got lost. A 2-line
+    # (no-suite) address parsed to nothing at all.
     lines = [l.strip() for l in address_str.split('\n') if l.strip()]
-    
-    if len(lines) >= 3:
+    if len(lines) >= 2:
         parts['street1'] = lines[0]
-        if len(lines) > 3:
-            parts['street2'] = lines[1]
-            city_state_zip = lines[2]
-        else:
-            city_state_zip = lines[1]
-        
-        # Parse "City, State Zip"
+        if len(lines) > 2:
+            parts['street2'] = ' '.join(lines[1:-1])
+        city_state_zip = lines[-1]
         if ',' in city_state_zip:
             city_part, state_zip = city_state_zip.rsplit(',', 1)
             parts['city'] = city_part.strip()
@@ -5162,19 +5162,21 @@ def parse_shipping_address(address_str):
             elif len(state_zip_parts) == 1:
                 parts['state'] = state_zip_parts[0]
     elif len(lines) == 1:
-        # Single line - try to parse
         parts['street1'] = lines[0]
-    
+
     return parts
 
 
 @app.route('/api/admin/orders/<int:oid>/replacement', methods=['POST'])
 @admin_required
 def create_replacement_order(oid):
-    """Create a replacement order (no charge) for customer service issues"""
+    """Create a replacement order (no charge) for customer service issues.
+    Optional `shipping_address` in the body overrides the original address — used by
+    the Reship (returned/undeliverable) flow to correct a bad/incomplete address."""
     data = request.json or {}
     reason = data.get('reason', 'Shipping error - sent wrong items')
-    
+    address_override = (data.get('shipping_address') or '').strip()
+
     conn = get_db()
     c = conn.cursor()
     
@@ -5214,9 +5216,10 @@ def create_replacement_order(oid):
         original_dict['user_id'],
         order_number,
         original_dict['delivery_method'],
-        original_dict['shipping_address'],
+        address_override or original_dict['shipping_address'],
         f"REPLACEMENT for order {original_dict['order_number']}",
-        f"Replacement order created. Reason: {reason}. Original order: #{original_dict['order_number']}"
+        (f"Replacement order created. Reason: {reason}. Original order: #{original_dict['order_number']}"
+         + (f". Address corrected to: {address_override}" if address_override else ""))
     ))
     
     new_order_id = c.lastrowid
