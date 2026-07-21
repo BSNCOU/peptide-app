@@ -1082,12 +1082,13 @@
                                     <span>Subtotal:</span>
                                     <span>$${subtotal.toFixed(2)}</span>
                                 </div>
-                                ${discountAmount > 0 ? `
-                                <div style="display: flex; justify-content: space-between; margin-bottom: 5px; color: #38a169;">
+                                <div id="discountLine" style="display: ${discountAmount > 0 ? 'flex' : 'none'}; justify-content: space-between; margin-bottom: 5px; color: #38a169;">
                                     <span>Discount:</span>
-                                    <span>-$${discountAmount.toFixed(2)}</span>
+                                    <span id="discountLineAmount">-$${discountAmount.toFixed(2)}</span>
                                 </div>
-                                ` : ''}
+                                <div id="discountVoidNote" style="display: none; font-size: 12px; color: #c05621; margin: -2px 0 8px;">
+                                    Discount code removed — store credit over 30% of the order can't be combined with a discount code.
+                                </div>
                                 <div id="shippingLine" style="display: flex; justify-content: space-between; margin-bottom: 5px;">
                                     <span>Shipping:</span>
                                     <span>$${state.shippingCost.toFixed(2)}</span>
@@ -1257,7 +1258,21 @@
         }
         
         function updateCheckoutTotal(subtotal, discountAmount) {
-            const netProductTotal = subtotal - discountAmount;
+            // Credit-vs-discount rule (mirrors the server): if the customer applies store
+            // credit exceeding 30% of subtotal, the discount code cannot be combined with it.
+            const _applyCb = document.getElementById('applyCredit');
+            const _usingCredit = _applyCb && _applyCb.checked && state.userCredit > 0;
+            const creditBlocksDiscount = _usingCredit && state.userCredit > (0.30 * subtotal);
+            const effectiveDiscount = creditBlocksDiscount ? 0 : discountAmount;
+            // reflect it in the discount line + explanation note
+            const _dLine = document.getElementById('discountLine');
+            const _dAmt = document.getElementById('discountLineAmount');
+            const _dNote = document.getElementById('discountVoidNote');
+            if (_dLine) _dLine.style.display = (effectiveDiscount > 0) ? 'flex' : 'none';
+            if (_dAmt) _dAmt.textContent = '-$' + effectiveDiscount.toFixed(2);
+            if (_dNote) _dNote.style.display = (creditBlocksDiscount && discountAmount > 0) ? 'block' : 'none';
+
+            const netProductTotal = subtotal - effectiveDiscount;
             
             // Free shipping if net total >= threshold
             let shippingCost = state.shippingCost;
@@ -1292,7 +1307,7 @@
                 }
             }
             
-            const taxableAmount = subtotal - discountAmount;
+            const taxableAmount = subtotal - effectiveDiscount;
             const salesTax = state.salesTaxEnabled ? (taxableAmount * (state.salesTaxRate / 100)) : 0;
             const processingFee = state.processingFeeEnabled ? (taxableAmount * (state.processingFeeRate / 100)) : 0;
             
@@ -1316,7 +1331,7 @@
             let creditApplied = 0;
             const applyCreditCheckbox = document.getElementById('applyCredit');
             if (applyCreditCheckbox && applyCreditCheckbox.checked && state.userCredit > 0) {
-                const maxCredit = subtotal - discountAmount + shippingCost + salesTax + processingFee;
+                const maxCredit = subtotal - effectiveDiscount + shippingCost + salesTax + processingFee;
                 creditApplied = Math.min(state.userCredit, maxCredit);
                 document.getElementById('creditLine').style.display = 'flex';
                 document.getElementById('creditAppliedAmount').textContent = '-$' + creditApplied.toFixed(2);
@@ -1324,8 +1339,8 @@
                 document.getElementById('creditLine').style.display = 'none';
             }
             
-            const total = Math.max(0, subtotal - discountAmount + shippingCost + salesTax + processingFee - creditApplied);
-            
+            const total = Math.max(0, subtotal - effectiveDiscount + shippingCost + salesTax + processingFee - creditApplied);
+
             document.getElementById('checkoutTotal').textContent = '$' + total.toFixed(2);
         }
 

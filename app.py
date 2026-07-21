@@ -2520,8 +2520,19 @@ def create_order():
     commission_percent = 20
     is_own_code = False
     referrer_choice = data.get('referrer_choice', 'split')  # 'combined' or 'split'
-    
-    if data.get('discount_code'):
+
+    # --- Credit-vs-discount rule (Ben, 2026-07-20) ---
+    # Store credit is UNCAPPED: a customer may spend all of it, even to cover the entire
+    # order. BUT if the credit they are applying exceeds 30% of the order subtotal, no
+    # discount code may be combined with it (prevents e.g. 60%-credit + 30%-off = 90% off).
+    # If the credit is 30% of subtotal or less, the discount code still applies normally.
+    available_credit = 0.0
+    if data.get('apply_credit'):
+        _urow = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
+        available_credit = float(_urow['referral_credit'] or 0) if _urow else 0.0
+    credit_blocks_discount = available_credit > (0.30 * subtotal)
+
+    if data.get('discount_code') and not credit_blocks_discount:
         discount = c.execute('''SELECT * FROM discount_codes WHERE code=? AND active=1 
             AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
             AND (usage_limit IS NULL OR times_used < usage_limit)''', (data['discount_code'].upper(),)).fetchone()
@@ -2584,15 +2595,12 @@ def create_order():
         if fee_base > 0:
             processing_fee = round(fee_base * (fee_rate / 100), 2)
     
-    # Handle credit application
+    # Handle credit application (available_credit already fetched above for the 30% rule).
+    # Credit is NOT capped by the 30% rule — it can cover up to the whole order.
     credit_applied = 0
-    if data.get('apply_credit'):
-        user = c.execute('SELECT referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
-        available_credit = float(user['referral_credit'] or 0) if user else 0
-        if available_credit > 0:
-            # Calculate how much credit can be applied (up to subtotal after discount + shipping + tax + fee)
-            max_credit = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee
-            credit_applied = min(available_credit, max_credit)
+    if data.get('apply_credit') and available_credit > 0:
+        max_credit = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee
+        credit_applied = min(available_credit, max_credit)
     
     total = subtotal - discount_amount + shipping_cost + sales_tax + processing_fee - credit_applied
     if total < 0:
@@ -2677,7 +2685,7 @@ def create_order():
         except Exception as e:
             print(f"[ORDER] Auto-pay failed for zero-total order {order_number}: {e}")
 
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': final_status}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': final_status, 'discount_voided_by_credit': credit_blocks_discount}), 201
 
 
 # ============================================
