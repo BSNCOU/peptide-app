@@ -673,6 +673,7 @@ def init_db():
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS cost REAL DEFAULT 0")
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS reorder_qty INTEGER DEFAULT 4")
             c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_pack_size INTEGER DEFAULT 1")
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS free_sample_eligible INTEGER DEFAULT 0")
         else:
             try:
                 c.execute("ALTER TABLE products ADD COLUMN cost REAL DEFAULT 0")
@@ -686,10 +687,27 @@ def init_db():
                 c.execute("ALTER TABLE products ADD COLUMN supplier_pack_size INTEGER DEFAULT 1")
             except:
                 pass
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN free_sample_eligible INTEGER DEFAULT 0")
+            except:
+                pass
         conn.commit()
     except Exception as e:
         print(f"Note: Column migration: {e}")
-    
+
+    # Mark free-sample (gift-with-purchase) line items so giveaway COGS can be isolated
+    try:
+        if using_postgres:
+            c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS is_free_sample INTEGER DEFAULT 0")
+        else:
+            try:
+                c.execute("ALTER TABLE order_items ADD COLUMN is_free_sample INTEGER DEFAULT 0")
+            except:
+                pass
+        conn.commit()
+    except Exception as e:
+        print(f"Note: order_items free-sample column: {e}")
+
     # Add freight & landed cost columns to PO tables
     try:
         if using_postgres:
@@ -2440,6 +2458,28 @@ def clear_saved_cart():
 # ============================================
 
 
+@app.route('/api/free-samples', methods=['GET'])
+def list_free_samples():
+    """In-stock, eligible free research chemicals for the gift-with-purchase offer,
+    plus the qualifying threshold + max picks. Public (checkout UI reads it)."""
+    try:
+        fs_threshold = float(get_setting('free_sample_threshold', '500'))
+        fs_max = int(float(get_setting('free_sample_max', '2')))
+    except Exception:
+        fs_threshold, fs_max = 500.0, 2
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, name, sku FROM products "
+        "WHERE active=1 AND free_sample_eligible=1 AND stock > 0 ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return jsonify({
+        'threshold': fs_threshold,
+        'max_picks': fs_max,
+        'items': [dict(r) for r in rows],
+    })
+
+
 @app.route('/api/orders', methods=['POST'])
 @login_required
 @verified_required
@@ -2616,7 +2656,51 @@ def create_order():
         c.execute('INSERT INTO order_items (order_id,product_id,quantity,unit_price,is_bulk_price) VALUES (?,?,?,?,?)',
                   (order_id, item['product_id'], item['quantity'], item['unit_price'], item['is_bulk']))
         c.execute('UPDATE products SET stock=stock-? WHERE id=?', (item['quantity'], item['product_id']))
-    
+
+    # --- Free research chemical(s) — gift-with-purchase on a $500+ paid, NON-discounted order ---
+    # Server-authoritative: we re-validate qualification (subtotal >= threshold AND no discount
+    # code) + each pick's eligibility + stock. The client cannot fake a freebie.
+    free_added = []
+    try:
+        fs_threshold = float(get_setting('free_sample_threshold', '500'))
+        fs_max = int(float(get_setting('free_sample_max', '2')))
+    except Exception:
+        fs_threshold, fs_max = 500.0, 2
+    requested_free = data.get('free_samples') or []
+    # "$500+ paid, not discounted": product subtotal clears the bar AND no discount was
+    # actually applied (discount_amount==0 covers both 'no code' and 'code blocked by the
+    # credit rule'). Mirrors the client's effectiveDiscount==0 check exactly.
+    order_qualifies = (subtotal >= fs_threshold) and (float(discount_amount) == 0)
+    if order_qualifies and requested_free:
+        want = {}
+        for pid in requested_free:
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            want[pid] = want.get(pid, 0) + 1
+        picked = 0
+        for pid, qty in want.items():
+            if picked >= fs_max:
+                break
+            prod = c.execute('SELECT id, name, stock, free_sample_eligible, active FROM products WHERE id=?', (pid,)).fetchone()
+            if not prod:
+                continue
+            pd = dict(prod)
+            if not pd.get('active') or not pd.get('free_sample_eligible') or int(pd.get('stock') or 0) <= 0:
+                continue
+            grant = min(qty, fs_max - picked, int(pd['stock']))
+            if grant <= 0:
+                continue
+            c.execute('INSERT INTO order_items (order_id,product_id,quantity,unit_price,is_bulk_price,is_free_sample) VALUES (?,?,?,?,?,?)',
+                      (order_id, pid, grant, 0, 0, 1))
+            c.execute('UPDATE products SET stock=stock-? WHERE id=?', (grant, pid))
+            free_added.append(f"{grant}x {pd['name']}")
+            picked += grant
+    if free_added:
+        c.execute('UPDATE orders SET admin_notes=? WHERE id=?',
+                  (f"🎁 Free research chemical(s) w/ $500+ order: {', '.join(free_added)}", order_id))
+
     # Deduct credit if applied
     if credit_applied > 0:
         c.execute('UPDATE users SET referral_credit = referral_credit - ? WHERE id=?', (credit_applied, session['user_id']))
@@ -2685,7 +2769,7 @@ def create_order():
         except Exception as e:
             print(f"[ORDER] Auto-pay failed for zero-total order {order_number}: {e}")
 
-    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': final_status, 'discount_voided_by_credit': credit_blocks_discount}), 201
+    return jsonify({'message': 'Order placed', 'order_number': order_number, 'order_id': order_id, 'subtotal': subtotal, 'discount': discount_amount, 'credit_applied': credit_applied, 'credit_earned': credit_earned, 'shipping_cost': shipping_cost, 'sales_tax': sales_tax, 'processing_fee': processing_fee, 'delivery_method': delivery_method, 'total': total, 'status': final_status, 'discount_voided_by_credit': credit_blocks_discount, 'free_samples': free_added}), 201
 
 
 # ============================================
@@ -3142,11 +3226,13 @@ def admin_update_product(pid):
     
     conn.execute('''UPDATE products SET sku=?,name=?,description=?,price_single=?,price_bulk=?,bulk_quantity=?,
         stock=?,category=?,active=?,sort_order=?,cost=?,reorder_qty=?,supplier_pack_size=?,sale_price=?,sale_start=?,sale_end=?,sale_min_qty=?,
+        free_sample_eligible=?,
         updated_at=CURRENT_TIMESTAMP WHERE id=?''',
-                 (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'), 
-                  data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'), 
-                  1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0), 
-                  data.get('reorder_qty',4), data.get('supplier_pack_size',1), sale_price, sale_start, sale_end, int(sale_min_qty), pid))
+                 (data.get('sku','').upper(), data.get('name'), data.get('description'), data.get('price_single'),
+                  data.get('price_bulk'), data.get('bulk_quantity',10), data.get('stock',0), data.get('category'),
+                  1 if data.get('active',True) else 0, data.get('sort_order',0), data.get('cost',0),
+                  data.get('reorder_qty',4), data.get('supplier_pack_size',1), sale_price, sale_start, sale_end, int(sale_min_qty),
+                  1 if data.get('free_sample_eligible') else 0, pid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Product updated'})

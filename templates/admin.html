@@ -566,7 +566,14 @@
                                 </div>
                                 ${isOnSale ? '<p style="color: #d97706; font-weight: 600; margin-top: 10px;">⚠️ This product is currently on sale!</p>' : ''}
                             </div>
-                            
+
+                            <div style="background:#f0fff4; padding:12px 15px; border-radius:8px; margin-top:15px; border:1px solid #c6f6d5;">
+                                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; margin:0;">
+                                    <input type="checkbox" id="prodFreeSample" ${p.free_sample_eligible ? 'checked' : ''} style="width:18px; height:18px;">
+                                    <span><strong>🎁 Free-research-chemical eligible</strong> — customers can pick this as a free item on $500+ non-discounted orders (clearance).</span>
+                                </label>
+                            </div>
+
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                                 <button type="submit" class="btn">Save Changes</button>
@@ -597,7 +604,8 @@
                         sale_price: parseFloat(document.getElementById('prodSalePrice').value) || null,
                         sale_min_qty: parseInt(document.getElementById('prodSaleMinQty').value) || 1,
                         sale_start: document.getElementById('prodSaleStart').value || null,
-                        sale_end: document.getElementById('prodSaleEnd').value || null
+                        sale_end: document.getElementById('prodSaleEnd').value || null,
+                        free_sample_eligible: document.getElementById('prodFreeSample').checked
                     })
                 });
                 closeModal();
