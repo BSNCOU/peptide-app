@@ -2667,10 +2667,11 @@ def create_order():
     except Exception:
         fs_threshold, fs_max = 500.0, 2
     requested_free = data.get('free_samples') or []
-    # "$500+ paid, not discounted": product subtotal clears the bar AND no discount was
-    # actually applied (discount_amount==0 covers both 'no code' and 'code blocked by the
-    # credit rule'). Mirrors the client's effectiveDiscount==0 check exactly.
-    order_qualifies = (subtotal >= fs_threshold) and (float(discount_amount) == 0)
+    # Qualify on ACTUAL CASH PAID: the final order total (after discount AND credit,
+    # incl. shipping/tax/fee) must clear the threshold. Discounts + credit are allowed —
+    # what matters is that they actually pay $500+ out of pocket. Mirrors the client's
+    # `total >= threshold` check.
+    order_qualifies = (float(total) >= fs_threshold)
     if order_qualifies and requested_free:
         want = {}
         for pid in requested_free:

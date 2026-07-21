@@ -1135,7 +1135,7 @@
 
                             <div id="freeSampleSection" style="display:none; background:#f0fff4; border:1px solid #9ae6b4; border-radius:8px; padding:14px; margin-top:12px;">
                                 <strong style="color:#276749; font-size:14px;">🎁 <span id="fsHeadline">Pick 2 FREE research chemicals</span></strong>
-                                <p id="fsSubline" style="font-size:12px; color:#718096; margin:4px 0 10px;">Your order qualifies — choose up to <span id="fsMax">2</span>, on the house. (Applies to non-discounted orders over $<span id="fsThreshold">500</span>.)</p>
+                                <p id="fsSubline" style="font-size:12px; color:#718096; margin:4px 0 10px;">Your order qualifies — choose up to <span id="fsMax">2</span>, on the house. (Any order totaling $<span id="fsThreshold">500</span>+ after discounts qualifies.)</p>
                                 <div id="freeSampleChoices" style="display:flex; flex-direction:column; gap:6px;"></div>
                                 <p id="fsHint" style="font-size:12px; color:#c05621; margin:8px 0 0; display:none;">You can pick at most <span class="fsMaxInline">2</span>.</p>
                             </div>
@@ -1394,12 +1394,12 @@
 
             document.getElementById('checkoutTotal').textContent = '$' + total.toFixed(2);
 
-            // Free-research-chemical offer: qualifies when product subtotal clears the
-            // threshold AND no discount is applied (mirrors the server).
+            // Free-research-chemical offer: qualifies when the ACTUAL amount paid (final
+            // total after discount + credit) clears the threshold (mirrors the server).
             const fs = state.freeSamples;
             const fsSection = document.getElementById('freeSampleSection');
             if (fsSection) {
-                const qualifies = fs && (fs.items || []).length && subtotal >= (fs.threshold || 500) && effectiveDiscount === 0;
+                const qualifies = fs && (fs.items || []).length && total >= (fs.threshold || 500);
                 fsSection.style.display = qualifies ? 'block' : 'none';
                 if (!qualifies) {
                     document.querySelectorAll('.freeSampleChoice').forEach(b => { b.checked = false; b.disabled = false; });
