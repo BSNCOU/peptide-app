@@ -3206,6 +3206,14 @@ BC10,8.00</pre>
                                 <input type="text" id="editUserOrg" value="${escapeHtml(u.organization) || ''}">
                             </div>
                             <div class="form-group">
+                                <label>Country</label>
+                                <input type="text" id="editUserCountry" value="${escapeHtml(u.country) || ''}">
+                            </div>
+                            <div class="form-group">
+                                <label>Default Shipping Address <small style="color:#718096;">(pre-fills their checkout)</small></label>
+                                <textarea id="editUserAddress" rows="3" style="width:100%;box-sizing:border-box;" placeholder="Street&#10;Suite / Apt (optional)&#10;City, ST Zip">${escapeHtml(u.default_shipping_address || '')}</textarea>
+                            </div>
+                            <div class="form-group">
                                 <label>
                                     <input type="checkbox" id="editUserVerified" ${u.email_verified ? 'checked' : ''}>
                                     Email Verified
@@ -3239,6 +3247,8 @@ BC10,8.00</pre>
                         email: document.getElementById('editUserEmail').value,
                         phone: document.getElementById('editUserPhone').value,
                         organization: document.getElementById('editUserOrg').value,
+                        country: document.getElementById('editUserCountry').value,
+                        default_shipping_address: document.getElementById('editUserAddress').value,
                         email_verified: document.getElementById('editUserVerified').checked,
                         referral_credit: parseFloat(document.getElementById('editUserCredit').value) || 0
                     })

@@ -6184,13 +6184,15 @@ def admin_update_user(uid):
         else:
             new_credit = float(user_dict.get('referral_credit') or 0)
         
-        conn.execute('''UPDATE users SET 
-            full_name=?, email=?, phone=?, organization=?, email_verified=?, referral_credit=?, updated_at=CURRENT_TIMESTAMP 
+        conn.execute('''UPDATE users SET
+            full_name=?, email=?, phone=?, organization=?, country=?, default_shipping_address=?, email_verified=?, referral_credit=?, updated_at=CURRENT_TIMESTAMP
             WHERE id=?''',
             (data.get('full_name', user_dict.get('full_name')),
              data.get('email', user_dict.get('email', '')).lower(),
              data.get('phone', user_dict.get('phone')),
              data.get('organization', user_dict.get('organization')),
+             data.get('country', user_dict.get('country')),
+             data.get('default_shipping_address', user_dict.get('default_shipping_address')),
              1 if data.get('email_verified') else 0,
              new_credit,
              uid))
