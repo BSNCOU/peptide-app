@@ -44,6 +44,12 @@ ROW_PITCH = 62.75            # 60.5 + 1/32"
 ART_MARGIN_X = 4.0           # inset so artwork sits inside the die-cut
 ART_MARGIN_Y = 3.0
 
+# 2026-07-22: Ben's per-column test-print calibration. Each column landed a little further
+# left than the last, and the whole grid printed 1/16" low. Nudge column N right by N x 1/16"
+# (col1 1/16", col2 1/8", col3 3/16", col4 1/4") and lift every label 1/16" up. 1/16" = 4.5pt.
+COL_X_SHIFT = (4.5, 9.0, 13.5, 18.0)   # pt per column (0-indexed): 1/16, 1/8, 3/16, 1/4"
+Y_SHIFT_UP = 4.5                        # 1/16" up, all labels
+
 # ── Dynamic-text stamp layout (points, relative to a cell's bottom-left) ──
 # From the label_printer product rows — the same for every SKU because it keys off
 # the artwork, not the product. Tune here if the text ever drifts on the artwork.
@@ -63,8 +69,8 @@ def _cell_rect(index):
     """(x, y, w, h) of cell `index` (0..47), bottom-left origin, filling L->R, T->B."""
     col = index % COLS
     row = index // COLS
-    x_left = MARGIN_LEFT + col * COL_PITCH
-    y_top = PAGE_H - MARGIN_TOP - row * ROW_PITCH
+    x_left = MARGIN_LEFT + col * COL_PITCH + COL_X_SHIFT[col]
+    y_top = PAGE_H - MARGIN_TOP - row * ROW_PITCH + Y_SHIFT_UP
     return (x_left, y_top - LABEL_H, LABEL_W, LABEL_H)
 
 
