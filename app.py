@@ -848,6 +848,7 @@ def init_db():
             c.execute("ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS first_order_only INTEGER DEFAULT 0")
             c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_credit REAL DEFAULT 0")
             c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP")
+            c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS default_shipping_address TEXT")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_applied REAL DEFAULT 0")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS introducer_user_id INTEGER DEFAULT NULL")
             c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_promo INTEGER DEFAULT 0")
@@ -866,6 +867,9 @@ def init_db():
             except: pass
             try:
                 c.execute("ALTER TABLE users ADD COLUMN last_login TIMESTAMP")
+            except: pass
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN default_shipping_address TEXT")
             except: pass
             try:
                 c.execute("ALTER TABLE orders ADD COLUMN credit_applied REAL DEFAULT 0")
@@ -1845,11 +1849,36 @@ def logout():
 @login_required
 def get_me():
     conn = get_db()
-    user = conn.execute('SELECT id,full_name,email,phone,organization,country,is_admin,first_login_confirmed,email_verified,referral_credit FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    user = conn.execute('SELECT id,full_name,email,phone,organization,country,is_admin,first_login_confirmed,email_verified,referral_credit,default_shipping_address FROM users WHERE id=?', (session['user_id'],)).fetchone()
     conn.close()
     if not user:
         return jsonify({'error': 'User not found'}), 404
     return jsonify(dict(user))
+
+
+@app.route('/api/me/profile', methods=['PUT'])
+@login_required
+def update_my_profile():
+    """Customer self-service: update their own name, phone, and default shipping address
+    (My Account page). Address is saved on the users row so checkout can pre-fill it and
+    they never have to retype it — and can fix it themselves if they move."""
+    data = request.json or {}
+    conn = get_db()
+    fields, params = [], []
+    if 'full_name' in data:
+        fields.append('full_name=?'); params.append((data.get('full_name') or '').strip())
+    if 'phone' in data:
+        fields.append('phone=?'); params.append((data.get('phone') or '').strip())
+    if 'default_shipping_address' in data:
+        fields.append('default_shipping_address=?'); params.append((data.get('default_shipping_address') or '').strip())
+    if not fields:
+        conn.close(); return jsonify({'error': 'nothing to update'}), 400
+    params.append(session['user_id'])
+    conn.execute(f'UPDATE users SET {",".join(fields)} WHERE id=?', params)
+    conn.commit()
+    user = conn.execute('SELECT id,full_name,email,phone,default_shipping_address FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    conn.close()
+    return jsonify({'success': True, 'user': dict(user)})
 
 @app.route('/api/me/last-shipping-address', methods=['GET'])
 @login_required
@@ -5260,6 +5289,31 @@ def parse_shipping_address(address_str):
         parts['street1'] = lines[0]
 
     return parts
+
+
+@app.route('/api/admin/orders/<int:oid>/shipping-address', methods=['PUT'])
+@admin_required
+def admin_update_shipping_address(oid):
+    """Fix an order's shipping address in place (customer gave a wrong/updated address
+    before it shipped). Does NOT reship — for a returned package use the Reship flow.
+    Logs the before/after to admin_notes."""
+    data = request.json or {}
+    new_addr = (data.get('shipping_address') or '').strip()
+    if not new_addr:
+        return jsonify({'error': 'shipping_address required'}), 400
+    conn = get_db(); c = conn.cursor()
+    order = c.execute('SELECT order_number, shipping_address, admin_notes, status FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        conn.close(); return jsonify({'error': 'Order not found'}), 404
+    od = dict(order)
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M')
+    note = (f"[{ts}] Shipping address edited by admin.\n  was: {(od.get('shipping_address') or '(none)')!r}\n"
+            f"  now: {new_addr!r}")
+    updated_notes = ((od.get('admin_notes') or '') + '\n' + note).strip()
+    c.execute('UPDATE orders SET shipping_address=?, admin_notes=? WHERE id=?', (new_addr, updated_notes, oid))
+    conn.commit(); conn.close()
+    return jsonify({'success': True, 'shipping_address': new_addr,
+                    'already_shipped': (od.get('status') in ('shipped', 'delivered', 'fulfilled'))})
 
 
 @app.route('/api/admin/orders/<int:oid>/replacement', methods=['POST'])

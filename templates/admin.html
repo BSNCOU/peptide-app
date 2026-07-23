@@ -1436,6 +1436,7 @@ BC10,8.00</pre>
                         <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
                             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                             <button class="btn" onclick="showEditOrderModal(${o.id})">✏️ Edit Order</button>
+                            ${o.delivery_method === 'ship' ? `<button class="btn" style="background: #3182ce;" onclick="showEditAddressModal(${o.id})">📝 Edit Address</button>` : ''}
                             <button class="btn" style="background: #ed8936;" onclick="showCorrectionModal(${o.id})">🔧 Correct Order</button>
                             ${o.delivery_method === 'ship' ? `<button class="btn" style="background: #d69e2e;" onclick="showReshipModal(${o.id})">📮 Reship (returned)</button>` : ''}
                             ${parseFloat(o.total || 0) === 0 && ['pending','pending_payment'].includes(o.status) ? `
@@ -1484,6 +1485,43 @@ BC10,8.00</pre>
                 }
             } else if (lines.length === 1) { out.street1 = lines[0]; }
             return out;
+        }
+
+        function showEditAddressModal(id) {
+            const o = state.orders.find(x => x.id === id);
+            if (!o) { showAlert('Order not found'); return; }
+            const a = parseShipAddr(o.shipping_address || '');
+            const shipped = ['shipped','delivered','fulfilled'].includes(o.status);
+            document.getElementById('modalContainer').innerHTML = `
+                <div class="modal" onclick="if(event.target===this)closeModal()">
+                    <div class="modal-content" style="max-width:520px;">
+                        <h3>📝 Edit Shipping Address — ${escapeHtml(o.order_number)}</h3>
+                        <p style="color:#718096;font-size:13px;margin-bottom:10px;">Fix the address in place — no reship. ${shipped ? '<b style="color:#c05621;">⚠ Already marked shipped: editing here does NOT re-send it. For a returned package use 📮 Reship.</b>' : 'Best used before the order ships.'}</p>
+                        <div class="form-group"><label>Address 1</label><input type="text" id="eaStreet1" value="${escapeHtml(a.street1)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                        <div class="form-group"><label>Address 2 (Apt / Suite / Unit)</label><input type="text" id="eaStreet2" value="${escapeHtml(a.street2)}" placeholder="e.g. Suite 125" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;">
+                            <div class="form-group"><label>City</label><input type="text" id="eaCity" value="${escapeHtml(a.city)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                            <div class="form-group"><label>State</label><input type="text" id="eaState" value="${escapeHtml(a.state)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                            <div class="form-group"><label>Zip</label><input type="text" id="eaZip" value="${escapeHtml(a.zip)}" style="width:100%;padding:8px;box-sizing:border-box;"></div>
+                        </div>
+                        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
+                            <button class="btn btn-secondary" onclick="showOrderDetailModal(${o.id})">Cancel</button>
+                            <button class="btn" onclick="submitEditAddress(${o.id})">💾 Save Address</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+        async function submitEditAddress(id) {
+            const g = fid => (document.getElementById(fid)?.value || '').trim();
+            const s1 = g('eaStreet1'), s2 = g('eaStreet2'), city = g('eaCity'), st = g('eaState'), zip = g('eaZip');
+            if (!s1 || !city || !st || !zip) { showAlert('Address 1, City, State and Zip are required.'); return; }
+            const addr = s2 ? `${s1}\n${s2}\n${city}, ${st} ${zip}` : `${s1}\n${city}, ${st} ${zip}`;
+            try {
+                await api(`/api/admin/orders/${id}/shipping-address`, { method: 'PUT', body: JSON.stringify({ shipping_address: addr }) });
+                showAlert('Shipping address updated.', 'success');
+                closeModal();
+                if (typeof loadOrders === 'function') loadOrders();
+            } catch (e) { showAlert(e.message || 'Address update failed'); }
         }
 
         function showReshipModal(id) {
